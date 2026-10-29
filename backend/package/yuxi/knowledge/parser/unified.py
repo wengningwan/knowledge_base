@@ -122,94 +122,79 @@ FIGURE_ANALYSIS_PROMPT = (
     "只描述图中真实存在的内容，不要编造图中没有的信息。使用中文回答，不超过 300 字。"
 )
 
-FORMULA_TRANSCRIBE_PROMPT = (
-    "你是科研文档公式转写助手。请把这张公式图片精确转写为 LaTeX：\n"
-    "- 只输出 LaTeX 代码本身，独立公式用 $$...$$ 包裹，多行公式用 \\begin{aligned}...\\end{aligned}；\n"
-    "- 不要输出任何解释、编号或多余文字；\n"
-    "- 保留上下标、希腊字母、分式、根号、求和、积分、箭头和化学反应条件等结构。"
-)
-
 _FIGURE_ANALYSIS_CONCURRENCY = 4
 
 
 async def parse_pdf_disable(file, params=None) -> str:
-    """OCR 禁用模式：按页面布局提取文本，插图与公式区域在原位嵌入并可交视觉模型解析。
+    """OCR 禁用模式：直接提取 PDF 文字层，并提取嵌入插图可选交给视觉模型解析。
 
     params 可包含 ``image_analysis_model``（模型 spec）与 ``image_bucket``/``image_prefix``。
-    未配置模型时插图与公式仅嵌入图片不生成解析文字；模型 spec 无效时抛 ValueError，
-    让解析失败以暴露配置错误。
+    未配置模型时仅嵌入插图不生成解析文字；模型 spec 无效时抛 ValueError，让解析失败
+    以暴露配置错误。
     """
-    from yuxi.knowledge.parser.pdf_figures import LayoutBlock, extract_pdf_layout
+    from yuxi.knowledge.parser.pdf_figures import PdfFigure, extract_pdf_figures
     from yuxi.models.chat import select_model
 
     params = params or {}
-    pages = await asyncio.to_thread(extract_pdf_layout, file)
-    if not any(blocks for blocks in pages):
-        return "\n\n".join(await asyncio.to_thread(extract_pdf_page_texts, file))
+    page_texts = await asyncio.to_thread(extract_pdf_page_texts, file)
+    figures = await asyncio.to_thread(extract_pdf_figures, file)
 
-    media_blocks = [block for blocks in pages for block in blocks if block.kind != "text"]
+    if not figures:
+        return "\n\n".join(page_texts)
+
     image_bucket, image_prefix = _resolve_image_storage_params(params)
     model_spec = str(params.get("image_analysis_model") or "").strip()
     model = None
     if model_spec:
         model = select_model(model_spec)
-    elif media_blocks:
-        logger.info("未配置插图解析模型，插图与公式仅嵌入原文不做模型解析")
+    else:
+        logger.info("未配置插图解析模型，插图仅嵌入原文不做模型解析")
 
     semaphore = asyncio.Semaphore(_FIGURE_ANALYSIS_CONCURRENCY)
-    failed_blocks: set[int] = set()
 
-    async def upload_and_analyze(block: LayoutBlock) -> None:
+    async def upload_and_analyze(figure: PdfFigure) -> tuple[str | None, str]:
         try:
-            block.url = await asyncio.to_thread(
-                _upload_image_to_minio, block.image, block.filename, image_bucket, image_prefix
+            url = await asyncio.to_thread(
+                _upload_image_to_minio, figure.data, figure.filename, image_bucket, image_prefix
             )
         except Exception as e:  # noqa: BLE001
             # 正文是解析主体，单张图片上传失败时跳过该图而不是让整个解析失败
-            logger.error(f"图片上传失败，已跳过（{block.name}）: {e}")
-            failed_blocks.add(id(block))
-            return
-        if model is None:
-            return
-        prompt = FORMULA_TRANSCRIBE_PROMPT if block.kind == "formula" else FIGURE_ANALYSIS_PROMPT
-        async with semaphore:
-            block.description = await _analyze_image(model, block, prompt, model_spec)
+            logger.error(f"图片上传失败，已跳过（{figure.name}）: {e}")
+            return None, ""
+        description = ""
+        if model is not None:
+            async with semaphore:
+                description = await _analyze_figure(model, figure, model_spec)
+        return url, description
 
-    await asyncio.gather(*(upload_and_analyze(block) for block in media_blocks))
+    results = await asyncio.gather(*(upload_and_analyze(figure) for figure in figures))
 
-    page_parts: list[str] = []
-    for blocks in pages:
-        parts: list[str] = []
-        for block in blocks:
-            if id(block) in failed_blocks:
-                continue
-            if block.kind == "text":
-                parts.append(block.text)
-            elif block.kind == "formula":
-                formula_parts = []
-                if block.description:
-                    formula_parts.append(block.description)
-                formula_parts.append(f"![{block.name}]({block.url})")
-                parts.append("\n\n".join(formula_parts))
-            else:
-                figure_parts = [f"![{block.name}]({block.url})"]
-                if block.description:
-                    figure_parts.append(f"**插图解析**：{block.description}")
-                parts.append("\n\n".join(figure_parts))
-        page_parts.append("\n\n".join(part for part in parts if part))
-    return "\n\n".join(part for part in page_parts if part)
+    figures_by_page: dict[int, list[str]] = {}
+    for figure, (url, description) in zip(figures, results):
+        if url is None:
+            continue
+        blocks = [f"![figure_{figure.name}]({url})"]
+        if description:
+            blocks.append(f"**插图解析**：{description}")
+        figures_by_page.setdefault(figure.page, []).append("\n\n".join(blocks))
+
+    parts: list[str] = []
+    for page_number, text in enumerate(page_texts, start=1):
+        parts.append(text)
+        parts.extend(figures_by_page.get(page_number, []))
+    return "\n\n".join(part for part in parts if part)
 
 
-async def _analyze_image(model, block, prompt: str, model_spec: str) -> str:
-    """调用视觉模型解析单张图片（插图或公式），失败时降级为空描述。"""
+async def _analyze_figure(model, figure, model_spec: str) -> str:
+    """调用视觉模型解析单张插图，失败时降级为空描述。"""
     from langchain_core.messages import HumanMessage
 
-    data_url = f"data:{block.mime};base64,{base64.b64encode(block.image).decode('ascii')}"
+    data_url = f"data:{figure.mime};base64,{base64.b64encode(figure.data).decode('ascii')}"
     # 适配器通过 convert_to_messages 归一输入，多模态消息需以消息列表形式传入
     message = [
         HumanMessage(
             content=[
-                {"type": "text", "text": prompt},
+                {"type": "text", "text": FIGURE_ANALYSIS_PROMPT},
                 {"type": "image_url", "image_url": {"url": data_url}},
             ]
         )
@@ -217,7 +202,7 @@ async def _analyze_image(model, block, prompt: str, model_spec: str) -> str:
     try:
         response = await model.call(message, stream=False)
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"图片解析失败，保留图片不生成描述（{block.name}，模型 {model_spec}）: {e}")
+        logger.warning(f"插图解析失败，保留图片不生成描述（{figure.name}，模型 {model_spec}）: {e}")
         return ""
     return str(getattr(response, "content", "") or "").strip()
 
