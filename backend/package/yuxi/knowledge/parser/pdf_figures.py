@@ -46,8 +46,10 @@ class PdfFigure:
 def extract_pdf_figures(
     file_path: str | Path,
     max_figures: int = MAX_FIGURES_PER_DOCUMENT,
+    *,
+    warnings: list[str] | None = None,
 ) -> list[PdfFigure]:
-    """保留各页的嵌入图像身份，避免尺寸过滤或跨页去重丢失真实插图。"""
+    """保留嵌入图片；提供诊断容器时保留可用图片并报告局部失败。"""
     if isinstance(file_path, str):
         file_path = Path(file_path)
 
@@ -57,18 +59,40 @@ def extract_pdf_figures(
     for page_number, page in enumerate(reader.pages, start=1):
         figures_on_page: list[PdfFigure] = []
         try:
-            page_images = list(page.images)
+            page_images = page.images
+            image_count = len(page_images)
         except Exception as exc:
+            if warnings is not None:
+                warnings.append(f"第 {page_number} 页插图读取失败，请从原 PDF 查看该页图片。")
+                continue
             raise DocumentParserException(
-                f"第 {page_number} 页插图读取失败", "pdf_visual", "figure_extraction_failed"
+                f"第 {page_number} 页插图读取失败", "pdf_figures", "figure_extraction_failed"
             ) from exc
 
-        for image_file in page_images:
-            figure = _build_figure(image_file, page_number, len(figures_on_page) + 1)
+        for image_index in range(image_count):
             if len(figures) >= max_figures:
+                if warnings is not None:
+                    warnings.append(f"插图达到 {max_figures} 张处理上限，其余图片未处理。")
+                    return figures
                 raise DocumentParserException(
-                    f"PDF 插图超过 {max_figures} 张，请拆分文件或使用版面 OCR 引擎", "pdf_visual", "too_many_figures"
+                    f"PDF 插图超过 {max_figures} 张，请拆分文件或使用版面 OCR 引擎", "pdf_figures", "too_many_figures"
                 )
+            try:
+                # pypdf 在读取单个索引时解码，不能先 list() 让坏图终止整页。
+                image_file = page_images[image_index]
+            except Exception as exc:
+                message = f"第 {page_number} 页第 {image_index + 1} 个图片资源读取失败"
+                if warnings is not None:
+                    warnings.append(message)
+                    continue
+                raise DocumentParserException(message, "pdf_figures", "figure_extraction_failed") from exc
+            try:
+                figure = _build_figure(image_file, page_number, len(figures_on_page) + 1)
+            except DocumentParserException as exc:
+                if warnings is None:
+                    raise
+                warnings.append(exc.message)
+                continue
             figures_on_page.append(figure)
             figures.append(figure)
 
@@ -83,7 +107,7 @@ def _build_figure(image_file, page: int, index: int) -> PdfFigure:
         image.load()
     except Exception as exc:
         raise DocumentParserException(
-            f"第 {page} 页插图无法解码", "pdf_visual", "figure_extraction_failed"
+            f"第 {page} 页插图无法解码", "pdf_figures", "figure_extraction_failed"
         ) from exc
 
     try:

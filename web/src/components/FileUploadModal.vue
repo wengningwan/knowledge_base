@@ -78,10 +78,10 @@
           </div>
         </div>
 
-        <!-- OCR 未启用时，由视觉模型按页面转录 PDF 并解析插图 -->
+        <!-- PDF 文字直接提取，模型只用于单独提取的插图 -->
         <div class="setting-row" v-if="uploadMode !== 'url' && !isOcrEnabled">
           <div class="col-item">
-            <div class="setting-label">插图解析模型（不启用 OCR 时应用于 PDF 文件）</div>
+            <div class="setting-label">插图解析模型（可选，仅用于 PDF 插图）</div>
             <div class="setting-content">
               <ModelSelectorComponent
                 :model_spec="processingParams.image_analysis_model"
@@ -92,7 +92,7 @@
               />
             </div>
             <p class="param-description">
-              不启用 OCR 时，此模型逐页读取 PDF，保留公式、段落和图注，并生成单独标识的图片解释；上传 PDF 时必须选择
+              不启用 OCR 时直接提取 PDF 文字，选择模型后单独解析插图；未选择模型时保留原图，不生成图片说明
             </p>
           </div>
         </div>
@@ -124,7 +124,7 @@
       </div>
       <div v-else-if="hasPdfFiles && !isOcrEnabled" class="inline-alert warning">
         <Info :size="16" />
-        <span>未启用 OCR：PDF 将直接提取文字层并解析插图（需选择插图解析模型）；扫描版 PDF 无文字层，建议启用 OCR</span>
+        <span>未启用 OCR：PDF 直接提取文字层，可选择模型单独解析插图；扫描件全文识别请启用 OCR</span>
       </div>
 
       <!-- 文件上传区域 -->
@@ -1248,13 +1248,6 @@ const chunkData = async () => {
           })
           return
         }
-        if (ext === '.pdf' && !isOcrEnabled.value && !processingParams.value.image_analysis_model) {
-          message.error({
-            content: '检测到 PDF 文件：未启用 OCR 时必须选择插图解析模型，或改选 OCR 引擎。',
-            duration: 5
-          })
-          return
-        }
       }
 
       const params = { ...processingParams.value, content_hashes, file_sizes }
@@ -1389,13 +1382,6 @@ const chunkData = async () => {
     if (imageExtensions.includes(ext) && !isOcrEnabled.value) {
       message.error({
         content: '检测到图片文件，必须启用 OCR 才能提取文本内容。',
-        duration: 5
-      })
-      return
-    }
-    if (ext === '.pdf' && !isOcrEnabled.value && !processingParams.value.image_analysis_model) {
-      message.error({
-        content: '检测到 PDF 文件：未启用 OCR 时必须选择插图解析模型，或改选 OCR 引擎。',
         duration: 5
       })
       return

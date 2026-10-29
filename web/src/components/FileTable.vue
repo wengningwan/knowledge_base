@@ -33,7 +33,7 @@
           <p class="param-description">选择用于识别 PDF 和图片中文字的 OCR 引擎</p>
         </div>
         <div class="setting-item" v-if="!isParseOcrEnabled">
-          <div class="setting-label">插图解析模型（不启用 OCR 时应用于 PDF 文件）</div>
+          <div class="setting-label">插图解析模型（可选，仅用于 PDF 插图）</div>
           <div class="setting-content">
             <ModelSelectorComponent
               :model_spec="parseParams.image_analysis_model"
@@ -44,7 +44,7 @@
             />
           </div>
           <p class="param-description">
-            不启用 OCR 时，此模型逐页读取 PDF，保留公式、段落和图注，并生成单独标识的图片解释；解析 PDF 时必须选择
+            不启用 OCR 时直接提取 PDF 文字，选择模型后单独解析插图；未选择模型时保留原图，不生成图片说明
           </p>
         </div>
       </div>
@@ -862,15 +862,6 @@ const defaultOcrEngine = ref(DEFAULT_OCR_ENGINE)
 
 const isParseOcrEnabled = computed(() => parseParams.value.ocr_engine !== 'disable')
 
-// 待解析队列的文件类型未知，不参与 PDF 必选插图模型的校验
-const hasPdfParseTarget = computed(() => {
-  if (isPendingParseOperation.value) return false
-  const keys = new Set(currentParseFileIds.value)
-  return files.value.some(
-    (f) => keys.has(f.file_id) && String(f.filename || '').toLowerCase().endsWith('.pdf')
-  )
-})
-
 const resolveDefaultOcrEngine = () => {
   return configStore.config?.default_ocr_engine || defaultOcrEngine.value || DEFAULT_OCR_ENGINE
 }
@@ -907,7 +898,7 @@ const resetParseParams = (processingParams = null) => {
       image_analysis_model: resolveDefaultImageAnalysisModel()
     }
   }
-  if (!parseParams.value.image_analysis_model) {
+  if (!processingParams || !Object.hasOwn(processingParams, 'image_analysis_model')) {
     parseParams.value.image_analysis_model = resolveDefaultImageAnalysisModel()
   }
 }
@@ -1254,16 +1245,7 @@ const handleParseConfigConfirm = async () => {
   try {
     const params = { ocr_engine: parseParams.value.ocr_engine }
     if (!isParseOcrEnabled.value) {
-      if (hasPdfParseTarget.value && !parseParams.value.image_analysis_model) {
-        message.error({
-          content: '检测到 PDF 文件：未启用 OCR 时必须选择插图解析模型，或改选 OCR 引擎。',
-          duration: 5
-        })
-        return
-      }
-      if (parseParams.value.image_analysis_model) {
-        params.image_analysis_model = parseParams.value.image_analysis_model
-      }
+      params.image_analysis_model = parseParams.value.image_analysis_model || ''
     }
     const result = isPendingParseOperation.value
       ? await store.parsePendingFiles(params, pendingParseTotal.value)

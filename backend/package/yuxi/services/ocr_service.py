@@ -61,7 +61,7 @@ async def resolve_ocr_task_params(
     # 知识库任务有明确图片归属；API 调用方也能复用默认视觉模型。
     # 临时附件没有该归属时保留纯文字能力，不向 unknown 前缀写入图片。
     image_analysis_model = str(resolved.get("image_analysis_model") or "").strip()
-    if engine_id == "disable" and not image_analysis_model and resolved.get("image_prefix"):
+    if engine_id == "disable" and "image_analysis_model" not in resolved and resolved.get("image_prefix"):
         image_analysis_model = str((await system_options.get(db)).get("default_image_analysis_model") or "").strip()
     if engine_id == "disable" and image_analysis_model:
         resolved["image_analysis_model"] = image_analysis_model
