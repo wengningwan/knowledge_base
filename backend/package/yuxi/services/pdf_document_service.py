@@ -56,7 +56,7 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
     from yuxi.services.pdf_review_service import review_pdf_document
 
     by_figure = {figure["id"]: figure for figure in result.figures}
-    base_url = (params.get("_ocr_processor_kwargs") or {}).get("server_url") or "https://free-oxr.somark.cn/api/v1"
+    base_url = (params.get("_ocr_processor_kwargs") or {}).get("server_url") or ""
     for block in result.blocks:
         if control:
             await control.check_cancelled()

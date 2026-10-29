@@ -229,9 +229,9 @@ oxr_api_opts = Option(
                 "label": "API Base URL",
                 "type": "url",
                 "environment": "OXR_API_URI",
-                "default": "https://free-oxr.somark.cn/api/v1",
+                "default": "",
                 "placeholder": "https://free-oxr.somark.cn/api/v1",
-                "help": "免费接口可直接试用；自部署填写完整地址，例如 http://oxr:8000/v1。",
+                "help": "填写并保存服务基地址后启用；免费接口示例 https://free-oxr.somark.cn/api/v1，自部署示例 http://oxr:8000/v1。",
             },
             {
                 "key": "api_key",

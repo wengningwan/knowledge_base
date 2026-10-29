@@ -12,7 +12,7 @@ Owner：backend/package/yuxi/services/knowledge_parse_service.py
 
 ### 实现方案
 
-在现有 OCR 注册和配置中增加 OXR，保留初始 disable 默认值和其他解析器入口。OXR 结构化块是主结果；原生文字按区域作为第二候选，局部视觉模型只校对疑点。插图模型独立生成说明。正文模型显式清空表示未启用，不把模型配置完整性当作主解析成功条件。
+在现有 OCR 注册和配置中增加 OXR，保留初始 disable 默认值和其他解析器入口。OXR 只使用管理员保存或 OXR_API_URI 显式配置的地址；配置与解析器都没有内置免费服务回退，空地址报告未配置并拒绝提交，API Key 为可选项。OXR 结构化块是主结果；原生文字按区域作为第二候选，局部视觉模型只校对疑点。插图模型独立生成说明。正文模型显式清空表示未启用，不把模型配置完整性当作主解析成功条件。
 
 parser 的 ParsedDocument 统一携带 Markdown、块、图片资源、修订和诊断，既有字符串消费者使用包装入口。knowledge_parse_service 负责任务控制、不可变对象和发布准备，KnowledgeFileRepository 负责文件/知识库操作边界与同事务 owner fencing。正文与附属 JSON 的两个指针归同一 attempt，失败清理只删除自己未发布的前缀。schema 相邻升级为旧文件增加可空字段。
 

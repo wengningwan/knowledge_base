@@ -99,3 +99,32 @@ async def test_health_checks_every_registered_ocr_method(db_session, monkeypatch
 
     assert set(health) == set(PARSER_CAPABILITIES)
     assert all(result["status"] == "healthy" for result in health.values())
+
+
+
+@pytest.mark.asyncio
+async def test_oxr_empty_option_never_uses_implicit_endpoint(db_session, monkeypatch):
+    """真实配置读取及工厂健康检查在无保存值/环境值时必须报告未配置。"""
+    monkeypatch.delenv("OXR_API_URI", raising=False)
+    monkeypatch.delenv("OXR_API_KEY", raising=False)
+    ocr_service.DocumentProcessorFactory.clear_cache("oxr_ocr")
+    kwargs = await ocr_service._build_processor_kwargs(db_session, "oxr_ocr")
+    assert not kwargs.get("server_url")
+    health = ocr_service.DocumentProcessorFactory.check_health("oxr_ocr", **kwargs)
+    assert health["status"] == "unconfigured"
+
+
+@pytest.mark.asyncio
+async def test_oxr_saved_address_is_configured_without_api_key_and_clearing_disables(db_session, monkeypatch):
+    """地址即可配置免费接口；清空后不自动恢复默认服务。"""
+    monkeypatch.delenv("OXR_API_URI", raising=False)
+    monkeypatch.delenv("OXR_API_KEY", raising=False)
+    ocr_service.DocumentProcessorFactory.clear_cache("oxr_ocr")
+    await update_option_value(db_session, "oxr_api_opts", {"server_url": "https://saved.test/v1"}, "tester")
+    kwargs = await ocr_service._build_processor_kwargs(db_session, "oxr_ocr")
+    assert kwargs == {"server_url": "https://saved.test/v1"}
+    assert ocr_service.DocumentProcessorFactory.check_health("oxr_ocr", **kwargs)["status"] == "configured"
+    await update_option_value(db_session, "oxr_api_opts", {"server_url": "", "api_key": ""}, "tester")
+    cleared = await ocr_service._build_processor_kwargs(db_session, "oxr_ocr")
+    assert not cleared.get("server_url")
+    assert ocr_service.DocumentProcessorFactory.check_health("oxr_ocr", **cleared)["status"] == "unconfigured"

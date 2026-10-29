@@ -69,7 +69,7 @@
               >
                 <span class="ocr-option-main">
                   <span class="ocr-option-name">{{ engine.display_name }}</span>
-                  <span class="ocr-health-label unhealthy">不可用</span>
+                  <span class="ocr-health-label unhealthy">{{ healthLabel(engine.engine_id) }}</span>
                 </span>
                 <span class="ocr-unavailable-reason">
                   {{ health[engine.engine_id]?.message || '健康检测未通过' }}
@@ -203,6 +203,7 @@ const healthLabel = (engineId) => {
   if (engineId === 'disable') return '无需检测'
   if (healthLoading.value && !healthStatus(engineId)) return '检测中'
   if (!healthStatus(engineId)) return '未检测'
+  if (healthStatus(engineId) === 'unconfigured') return '未配置'
   if (healthStatus(engineId) === 'configured') return '已配置'
   return isHealthy(engineId) ? '可用' : '不可用'
 }

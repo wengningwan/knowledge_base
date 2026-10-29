@@ -69,7 +69,7 @@ OXR 使用结构化块生成正文，默认把同一区域原生文字作为第�
 
 部署后的验证项目见[OXR 解析验收](oxr-validation-checklist.md)。
 
-在“设置 → OCR 配置 → OXR”配置服务基地址，可先使用默认免费接口 `https://free-oxr.somark.cn/api/v1`，也可填写镜像 `https://free-oxr.somark.ai/api/v1`。免费接口不需要部署 OXR 或填写 API Key；上传时原文件会发送到所填服务。免费服务的可用性、速率和额度由服务方维护，页面显示“已配置”只代表参数就绪，实际解析才验证服务。
+在“设置 → OCR 配置 → OXR”配置服务基地址，需要填写并保存 API Base URL，例如免费接口 `https://free-oxr.somark.cn/api/v1`，也可填写镜像 `https://free-oxr.somark.ai/api/v1`。地址没有内置默认值；数据库和 OXR_API_URI 均为空时显示“未配置”，不能提交解析。免费接口不需要部署 OXR 或填写 API Key；上传时原文件会发送到所填服务。免费服务的可用性、速率和额度由服务方维护，页面显示“已配置”只代表参数就绪，实际解析才验证服务。
 
 部署开源 OXR 后，把基地址替换为该服务的地址，例如 `http://oxr:8000/v1`。系统在基地址后追加 `/parse/async` 和 `/parse/async_check`，自托管地址不要再重复添加 `/api` 或完整端点。API Key 为可选字段；也可在 API/worker 环境中设置 `OXR_API_URI`、`OXR_API_KEY`，读取顺序与其他 OCR 配置相同。
 

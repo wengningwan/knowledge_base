@@ -208,7 +208,7 @@ def test_health_only_reports_configuration(monkeypatch):
         raise AssertionError("health must not perform I/O")
 
     monkeypatch.setattr(oxr.httpx, "AsyncClient", forbidden_client)
-    assert oxr.OXRParser().check_health()["status"] == "configured"
+    assert oxr.OXRParser("https://oxr.test/v1").check_health()["status"] == "configured"
 
 
 
@@ -264,3 +264,28 @@ async def test_worker_task_cancel_waits_for_known_submission_checkpoint(tmp_path
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+
+@pytest.mark.parametrize("environment", [None, "", "   "])
+def test_empty_configuration_is_unconfigured_and_never_submits(tmp_path, monkeypatch, environment):
+    """空配置不能借助内置免费地址显示已配置或提交文档。"""
+    if environment is None:
+        monkeypatch.delenv("OXR_API_URI", raising=False)
+    else:
+        monkeypatch.setenv("OXR_API_URI", environment)
+    monkeypatch.setattr(oxr.httpx, "AsyncClient", lambda **kwargs: pytest.fail("空配置不应创建网络客户端"))
+    parser = oxr.OXRParser(api_key="optional-key-without-address")
+    assert parser.server_url == ""
+    assert parser.check_health()["status"] == "unconfigured"
+    with pytest.raises(DocumentParserException, match="API Base URL"):
+        asyncio.run(parser.process_file_result(str(_source(tmp_path))))
+
+
+def test_explicit_environment_url_is_configuration_and_database_url_takes_precedence(monkeypatch):
+    """环境地址同样属于显式配置，页面保存地址覆盖环境配置。"""
+    monkeypatch.setenv("OXR_API_URI", "https://environment.test/v1")
+    assert oxr.OXRParser().server_url == "https://environment.test/v1"
+    assert oxr.OXRParser().check_health()["status"] == "configured"
+    assert oxr.OXRParser("https://saved.test/v1").server_url == "https://saved.test/v1"
+    assert oxr.OXRParser("").check_health()["status"] == "unconfigured"

@@ -27,9 +27,9 @@ class OXRParser(BaseDocumentProcessor):
 
     def __init__(self, server_url: str | None = None, api_key: str | None = None):
         """保存服务配置，免费接口使用占位密钥。"""
-        self.server_url = (server_url or os.getenv("OXR_API_URI") or "https://free-oxr.somark.cn/api/v1").rstrip("/")
+        self.server_url = str(server_url if server_url is not None else os.getenv("OXR_API_URI") or "").strip().rstrip("/")
         parsed = urlsplit(self.server_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+        if self.server_url and (parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password):
             raise ValueError("OXR 地址必须是无内嵌凭据的 HTTP(S) URL")
         if parsed.query or parsed.fragment:
             raise ValueError("OXR 基地址不能包含查询参数或片段")
@@ -37,7 +37,9 @@ class OXRParser(BaseDocumentProcessor):
 
     def check_health(self) -> dict:
         """仅说明配置已提供，不宣称服务或解析能力经过实测。"""
-        return {"status": "configured", "message": "OXR 已配置，尚未实测", "details": {"tested": False}}
+        if not self.server_url:
+            return {"status": "unconfigured", "message": "请在 OCR 配置中填写 OXR API Base URL，或设置 OXR_API_URI", "details": {"tested": False}}
+        return {"status": "configured", "message": "OXR 地址已配置，尚未实测", "details": {"tested": False}}
 
     def process_file(self, file_path: str, params: dict | None = None) -> str:
         """为既有同步入口返回 Markdown，异步调用者应使用结果接口。"""
@@ -45,6 +47,8 @@ class OXRParser(BaseDocumentProcessor):
 
     async def process_file_result(self, file_path: str, params: dict | None = None, control=None) -> ParsedDocument:
         """在有界期限内解析，并通过控制对象恢复同一源文件的远端任务。"""
+        if not self.server_url:
+            raise self._error("请在 OCR 配置中填写 OXR API Base URL，或设置 OXR_API_URI", "missing_server_url")
         path = Path(file_path)
         if not self.supports_file_type(path.suffix):
             raise self._error("不支持的文件类型", "unsupported_file_type")

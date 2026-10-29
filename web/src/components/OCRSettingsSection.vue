@@ -44,7 +44,7 @@
           <div>
             <h4>{{ option.name }}</h4>
             <p>{{ option.description }}</p>
-            <p v-if="option.key === 'oxr_api_opts'">免费远端服务会接收上传文档，服务稳定性不作保证。API Key 可留空。</p>
+            <p v-if="option.key === 'oxr_api_opts'">请填写并保存 API Base URL；未配置地址时不会自动使用免费服务。免费试用可填 https://free-oxr.somark.cn/api/v1，API Key 留空。</p>
           </div>
           <div class="option-actions" :class="{ editing: editingKey === option.key }">
             <template v-if="editingKey === option.key">
