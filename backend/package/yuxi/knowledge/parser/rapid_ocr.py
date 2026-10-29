@@ -16,6 +16,7 @@ from rapidocr import EngineType, LangDet, LangRec, ModelType, OCRVersion, RapidO
 
 from yuxi.knowledge.parser.base import BaseDocumentProcessor, OCRException
 from yuxi.knowledge.parser.capabilities import get_parser_capability
+from yuxi.knowledge.utils.pdf_utils import PDFIUM_LOCK
 from yuxi.utils import logger
 
 _CAPABILITY = get_parser_capability("rapid_ocr")
@@ -190,28 +191,39 @@ class RapidOCRParser(BaseDocumentProcessor):
         params = params or {}
         zoom_x = params.get("zoom_x", 2)
 
+        pdf_doc = None
         try:
             all_text = []
-            pdf_doc = pdfium.PdfDocument(pdf_path)
-            total_pages = len(pdf_doc)
+            with PDFIUM_LOCK:
+                pdf_doc = pdfium.PdfDocument(pdf_path)
+                total_pages = len(pdf_doc)
 
             logger.info(f"开始处理 PDF: {os.path.basename(pdf_path)} ({total_pages} 页)")
 
             # 流式处理每一页,避免一次性加载所有图片到内存
             for page_num in range(total_pages):
-                page = pdf_doc[page_num]
-
-                # pypdfium2 仅支持统一缩放（原 zoom_x/zoom_y 默认均为 2）
-                img_pil = page.render(scale=zoom_x).to_pil()
+                with PDFIUM_LOCK:
+                    page = pdf_doc[page_num]
+                    bitmap = None
+                    try:
+                        # 原生资源在锁内释放，OCR 只消费独立的像素副本。
+                        bitmap = page.render(scale=zoom_x)
+                        with bitmap.to_pil() as image:
+                            img_pil = image.copy()
+                    finally:
+                        if bitmap is not None:
+                            bitmap.close()
+                        page.close()
 
                 # 立即处理,不保存到列表
-                text = self.process_image(img_pil)
+                try:
+                    text = self.process_image(img_pil)
+                finally:
+                    img_pil.close()
                 all_text.append(text)
 
                 if (page_num + 1) % 10 == 0:
                     logger.info(f"已处理 {page_num + 1}/{total_pages} 页")
-
-            pdf_doc.close()
 
             result_text = "\n\n".join(all_text)
             logger.info(f"PDF OCR 完成: {os.path.basename(pdf_path)} - {len(result_text)} 字符")
@@ -223,6 +235,10 @@ class RapidOCRParser(BaseDocumentProcessor):
             error_msg = f"PDF OCR 处理失败: {str(e)}"
             logger.error(error_msg)
             raise OCRException(error_msg, self.get_service_name(), "pdf_processing_failed")
+        finally:
+            if pdf_doc is not None:
+                with PDFIUM_LOCK:
+                    pdf_doc.close()
 
     def process_file(self, file_path: str, params: dict | None = None) -> str:
         """

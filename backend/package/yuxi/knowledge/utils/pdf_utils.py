@@ -10,10 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 
 import pypdfium2 as pdfium
 
 from yuxi.knowledge.parser.base import DocumentParserException
+
+# PDFium 的原生 API 非线程安全，预检和所有渲染入口共享这一把锁。
+PDFIUM_LOCK = RLock()
 
 
 @dataclass(slots=True)
@@ -36,6 +40,12 @@ def _format_page_numbers(page_numbers: list[int], *, limit: int = 8) -> str:
 
 def validate_pdf_page_tree_loadable(file_path: str | Path) -> None:
     """校验 PDF 页树中的每一个页槽都能作为页面加载。"""
+    with PDFIUM_LOCK:
+        _validate_pdf_page_tree(file_path)
+
+
+def _validate_pdf_page_tree(file_path: str | Path) -> None:
+    """在共同 PDFium 锁内逐页预检并释放原生资源。"""
 
     path = Path(file_path)
 
@@ -69,7 +79,10 @@ def validate_pdf_page_tree_loadable(file_path: str | Path) -> None:
             try:
                 page = doc[page_index]
                 # 访问页面尺寸会触发页面对象基础解析，能提前暴露 null/非 Page 页槽。
-                _ = page.get_size()
+                try:
+                    _ = page.get_size()
+                finally:
+                    page.close()
             except Exception as exc:  # noqa: BLE001
                 issues.append(PDFPageLoadIssue(page_number=page_index + 1, message=str(exc)))
 

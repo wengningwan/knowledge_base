@@ -37,7 +37,10 @@
                   <template #icon><Download :size="16" /></template>
                   下载原文
                 </a-menu-item>
-                <a-menu-item key="markdown" :disabled="contentState.loading || !mergedContent">
+                <a-menu-item
+                  key="markdown"
+                  :disabled="downloadingMarkdown || contentState.loading || !mergedContent"
+                >
                   <template #icon><FileText :size="16" /></template>
                   下载 Markdown
                 </a-menu-item>
@@ -125,6 +128,7 @@ import { getWorkspaceKnowledgeFileContent } from '@/apis/workspace_api'
 import { mergeChunks } from '@/utils/chunkUtils'
 import { getPreviewTypeByPath, normalizePreviewResponse } from '@/utils/file_preview'
 import { parseDownloadFilename } from '@/utils/file_utils'
+import { inlineKnowledgeImages } from '@/utils/markdown_export'
 import {
   canPreviewChunks,
   canPreviewOriginal,
@@ -564,7 +568,8 @@ const handleDownloadOriginal = async () => {
 }
 
 // 下载 Markdown
-const handleDownloadMarkdown = () => {
+const handleDownloadMarkdown = async () => {
+  if (downloadingMarkdown.value) return
   const content = mergedContent.value
 
   if (!content) {
@@ -587,7 +592,8 @@ const handleDownloadMarkdown = () => {
     }
 
     // 创建 blob 并下载
-    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+    const portableContent = await inlineKnowledgeImages(content, documentApi.getImageBlob)
+    const blob = new Blob([portableContent], { type: 'text/markdown;charset=utf-8' })
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url

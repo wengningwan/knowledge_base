@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { createPinia, setActivePinia } from 'pinia'
 import { createServer } from 'vite'
+import { inlineKnowledgeImages } from '../../src/utils/markdown_export.js'
 
 const storageValues = new Map()
 globalThis.localStorage = {
@@ -40,6 +41,33 @@ async function withServer(run) {
     await server.close()
   }
 }
+
+test('Markdown 图片导出使用真实 API Response 并携带当前用户认证', async () => {
+  await withServer(async (server) => {
+    globalThis.window = { location: { href: '/current' } }
+    globalThis.__apiBoundaryMessages = []
+    storageValues.clear()
+    storageValues.set('user_token', 'user-token')
+    setActivePinia(createPinia())
+    const { useUserStore } = await server.ssrLoadModule('/src/stores/user.js')
+    const userStore = useUserStore()
+    userStore.token = 'user-token'
+    const source = '/api/knowledge/databases/kb_example/images/kb-images/figure.png'
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, source)
+      assert.equal(options.headers.Authorization, 'Bearer user-token')
+      return new Response('png', { headers: { 'content-type': 'image/png' } })
+    }
+    const { documentApi } = await server.ssrLoadModule('/src/apis/knowledge_api.js')
+    const content = await inlineKnowledgeImages(`![figure_p1_1](${source})`, documentApi.getImageBlob)
+    assert.equal(content, '![figure_p1_1](data:image/png;base64,cG5n)')
+    await assert.rejects(documentApi.getImageBlob('https://example.com/private.png'), /不支持/)
+    await assert.rejects(
+      documentApi.getImageBlob('/api/knowledge/databases/kb_example/images/../../system'),
+      /不支持/
+    )
+  })
+})
 
 test('公开登录 401 保留服务端错误且不清理当前会话', async () => {
   await withServer(async (server) => {

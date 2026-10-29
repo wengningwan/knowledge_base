@@ -17,6 +17,7 @@ import requests
 
 from yuxi.knowledge.parser.base import BaseDocumentProcessor, DocumentParserException
 from yuxi.knowledge.parser.capabilities import get_parser_capability
+from yuxi.knowledge.utils.pdf_utils import PDFIUM_LOCK
 from yuxi.utils import logger
 
 _CAPABILITY = get_parser_capability("deepseek_ocr")
@@ -119,11 +120,13 @@ class DeepSeekOCRParser(BaseDocumentProcessor):
 
     def _process_pdf(self, file_path: str, params: dict[str, Any]) -> str:
         """Process PDF by converting pages to images"""
-        pdf = pdfium.PdfDocument(file_path)
+        with PDFIUM_LOCK:
+            pdf = pdfium.PdfDocument(file_path)
         try:
             full_text = []
 
-            total_pages = len(pdf)
+            with PDFIUM_LOCK:
+                total_pages = len(pdf)
             logger.info(f"Processing PDF with {total_pages} pages")
 
             # pypdfium2 的 scale 是 72dpi 的倍数，200dpi 对应 scale=200/72
@@ -131,17 +134,30 @@ class DeepSeekOCRParser(BaseDocumentProcessor):
 
             for i in range(total_pages):
                 logger.debug(f"Processing page {i + 1}/{total_pages}")
-                bitmap = pdf[i].render(scale=scale).to_pil()
-                buf = io.BytesIO()
-                bitmap.save(buf, format="PNG")
-                img_bytes = buf.getvalue()
+                with PDFIUM_LOCK:
+                    page = pdf[i]
+                    bitmap = None
+                    try:
+                        bitmap = page.render(scale=scale)
+                        image = bitmap.to_pil()
+                        try:
+                            buf = io.BytesIO()
+                            image.save(buf, format="PNG")
+                            img_bytes = buf.getvalue()
+                        finally:
+                            image.close()
+                    finally:
+                        if bitmap is not None:
+                            bitmap.close()
+                        page.close()
 
                 page_text = self._call_api(img_bytes, "image/png", params)
                 full_text.append(page_text)
 
             return "\n\n".join(full_text)
         finally:
-            pdf.close()
+            with PDFIUM_LOCK:
+                pdf.close()
 
     def _process_image(self, file_path: str, params: dict[str, Any]) -> str:
         """Process single image file"""

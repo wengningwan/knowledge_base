@@ -638,6 +638,20 @@ def test_parse_pdf_keeps_explicit_disable_when_default_ocr_enabled(
     assert "Parser PDF content" in result
 
 
+def test_sync_knowledge_pdf_does_not_bypass_visual_transcription(monkeypatch):
+    """同步调用也遵守知识库的视觉转录与失败契约。"""
+    async def visual_parse(file, params):
+        """返回独立指定的视觉转录结果。"""
+        assert params["image_prefix"] == "kb_example/kb-images"
+        return "# Visual result\n\n$$W_0=V_0\\rho_M$$"
+
+    monkeypatch.setattr(parser_unified, "parse_pdf_disable", visual_parse)
+    result = parser_unified.parse_pdf(
+        "fake.pdf", params={"ocr_engine": "disable", "image_prefix": "kb_example/kb-images"}
+    )
+    assert result == "# Visual result\n\n$$W_0=V_0\\rho_M$$"
+
+
 def test_rapid_ocr_resolves_model_dir_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target_dir = tmp_path / "custom_models"
     monkeypatch.setenv("RAPIDOCR_MODEL_DIR", str(target_dir))

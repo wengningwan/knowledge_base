@@ -117,6 +117,20 @@ export const databaseApi = {
 // =============================================================================
 
 export const documentApi = {
+  /** 只通过知识库同源鉴权代理读取导出图片。 */
+  getImageBlob: async (source) => {
+    const url = new URL(source, 'https://yuxi.invalid')
+    if (
+      !/^\/api\/knowledge\/databases\/[^/?#]+\/images\/[^?#]+$/.test(source) ||
+      url.origin !== 'https://yuxi.invalid' ||
+      url.pathname !== source
+    ) {
+      throw new Error('不支持的知识库图片地址')
+    }
+    const response = await apiRequest(source, { method: 'GET' }, true, 'blob')
+    return response.blob()
+  },
+
   /**
    * 分页获取知识库文档列表
    * @param {string} kbId - 知识库ID

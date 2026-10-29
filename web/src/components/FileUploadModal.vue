@@ -78,7 +78,7 @@
           </div>
         </div>
 
-        <!-- 插图解析模型：OCR 未启用时对 PDF 提取文字层并解析插图 -->
+        <!-- OCR 未启用时，由视觉模型按页面转录 PDF 并解析插图 -->
         <div class="setting-row" v-if="uploadMode !== 'url' && !isOcrEnabled">
           <div class="col-item">
             <div class="setting-label">插图解析模型（不启用 OCR 时应用于 PDF 文件）</div>
@@ -92,7 +92,7 @@
               />
             </div>
             <p class="param-description">
-              不启用 OCR 时将直接提取 PDF 文字层，并提取插图交由此模型解析；上传 PDF 文件时必须选择
+              不启用 OCR 时，此模型逐页读取 PDF，保留公式、段落和图注，并生成单独标识的图片解释；上传 PDF 时必须选择
             </p>
           </div>
         </div>

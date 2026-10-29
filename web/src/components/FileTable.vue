@@ -44,7 +44,7 @@
             />
           </div>
           <p class="param-description">
-            不启用 OCR 时将直接提取 PDF 文字层，并提取插图交由此模型解析；解析 PDF 文件时必须选择
+            不启用 OCR 时，此模型逐页读取 PDF，保留公式、段落和图注，并生成单独标识的图片解释；解析 PDF 时必须选择
           </p>
         </div>
       </div>
