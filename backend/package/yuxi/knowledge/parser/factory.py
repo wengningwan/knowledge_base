@@ -99,6 +99,14 @@ class DocumentProcessorFactory:
         return processor.process_file(file_path, params)
 
     @classmethod
+    async def process_file_result(
+        cls, processor_type, file_path, params=None, processor_kwargs=None, control=None
+    ):
+        """异步解析完整产物，保留各引擎的字符串兼容入口。"""
+        processor = cls.get_processor(processor_type, **(processor_kwargs or {}))
+        return await processor.process_file_result(file_path, params, control)
+
+    @classmethod
     def check_health(cls, processor_type: str, **kwargs) -> dict[str, Any]:
         """
         检查指定处理器的健康状态

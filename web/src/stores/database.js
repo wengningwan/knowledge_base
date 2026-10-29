@@ -519,12 +519,12 @@ export const useDatabaseStore = defineStore('database', () => {
     }
   }
 
-  async function parseFiles(fileIds, params = {}) {
+  async function parseFiles(fileIds, params = {}, reparse = false) {
     const registerTask = taskerStore.createTaskRegistration()
     if (fileIds.length === 0) return
     state.chunkLoading = true
     try {
-      const data = await documentApi.parseDocuments(kbId.value, fileIds, params)
+      const data = await documentApi.parseDocuments(kbId.value, fileIds, params, reparse)
       if (data.status === 'success' || data.status === 'queued') {
         enableAutoRefresh('auto')
         message.success(data.message || '解析任务已提交')

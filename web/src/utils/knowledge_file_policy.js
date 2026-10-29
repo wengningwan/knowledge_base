@@ -26,7 +26,7 @@ const STATUS_ACTION = {
 
 const PARSED_PREVIEW_STATUSES = new Set(['done', 'parsed', 'indexed', 'error_indexing'])
 const SOURCE_ONLY_PREVIEW_STATUSES = new Set(['uploaded', 'error_parsing'])
-const TABLE_SELECTION_BLOCKED_STATUSES = new Set(['processing', 'waiting'])
+const TABLE_SELECTION_BLOCKED_STATUSES = new Set(['processing', 'waiting', 'parsing', 'indexing'])
 const DELETE_BLOCKED_STATUSES = new Set(['processing', 'parsing', 'indexing'])
 const PROCESSING_STATUSES = new Set(['processing', 'waiting', 'parsing', 'indexing'])
 const INDEXABLE_STATUSES = new Set(['parsed', 'error_indexing', 'done', 'indexed'])
@@ -71,6 +71,16 @@ export const canParseFile = (record) =>
 export const canIndexFile = (record) =>
   Boolean(record && !record.is_folder && INDEXABLE_STATUSES.has(record.status))
 
+/** 已有原文件且处于稳定解析终态时，允许显式重新解析。 */
+export const canReparseFile = (record) =>
+  Boolean(record && !record.is_folder && INDEXABLE_STATUSES.has(record.status) &&
+    record.file_type !== 'url' &&
+    ('has_original_file' in record ? record.has_original_file : record.minio_url || record.path))
+
+/** 旧文件也提供产物入口，由接口给出重新解析提示。 */
+export const canPreviewParseAssets = (record) => Boolean(record && !record.is_folder &&
+  (record.has_parse_assets || canPreviewParsed(record)))
+
 export const canReindexFile = (record) =>
   Boolean(record && !record.is_folder && (record.status === 'done' || record.status === 'indexed'))
 
@@ -112,6 +122,7 @@ export const canPreviewChunks = (record) =>
 
 export const canOpenFileDetail = (record) =>
   canPreviewParsed(record) ||
+  canPreviewParseAssets(record) ||
   Boolean(record && SOURCE_ONLY_PREVIEW_STATUSES.has(record.status) && canPreviewOriginal(record))
 
 export const getDefaultDetailView = (record) => {

@@ -30,6 +30,7 @@ from yuxi.knowledge.utils.kb_utils import resolve_processing_params
 from yuxi.models.providers.cache import model_cache
 from yuxi.repositories.knowledge_chunk_repository import KnowledgeChunkRepository
 from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
+from yuxi.services.knowledge_parse_service import complete_storage_mutation
 from yuxi.utils import hashstr, logger
 from yuxi.utils.datetime_utils import utc_isoformat
 
@@ -578,7 +579,7 @@ class MilvusKB(KnowledgeBase):
         last_error: Exception | None = None
         for attempt in range(MILVUS_CHUNK_UPSERT_ATTEMPTS):
             try:
-                await asyncio.to_thread(_upsert_milvus_records)
+                await complete_storage_mutation(asyncio.to_thread(_upsert_milvus_records))
                 return
             except Exception as e:
                 last_error = e
@@ -629,7 +630,7 @@ class MilvusKB(KnowledgeBase):
             collection.delete(expr)
             return True
 
-        if await asyncio.to_thread(delete_from_milvus):
+        if await complete_storage_mutation(asyncio.to_thread(delete_from_milvus)):
             logger.info(f"Deleted chunks for file {file_id} from Milvus")
         else:
             logger.info(f"File {file_id} not found in Milvus, skipping delete operation")
@@ -676,6 +677,20 @@ class MilvusKB(KnowledgeBase):
         return f'file_id in ["{joined_ids}"]'
 
     async def index_file(
+        self, kb_id: str, file_id: str, operator_id: str | None = None,
+        params: dict | None = None, *, embedding_model_spec: str | None,
+        additional_params: dict[str, Any], processing_task_id: str | None = None,
+        processing_owner: str | None = None,
+    ) -> dict:
+        """同文件发布、索引写入和删除共用操作锁。"""
+        async with KnowledgeFileRepository().lock_file_operation(kb_id, file_id):
+            return await self._index_file_owned(
+                kb_id, file_id, operator_id, params,
+                embedding_model_spec=embedding_model_spec, additional_params=additional_params,
+                processing_task_id=processing_task_id, processing_owner=processing_owner,
+            )
+
+    async def _index_file_owned(
         self,
         kb_id: str,
         file_id: str,
@@ -1213,7 +1228,7 @@ class MilvusKB(KnowledgeBase):
     async def delete_file_chunks_only(self, kb_id: str, file_id: str) -> None:
         """仅删除文件的chunks数据，保留元数据（用于更新操作）"""
         chunk_repo = KnowledgeChunkRepository()
-        if await chunk_repo.count_graph_indexed_by_file_id(file_id):
+        if await chunk_repo.has_graph_data_by_file_id(file_id):
             from yuxi.knowledge.graphs.milvus_graph_service import MilvusGraphService
 
             try:
@@ -1239,18 +1254,28 @@ class MilvusKB(KnowledgeBase):
         )
 
     async def delete_file(self, kb_id: str, file_id: str) -> None:
-        """删除文件（包括元数据）"""
-        # 先删除 Milvus 中的 chunks 数据
-        await self.delete_file_chunks_only(kb_id, file_id)
+        """在共用边界清理全部解析版本，成功后才删除元数据。"""
+        from yuxi.services.knowledge_parse_service import delete_document_storage
 
-        await KnowledgeFileRepository().delete(file_id)
+        repo = KnowledgeFileRepository()
+        async with repo.lock_file_operation(kb_id, file_id):
+            meta = await self._load_file_meta(kb_id, file_id)
+            if meta.get("status") in {"parsing", "indexing"}:
+                raise ValueError("文件正在处理，请取消或等待处理完成后删除")
+            await self.delete_file_chunks_only(kb_id, file_id)
+            await complete_storage_mutation(delete_document_storage(kb_id, file_id, meta))
+            await repo.delete(file_id)
 
     async def get_file_basic_info(self, kb_id: str, file_id: str) -> dict:
         """获取文件基本信息（仅元数据）"""
         return {"meta": await self._load_file_meta(kb_id, file_id)}
 
     async def _get_file_content_from_meta(self, file_id: str, file_meta: dict) -> dict:
-        content_info = {"lines": []}
+        pointer = file_meta.get("parse_assets_file")
+        content_info = {
+            "lines": [], "content": "", "content_error": None,
+            "attempt_id": pointer.rsplit("/", 2)[-2] if pointer else None,
+        }
         try:
             chunks = await KnowledgeChunkRepository().list_by_file_id(file_id)
             content_info["lines"] = [
@@ -1282,6 +1307,7 @@ class MilvusKB(KnowledgeBase):
                 content_info["content"] = content
             except Exception as e:
                 logger.error(f"Failed to read markdown file for {file_id}: {e}")
+                content_info["content_error"] = "论文正文读取失败，请重试"
 
         return content_info
 

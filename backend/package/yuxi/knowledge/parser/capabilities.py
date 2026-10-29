@@ -41,6 +41,13 @@ class ParserCapability:
 
 
 PARSER_CAPABILITIES = {
+    "oxr_ocr": ParserCapability(
+        service_name="oxr_ocr",
+        display_name="OXR",
+        supported_extensions=(".pdf", ".png", ".jpg", ".jpeg"),
+        module_path="yuxi.knowledge.parser.oxr",
+        class_name="OXRParser",
+    ),
     "rapid_ocr": ParserCapability(
         service_name="rapid_ocr",
         display_name="RapidOCR (ONNX)",

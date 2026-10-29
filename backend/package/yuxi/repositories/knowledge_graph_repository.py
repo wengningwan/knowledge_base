@@ -287,7 +287,8 @@ class KnowledgeGraphRepository:
                     .on_conflict_do_nothing(index_elements=["triple_id", "chunk_id"])
                 )
 
-    async def delete_file_references(self, file_id: str) -> tuple[list[str], list[str]]:
+    async def delete_file_references(self, file_id: str, *, before_commit=None) -> tuple[list[str], list[str]]:
+        """外部清理成功后提交引用删除，失败回滚并保留待删归属。"""
         async with pg_manager.get_async_session_context() as session:
             affected_entity_ids = list(
                 (
@@ -370,6 +371,8 @@ class KnowledgeGraphRepository:
                         delete(KnowledgeGraphEntity).where(KnowledgeGraphEntity.entity_id.in_(orphan_entity_ids))
                     )
 
+            if before_commit is not None:
+                await before_commit(orphan_entity_ids, orphan_triple_ids)
             return orphan_entity_ids, orphan_triple_ids
 
     async def delete_by_kb_id(self, kb_id: str) -> None:

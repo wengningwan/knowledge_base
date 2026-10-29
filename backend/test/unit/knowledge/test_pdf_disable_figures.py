@@ -88,332 +88,74 @@ def test_extract_figures_respects_max_limit(monkeypatch: pytest.MonkeyPatch):
         extract_pdf_figures("fake.pdf", max_figures=2)
 
 
-def _figure(page: int, index: int) -> PdfFigure:
-    """提供唯一原图载荷，便于确认模型只接收原图。"""
-    return PdfFigure(
-        page=page, index=index, name=f"p{page}_{index}", data=f"image-{page}-{index}".encode(), mime="image/png"
-    )
-
-
 _DISABLE_PARAMS = {"ocr_engine": "disable", "image_bucket": "kb-images", "image_prefix": "kb1/kb-images"}
 
 
-def _patch_parse_inputs(monkeypatch, texts, figures):
-    """替代输入和图片存储，不替代正文装配或模型请求。"""
-    monkeypatch.setattr(parser_unified, "extract_pdf_page_texts", lambda _: texts)
-    monkeypatch.setattr(pdf_figures, "extract_pdf_figures", lambda _, **kwargs: figures)
-    monkeypatch.setattr(
-        parser_unified, "_upload_image_to_minio", lambda data, filename, bucket, prefix: f"/proxy/{filename}"
-    )
-
-
 @pytest.mark.asyncio
-async def test_no_model_preserves_native_text_and_original_images(monkeypatch):
-    """没有模型也可提取正文和原图，说明缺失明确可见。"""
-    import yuxi.models.chat as chat_module
+async def test_native_model_explanation_never_enters_paper_markdown(monkeypatch):
+    """实际组合、渲染和模型消息路径保留图位，把解释与诊断留在 sidecar。"""
+    import yuxi.knowledge.parser.pdf_native as native
+    import yuxi.models.chat as chat
+    from yuxi.knowledge.parser.pdf_structure import finalize_document
+    from yuxi.services.pdf_document_service import build_native_document, enrich_document
 
-    texts = ["First page C2H4", "Second page has its own text"]
-    _patch_parse_inputs(monkeypatch, texts, [_figure(1, 1), _figure(2, 1)])
-
-    def forbidden(*args):
-        """未选择模型时不得创建模型请求。"""
-        pytest.fail("不应创建模型")
-
-    monkeypatch.setattr(chat_module, "select_model", forbidden)
-    result = await parser_unified.parse_pdf_disable("fake.pdf", dict(_DISABLE_PARAMS))
-    assert "\n\n".join(texts) in result
-    assert "![figure_p1_1](/proxy/p1_1.png)" in result
-    assert "![figure_p2_1](/proxy/p2_1.png)" in result
-    assert result.index("Second page") < result.index("## 插图与模型说明")
-    assert "图片说明未生成" in result
-    assert "未选择插图解析模型" in result
-
-
-@pytest.mark.asyncio
-async def test_model_only_receives_extracted_figure_not_page_or_native_text(monkeypatch):
-    """原文来自文字提取，只有原图进入模型，不要求返回 JSON。"""
-    import base64
-
-    import yuxi.models.chat as chat_module
-
-    texts = ["Native text stays exactly as extracted.\nOriginal Figure 1. caption"]
-    _patch_parse_inputs(monkeypatch, texts, [_figure(1, 1)])
+    source = _png_bytes(50, 30, noise=False)
+    monkeypatch.setattr(native, "read_native_blocks", lambda _: [
+        {"page": 1, "bbox": [.1, .1, .9, .2], "content": "Original text 12 mg."},
+        {"page": 1, "bbox": [.1, .6, .9, .65], "content": "Figure 1. Original caption."},
+        {"page": 1, "bbox": [.1, .7, .9, .8], "content": "Next paragraph."},
+    ])
+    monkeypatch.setattr(native, "read_native_image_regions", lambda _: [{"page": 1, "bbox": [.1, .3, .9, .59]}])
+    monkeypatch.setattr(native, "render_pdf_region", lambda *args: source)
+    received = []
 
     async def call(messages, stream=False):
-        """检查真正的多模态请求，而不是模拟正文转录。"""
-        assert len(messages) == 1
-        content = messages[0].content
-        assert "Native text" not in content[0]["text"]
-        images = [block for block in content if block["type"] == "image_url"]
-        assert len(images) == 1
-        encoded = images[0]["image_url"]["url"].split(",", 1)[1]
-        assert base64.b64decode(encoded) == b"image-1-1"
-        return SimpleNamespace(content="This is a plot.\nThe measured value is 1.2.")
+        received.extend(messages)
+        return SimpleNamespace(content="模型生成说明：a visible curve")
 
-    monkeypatch.setattr(chat_module, "select_model", lambda _: SimpleNamespace(call=call))
-    result = await parser_unified.parse_pdf_disable(
-        "fake.pdf", {**_DISABLE_PARAMS, "image_analysis_model": "p:vision"}
-    )
-    assert texts[0] in result
-    assert "> **插图解析（模型生成）**" in result
-    assert "> This is a plot.\n> The measured value is 1.2." in result
+    monkeypatch.setattr(chat, "select_model", lambda _: SimpleNamespace(call=call))
+    result = await build_native_document("source.pdf")
+    result.diagnostics.append({"reason": "解析提示仅在侧栏"})
+    await enrich_document(result, "source.pdf", {"ocr_engine": "disable", "image_analysis_model": "p:vision"})
+    finalize_document(result, {key: "/api/knowledge/test/image.png" for key in result.assets})
+    assert result.markdown.index("Original text") < result.markdown.index("![](") < result.markdown.index("Figure 1.") < result.markdown.index("Next paragraph.")
+    assert "模型生成" not in result.markdown and "解析提示" not in result.markdown
+    assert result.figures[0]["analysis_status"] == "completed"
+    assert "a visible curve" in result.sidecar()["figures"][0]["analysis"]
+    assert "Original text 12 mg" not in str(received[0].content)
+    assert "Figure 1. Original caption" in str(received[0].content)
 
 
 @pytest.mark.asyncio
-async def test_native_font_errors_are_flagged_without_model_rewriting_or_aborting(monkeypatch):
-    """文字层缺陷需提示复核，不能让图片模型猜测修复正文。"""
-    texts = ["Original C\ufffdN and equation\n≈\n≈\n≈\n≈\n≈"]
-    _patch_parse_inputs(monkeypatch, texts, [])
-    result = await parser_unified.parse_pdf_disable("fake.pdf", dict(_DISABLE_PARAMS))
-    assert texts[0] in result
-    assert "文字层存在异常符号" in result
-
-
-@pytest.mark.asyncio
-async def test_no_figures_does_not_require_or_invoke_a_model(monkeypatch):
-    """无插图的文本 PDF 直接使用文字层，即使模型配置当前不可用。"""
-    import yuxi.models.chat as chat_module
-
-    _patch_parse_inputs(monkeypatch, ["Native paragraph"], [])
-
-    def forbidden(*args):
-        """没有图片时不使用模型。"""
-        pytest.fail("不应选取模型")
-
-    monkeypatch.setattr(chat_module, "select_model", forbidden)
-    result = await parser_unified.parse_pdf_disable(
-        "fake.pdf", {**_DISABLE_PARAMS, "image_analysis_model": "p:unavailable"}
-    )
-    assert result == "Native paragraph"
-
-
-@pytest.mark.asyncio
-async def test_figure_failure_is_retried_and_does_not_discard_text_or_other_figures(monkeypatch):
-    """单图重试耗尽后保留正文、失败图原图和其他成功说明。"""
-    import base64
-
-    import yuxi.models.chat as chat_module
-
-    _patch_parse_inputs(monkeypatch, ["Native text"], [_figure(1, 1), _figure(1, 2)])
-    attempts = []
-
-    async def call(messages, stream=False):
-        """只使第一张图片调用失败。"""
-        encoded = messages[0].content[1]["image_url"]["url"].split(",", 1)[1]
-        image = base64.b64decode(encoded)
-        attempts.append(image)
-        if image == b"image-1-1":
-            raise RuntimeError("provider failure")
-        return SimpleNamespace(content="Second figure explanation")
-
-    monkeypatch.setattr(chat_module, "select_model", lambda _: SimpleNamespace(call=call))
-    result = await parser_unified.parse_pdf_disable(
-        "fake.pdf", {**_DISABLE_PARAMS, "image_analysis_model": "p:vision"}
-    )
-    assert attempts.count(b"image-1-1") == 2
-    assert attempts.count(b"image-1-2") == 1
-    assert "Native text" in result
-    assert "![figure_p1_1]" in result and "![figure_p1_2]" in result
-    assert "插图解析失败" in result
-    assert "Second figure explanation" in result
-
-
-@pytest.mark.asyncio
-async def test_transient_figure_failure_can_succeed_on_the_second_attempt(monkeypatch):
-    """有限重试只针对图像说明，不重做正文。"""
-    import yuxi.models.chat as chat_module
-
-    _patch_parse_inputs(monkeypatch, ["Native text"], [_figure(1, 1)])
-    attempts = []
+async def test_failed_figure_model_preserves_original_and_reports_separate_status(monkeypatch):
+    import yuxi.models.chat as chat
+    from yuxi.knowledge.parser.result import ParsedDocument
+    from yuxi.services.pdf_figure_analysis_service import analyze_document_figures
+    calls = []
 
     async def call(*args, **kwargs):
-        """第一次失败后返回正常说明。"""
-        attempts.append(1)
-        if len(attempts) == 1:
-            raise RuntimeError("temporary failure")
-        return SimpleNamespace(content="Recovered explanation")
+        calls.append(True)
+        raise ValueError("unavailable")
 
-    monkeypatch.setattr(chat_module, "select_model", lambda _: SimpleNamespace(call=call))
-    result = await parser_unified.parse_pdf_disable(
-        "fake.pdf", {**_DISABLE_PARAMS, "image_analysis_model": "p:vision"}
-    )
-    assert len(attempts) == 2
-    assert "Recovered explanation" in result
-    assert "插图解析失败" not in result
+    monkeypatch.setattr(chat, "select_model", lambda _: SimpleNamespace(call=call))
+    result = ParsedDocument(markdown="Source ![](asset://a)", figures=[{"id": "f", "asset_id": "a"}], assets={"a": {"data": _png_bytes(10, 10)}})
+    await analyze_document_figures(result, {"image_analysis_model": "p:vision"})
+    assert len(calls) == 2
+    assert result.markdown == "Source ![](asset://a)"
+    assert result.figures[0]["analysis_status"] == "failed"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("content", ["", "C\ufffdN", None])
-async def test_unusable_figure_description_has_an_explicit_status(monkeypatch, content):
-    """空、缺失或含乱码的模型回复不会无声消失。"""
-    import yuxi.models.chat as chat_module
+async def test_empty_native_document_cannot_claim_success(monkeypatch):
+    import yuxi.services.pdf_document_service as service
+    from yuxi.knowledge.parser.result import ParsedDocument
 
-    _patch_parse_inputs(monkeypatch, ["Native text"], [_figure(1, 1)])
+    async def empty(*args):
+        return ParsedDocument()
 
-    async def call(*args, **kwargs):
-        """模拟不可用的说明。"""
-        return SimpleNamespace(content=content)
-
-    monkeypatch.setattr(chat_module, "select_model", lambda _: SimpleNamespace(call=call))
-    result = await parser_unified.parse_pdf_disable(
-        "fake.pdf", {**_DISABLE_PARAMS, "image_analysis_model": "p:vision"}
-    )
-    assert "Native text" in result and "![figure_p1_1]" in result
-    assert "插图解析失败" in result
-
-
-@pytest.mark.asyncio
-async def test_invalid_image_model_is_visible_without_discarding_the_document(monkeypatch):
-    """模型配置错误保留原图并显示未完成状态。"""
-    import yuxi.models.chat as chat_module
-
-    _patch_parse_inputs(monkeypatch, ["Native text"], [_figure(1, 1)])
-
-    def unavailable(*args):
-        """模拟已选模型不存在。"""
-        raise ValueError("model unavailable")
-
-    monkeypatch.setattr(chat_module, "select_model", unavailable)
-    result = await parser_unified.parse_pdf_disable(
-        "fake.pdf", {**_DISABLE_PARAMS, "image_analysis_model": "p:missing"}
-    )
-    assert "Native text" in result and "![figure_p1_1]" in result
-    assert "所选插图解析模型不可用" in result
-
-
-@pytest.mark.asyncio
-async def test_image_upload_failure_retains_native_text(monkeypatch):
-    """存储故障在逐图状态中展示，不伪造图片或删除正文。"""
-    _patch_parse_inputs(monkeypatch, ["Native text"], [_figure(1, 1)])
-
-    def fail_upload(*args):
-        """模拟图片对象存储失败。"""
-        raise RuntimeError("storage failure")
-
-    monkeypatch.setattr(parser_unified, "_upload_image_to_minio", fail_upload)
-    result = await parser_unified.parse_pdf_disable("fake.pdf", dict(_DISABLE_PARAMS))
-    assert "Native text" in result and "原图上传失败" in result
-    assert "![figure_p1_1]" not in result
-
-
-@pytest.mark.asyncio
-async def test_image_only_pdf_cannot_publish_when_every_upload_fails(monkeypatch):
-    """扫描件没有文字且原图均无法保留时，提示不能冒充可用产物。"""
-    _patch_parse_inputs(monkeypatch, [""], [_figure(1, 1)])
-
-    def fail_upload(*args):
-        """模拟所有原图上传失败。"""
-        raise RuntimeError("storage failure")
-
-    monkeypatch.setattr(parser_unified, "_upload_image_to_minio", fail_upload)
-    with pytest.raises(DocumentParserException, match="所有原图均上传失败"):
-        await parser_unified.parse_pdf_disable("fake.pdf", dict(_DISABLE_PARAMS))
-
-
-@pytest.mark.asyncio
-async def test_image_only_pdf_retains_usable_originals_when_some_uploads_fail(monkeypatch):
-    """至少保留一张原图时可输出图片产物，并明确标记其他失败。"""
-    _patch_parse_inputs(monkeypatch, [""], [_figure(1, 1), _figure(1, 2)])
-
-    def upload(data, filename, bucket, prefix):
-        """只允许第二张原图上传。"""
-        if filename == "p1_1.png":
-            raise RuntimeError("storage failure")
-        return f"/proxy/{filename}"
-
-    monkeypatch.setattr(parser_unified, "_upload_image_to_minio", upload)
-    result = await parser_unified.parse_pdf_disable("fake.pdf", dict(_DISABLE_PARAMS))
-    assert "未提取到可用文字层" in result
-    assert "原图上传失败" in result
-    assert "![figure_p1_2](/proxy/p1_2.png)" in result
-
-
-@pytest.mark.asyncio
-async def test_model_response_blocks_only_publish_text(monkeypatch):
-    """不把推理块和 Python 列表表示写入图片说明。"""
-    import yuxi.models.chat as chat_module
-
-    _patch_parse_inputs(monkeypatch, ["Native text"], [_figure(1, 1)])
-
-    async def call(*args, **kwargs):
-        """返回混合模型内容块。"""
-        return SimpleNamespace(
-            content=[{"type": "reasoning", "text": "private reasoning"}, {"type": "text", "text": "Plot explanation"}]
-        )
-
-    monkeypatch.setattr(chat_module, "select_model", lambda _: SimpleNamespace(call=call))
-    result = await parser_unified.parse_pdf_disable(
-        "fake.pdf", {**_DISABLE_PARAMS, "image_analysis_model": "p:vision"}
-    )
-    assert "Plot explanation" in result and "private reasoning" not in result
-
-
-@pytest.mark.asyncio
-async def test_empty_core_extraction_fails_with_a_relevant_error(monkeypatch):
-    """真正没有可用原文或图片时提示选择 OCR，而非伪造成功文档。"""
-    _patch_parse_inputs(monkeypatch, [""], [])
-    with pytest.raises(DocumentParserException, match="没有可提取的文字或图片"):
-        await parser_unified.parse_pdf_disable("fake.pdf", dict(_DISABLE_PARAMS))
-
-
-def test_partial_figure_extraction_preserves_other_images_and_reports_problem(monkeypatch):
-    """损坏图片不阻断可用图像，并提供明确诊断。"""
-    _patch_pdf_reader(monkeypatch, [[_png_bytes(200, 200), b"broken", _png_bytes(220, 220)]])
-    warnings = []
-    figures = extract_pdf_figures("fake.pdf", warnings=warnings)
-    assert len(figures) == 2
-    assert len(warnings) == 1 and "无法解码" in warnings[0]
-
-
-def test_lazy_image_lookup_failure_does_not_drop_the_rest_of_the_page(monkeypatch):
-    """模拟 pypdf 索引时解码失败，同页前后好图均应保留。"""
-    first = SimpleNamespace(data=_png_bytes(200, 200))
-    last = SimpleNamespace(data=_png_bytes(220, 220))
-
-    class LazyImages:
-        """索引图片时才读取图像资源。"""
-
-        def __len__(self):
-            """返回资源数量而不解码。"""
-            return 3
-
-        def __getitem__(self, index):
-            """第二张资源读取失败。"""
-            if index == 1:
-                raise OSError("cannot decode image object")
-            return first if index == 0 else last
-
-    monkeypatch.setattr(
-        pdf_figures, "PdfReader", lambda _: SimpleNamespace(pages=[SimpleNamespace(images=LazyImages())])
-    )
-    warnings = []
-    figures = extract_pdf_figures("fake.pdf", warnings=warnings)
-    assert [figure.data for figure in figures] == [first.data, last.data]
-    assert len(warnings) == 1 and "第 2 个图片资源读取失败" in warnings[0]
-
-
-def test_figure_limit_can_return_available_images_with_a_visible_warning(monkeypatch):
-    """到达上限时保留已提图像并说明尚有未处理内容。"""
-    _patch_pdf_reader(monkeypatch, [[_png_bytes(200 + i, 200 + i) for i in range(3)]])
-    warnings = []
-    figures = extract_pdf_figures("fake.pdf", max_figures=2, warnings=warnings)
-    assert len(figures) == 2
-    assert warnings and "上限" in warnings[0]
-
-
-@pytest.mark.asyncio
-async def test_partial_extraction_warning_is_included_in_the_document(monkeypatch):
-    """提图诊断进入最终产物，而非只记录在日志里。"""
-    _patch_parse_inputs(monkeypatch, ["Native text"], [])
-
-    def extract(file, *, warnings):
-        """模拟页面图片资源损坏。"""
-        warnings.append("Page image resource could not be decoded")
-        return []
-
-    monkeypatch.setattr(pdf_figures, "extract_pdf_figures", extract)
-    result = await parser_unified.parse_pdf_disable("fake.pdf", dict(_DISABLE_PARAMS))
-    assert "Native text" in result and "Page image resource could not be decoded" in result
+    monkeypatch.setattr(service, "build_native_document", empty)
+    with pytest.raises(DocumentParserException, match="没有可提取"):
+        await parser_unified.parse_pdf_disable_result("source.pdf", dict(_DISABLE_PARAMS))
 
 
 def _patch_system_options(monkeypatch):
@@ -441,7 +183,7 @@ async def test_explicitly_cleared_model_does_not_restore_the_system_default(monk
     """页面清空图片模型即本次不调用模型，不能被默认值覆盖。"""
     _patch_system_options(monkeypatch)
     result = await resolve_ocr_task_params({**_DISABLE_PARAMS, "image_analysis_model": ""})
-    assert "image_analysis_model" not in result
+    assert result["image_analysis_model"] == ""
 
 
 @pytest.mark.asyncio

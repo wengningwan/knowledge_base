@@ -1,6 +1,8 @@
 import asyncio
+import json
 import threading
 import types
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -16,6 +18,7 @@ from yuxi.knowledge.implementations.milvus import (
     MilvusKB,
 )
 from yuxi.knowledge.read_models import KnowledgeBaseConfig
+from yuxi.knowledge.parser.result import ParsedDocument
 
 EMBEDDING_MODEL_SPEC = "test-provider:test-embedding"
 
@@ -90,6 +93,10 @@ def make_file_record(**overrides):
         "path": "/tmp/demo.md",
         "minio_url": None,
         "markdown_file": "minio://parsed/db/file-1.md",
+        "parse_assets_file": None,
+        "parse_runtime": None,
+        "processing_task_id": None,
+        "processing_owner": None,
         "status": FileStatus.PARSED,
         "content_hash": None,
         "file_size": 0,
@@ -115,14 +122,32 @@ class FakeKnowledgeFileRepository:
         self.update_calls = []
         self.conditional_update_calls = []
         self.deleted = []
+        self.active_file_locks = set()
+
+    @asynccontextmanager
+    async def lock_file_operation(self, kb_id: str, file_id: str, control=None):
+        """保留调用边界并执行真实控制检查；数据库锁由 integration 证明。"""
+        if control is not None:
+            await control.check_cancelled()
+        key = (kb_id, file_id)
+        assert key not in self.active_file_locks
+        self.active_file_locks.add(key)
+        try:
+            yield
+        finally:
+            self.active_file_locks.remove(key)
 
     async def get_by_file_id(self, file_id: str):
         return self.records.get(file_id)
 
-    async def update_fields_if_status(self, *, kb_id: str, file_id: str, allowed_statuses: set[str], data: dict):
+    async def update_fields_if_status(
+        self, *, kb_id: str, file_id: str, allowed_statuses: set[str], data: dict, **owner_filters
+    ):
         record = self.records.get(file_id)
         self.conditional_update_calls.append((kb_id, file_id, set(allowed_statuses), dict(data)))
         if record is None or record.kb_id != kb_id or record.status not in allowed_statuses:
+            return None
+        if any(getattr(record, key) != value for key, value in owner_filters.items()):
             return None
         for key, value in data.items():
             setattr(record, key, value)
@@ -382,7 +407,7 @@ async def test_index_file_persists_chunk_stats(monkeypatch):
 @pytest.mark.parametrize(
     ("operation", "expected_status", "expected_message"),
     [
-        ("parse", FileStatus.ERROR_PARSING, "File parsing was cancelled"),
+        ("parse", FileStatus.ERROR_PARSING, "解析任务已取消"),
         ("index", FileStatus.ERROR_INDEXING, "File indexing was cancelled"),
     ],
 )
@@ -399,7 +424,12 @@ async def test_cancellation_marks_file_retryable(monkeypatch, operation, expecte
             started.set()
             await asyncio.Event().wait()
 
-        monkeypatch.setattr("yuxi.services.ocr_service.parse_document", cancelled_step)
+        monkeypatch.setattr("yuxi.services.ocr_service.parse_document_result", cancelled_step)
+        monkeypatch.setattr(
+            "yuxi.storage.minio.get_minio_client",
+            lambda: types.SimpleNamespace(KB_BUCKETS={"images": "kb-images"}),
+        )
+        monkeypatch.setattr("yuxi.services.knowledge_parse_service.cleanup_unpublished_attempt", AsyncMock())
         task = asyncio.create_task(
             kb.parse_file(
                 "db",
@@ -450,7 +480,101 @@ async def test_cancellation_marks_file_retryable(monkeypatch, operation, expecte
     assert record.error_message == expected_message
 
 
-async def test_delete_file_chunks_only_resets_file_stats(monkeypatch):
+@pytest.mark.parametrize("retry_failed_reparse", [False, True], ids=["first-parse", "retry-failed-reparse"])
+async def test_parse_publishes_one_bundle_and_retry_clears_previous_indexes(monkeypatch, retry_failed_reparse):
+    """首次解析可取得 owner；失败重解析的普通重试仍清理上一版索引。"""
+    old_markdown = "minio://parsed/db/parsed/file-1/old/document.md"
+    old_assets = "minio://parsed/db/parsed/file-1/old/assets.json"
+    record = make_file_record(
+        status=FileStatus.INDEXED if retry_failed_reparse else FileStatus.UPLOADED,
+        markdown_file=old_markdown if retry_failed_reparse else None,
+        parse_assets_file=old_assets if retry_failed_reparse else None,
+        chunk_count=2 if retry_failed_reparse else 0,
+        token_count=10 if retry_failed_reparse else 0,
+    )
+    repo = FakeKnowledgeFileRepository({"file-1": record})
+    patch_file_repository(monkeypatch, repo)
+    objects = {}
+    parser_calls = []
+    cleanup_calls = []
+
+    async def upload(bucket_name, object_name, data):
+        """保留实际 bundle 字节以验证正文和 sidecar 的内容及归属。"""
+        assert (bucket_name, object_name) not in objects
+        objects[(bucket_name, object_name)] = data
+        return types.SimpleNamespace(url=f"minio://{bucket_name}/{object_name}")
+
+    async def delete_prefix(bucket_name, prefix):
+        """模拟只删除未发布 attempt 的对象。"""
+        for key in list(objects):
+            if key[0] == bucket_name and key[1].startswith(prefix):
+                del objects[key]
+
+    client = types.SimpleNamespace(
+        KB_BUCKETS={"parsed": "parsed", "images": "kb-images"},
+        ensure_bucket_exists=lambda bucket: None,
+        aupload_file=upload,
+        adelete_objects_by_prefix=delete_prefix,
+    )
+    monkeypatch.setattr("yuxi.storage.minio.get_minio_client", lambda: client)
+
+    async def parse_document_result(*, source, params, control):
+        """通过真实控制器核查 claim 后状态，且解析期间不持操作锁。"""
+        assert source == "/tmp/demo.md"
+        assert not repo.active_file_locks
+        await control.check_cancelled()
+        parser_calls.append(control.attempt_id)
+        assert params["image_prefix"] == f"db/kb-images/file-1/{control.attempt_id}"
+        if retry_failed_reparse and len(parser_calls) == 1:
+            raise RuntimeError("main parser unavailable")
+        return ParsedDocument(
+            markdown="# Original paper\n\nThe measured value is 5 A.",
+            figures=[{"analysis": "模型生成说明"}],
+            diagnostics=[{"reason": "需人工核对"}],
+        )
+
+    monkeypatch.setattr("yuxi.services.ocr_service.parse_document_result", parse_document_result)
+    kb = MilvusKB.__new__(MilvusKB)
+
+    async def delete_chunks(kb_id, file_id):
+        """清旧索引必须在同文件发布锁内，且新指针尚未发布。"""
+        assert (kb_id, file_id) in repo.active_file_locks
+        assert (record.markdown_file, record.parse_assets_file) == (old_markdown, old_assets)
+        cleanup_calls.append(file_id)
+        await repo.update_fields(file_id=file_id, kb_id=kb_id, data={"chunk_count": 0, "token_count": 0})
+
+    kb.delete_file_chunks_only = delete_chunks
+    if retry_failed_reparse:
+        with pytest.raises(RuntimeError, match="main parser unavailable"):
+            await kb.parse_file("db", "file-1", additional_params={}, reparse=True)
+        assert record.status == FileStatus.ERROR_PARSING
+        assert (record.markdown_file, record.parse_assets_file) == (old_markdown, old_assets)
+        assert (record.chunk_count, record.token_count) == (2, 10)
+        assert cleanup_calls == []
+
+    result = await kb.parse_file("db", "file-1", operator_id="user-1", additional_params={})
+
+    attempt_id = parser_calls[-1]
+    prefix = f"db/parsed/file-1/{attempt_id}"
+    assert result["status"] == FileStatus.PARSED
+    assert result["markdown_file"] == f"minio://parsed/{prefix}/document.md"
+    assert result["parse_assets_file"] == f"minio://parsed/{prefix}/assets.json"
+    assert result["has_parse_assets"] is True
+    assert objects[("parsed", f"{prefix}/document.md")].decode() == (
+        "# Original paper\n\nThe measured value is 5 A."
+    )
+    sidecar = json.loads(objects[("parsed", f"{prefix}/assets.json")])
+    assert (sidecar["kb_id"], sidecar["file_id"], sidecar["attempt_id"]) == ("db", "file-1", attempt_id)
+    assert sidecar["figures"][0]["analysis"] == "模型生成说明"
+    assert cleanup_calls == (["file-1"] if retry_failed_reparse else [])
+    assert (record.chunk_count, record.token_count) == (0, 0)
+    assert record.parse_runtime is None
+    assert record.processing_task_id is None and record.processing_owner is None
+    assert not repo.active_file_locks
+
+
+@pytest.mark.parametrize("has_graph_data", [False, True], ids=["no-graph", "structure-awaiting-vector"])
+async def test_delete_file_chunks_only_resets_file_stats(monkeypatch, has_graph_data):
     repos = []
 
     class FakeChunkRepo:
@@ -458,8 +582,8 @@ async def test_delete_file_chunks_only_resets_file_stats(monkeypatch):
             self.delete_calls = []
             repos.append(self)
 
-        async def count_graph_indexed_by_file_id(self, file_id):
-            return 0
+        async def has_graph_data_by_file_id(self, file_id):
+            return has_graph_data
 
         async def delete_by_file_id(self, file_id):
             self.delete_calls.append(file_id)
@@ -470,6 +594,10 @@ async def test_delete_file_chunks_only_resets_file_stats(monkeypatch):
         {"file-1": make_file_record(chunk_count=2, token_count=10, status=FileStatus.INDEXED)}
     )
     patch_file_repository(monkeypatch, file_repo)
+    graph_cleanup = AsyncMock()
+    monkeypatch.setattr(
+        "yuxi.knowledge.graphs.milvus_graph_service.MilvusGraphService.delete_file_graph", graph_cleanup
+    )
     kb = MilvusKB.__new__(MilvusKB)
 
     async def get_collection(kb_id):
@@ -484,6 +612,10 @@ async def test_delete_file_chunks_only_resets_file_stats(monkeypatch):
     assert file_repo.records["file-1"].chunk_count == 0
     assert file_repo.records["file-1"].token_count == 0
     assert file_repo.update_calls == [("file-1", "db", {"chunk_count": 0, "token_count": 0})]
+    if has_graph_data:
+        graph_cleanup.assert_awaited_once_with("db", "file-1")
+    else:
+        graph_cleanup.assert_not_awaited()
 
 
 @pytest.mark.parametrize("failure", ["graph", "vector"])
@@ -491,7 +623,7 @@ async def test_delete_file_keeps_metadata_when_external_deletion_fails(monkeypat
     """外部删除失败必须显式失败，并保留文件与 chunk 的重试依据。"""
     error = RuntimeError("external storage unavailable")
     chunk_repo = types.SimpleNamespace(
-        count_graph_indexed_by_file_id=AsyncMock(return_value=1 if failure == "graph" else 0),
+        has_graph_data_by_file_id=AsyncMock(return_value=failure == "graph"),
         delete_by_file_id=AsyncMock(),
     )
     monkeypatch.setattr(milvus_module, "KnowledgeChunkRepository", lambda: chunk_repo)
@@ -512,6 +644,43 @@ async def test_delete_file_keeps_metadata_when_external_deletion_fails(monkeypat
     assert file_repo.records["file-1"].chunk_count == 2
     assert file_repo.records["file-1"].token_count == 10
     chunk_repo.delete_by_file_id.assert_not_awaited()
+
+
+@pytest.mark.parametrize("storage_fails", [False, True])
+async def test_delete_file_removes_metadata_only_after_document_storage(monkeypatch, storage_fails):
+    """对象清理失败保留管理入口，成功时在对象清理之后移除文件行。"""
+    repo = FakeKnowledgeFileRepository({"file-1": make_file_record()})
+    patch_file_repository(monkeypatch, repo)
+    events = []
+    kb = MilvusKB.__new__(MilvusKB)
+
+    async def clear_chunks(kb_id, file_id):
+        """模拟已收敛的索引清理。"""
+        assert (kb_id, file_id) in repo.active_file_locks
+        events.append("chunks")
+
+    async def clear_storage(kb_id, file_id, meta):
+        """对象清理必须仍能读取文件元数据和当前解析指针。"""
+        assert (kb_id, file_id) in repo.active_file_locks
+        assert file_id in repo.records
+        assert meta["markdown_file"] == repo.records[file_id].markdown_file
+        events.append("storage")
+        if storage_fails:
+            raise RuntimeError("object cleanup unavailable")
+
+    kb.delete_file_chunks_only = clear_chunks
+    monkeypatch.setattr("yuxi.services.knowledge_parse_service.delete_document_storage", clear_storage)
+    if storage_fails:
+        with pytest.raises(RuntimeError, match="object cleanup unavailable"):
+            await kb.delete_file("db", "file-1")
+        assert "file-1" in repo.records
+        assert repo.deleted == []
+    else:
+        await kb.delete_file("db", "file-1")
+        assert "file-1" not in repo.records
+        assert repo.deleted == ["file-1"]
+    assert events == ["chunks", "storage"]
+    assert not repo.active_file_locks
 
 
 async def test_database_cleanup_stops_when_collection_drop_fails(monkeypatch):

@@ -11,6 +11,7 @@
 </template>
 
 <script setup>
+import { isKnowledgeImageProxyPath } from '@/utils/knowledge_images.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useThemeStore } from '@/stores/theme'
 import { useUserStore } from '@/stores/user'
@@ -43,7 +44,7 @@ let pendingMarkdownHtml = null
 
 const HTML_PREVIEW_HEIGHT_MESSAGE = 'yuxi-html-preview-height'
 
-const KB_IMAGE_PROXY_PATH_RE = /\/api\/knowledge\/databases\/[^/]+\/images\//
+
 
 const getHtmlPreviewCssNumber = (slot, property, fallback) => {
   const preview = slot.closest('.html-preview-render')
@@ -326,10 +327,10 @@ const enhanceKbImages = () => {
 
   root.querySelectorAll('img').forEach((img) => {
     const src = img.getAttribute('src')
-    if (!src || !KB_IMAGE_PROXY_PATH_RE.test(src) || img.dataset.kbImageLoaded) return
+    if (!src || !isKnowledgeImageProxyPath(src) || img.dataset.kbImageLoaded) return
 
     img.dataset.kbImageLoading = 'true'
-    fetch(src, { headers: userStore.getAuthHeaders() })
+    fetch(src, { headers: userStore.getAuthHeaders(), redirect: 'error' })
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         return response.blob()

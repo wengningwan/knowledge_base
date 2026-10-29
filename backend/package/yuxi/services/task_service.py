@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from functools import partial
@@ -62,10 +63,14 @@ class Task:
 class TaskContext:
     """向领域 Handler 提供受当前 attempt lease 保护的进度与取消边界。"""
 
-    def __init__(self, task_id: str, worker_id: str, payload: dict[str, Any] | None = None):
+    def __init__(
+        self, task_id: str, worker_id: str, payload: dict[str, Any] | None = None,
+        deadline: float | None = None,
+    ):
         self.task_id = task_id
         self.worker_id = worker_id
         self.payload = payload or {}
+        self.deadline = deadline
         self.cancellation_reason: str | None = None
         self._cancel_requested = False
         self._last_persisted_progress: float | None = None
@@ -459,7 +464,8 @@ async def process_task(ctx: dict[str, Any], task_id: str) -> None:
         await _publish_pending_after_slot_release()
         return
 
-    context = TaskContext(task_id, owner, record.payload or {})
+    timeout_seconds = float(record.timeout_seconds or TASKER_DEFAULT_TIMEOUT_SECONDS)
+    context = TaskContext(task_id, owner, record.payload or {}, deadline=time.monotonic() + timeout_seconds)
     execution = asyncio.create_task(handler(context), name=f"durable-task:{task_id}")
     heartbeat = asyncio.create_task(_heartbeat_task(context, execution), name=f"durable-task-heartbeat:{task_id}")
     try:

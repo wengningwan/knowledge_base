@@ -391,7 +391,7 @@ async def test_knowledge_v1_to_v2_adds_file_attempt_owner_idempotently() -> None
             "error_parsing",
             "service_interrupted: 旧执行实例中断，处理结果未知，请重试",
         )
-        assert KNOWLEDGE_SCHEMA_VERSION == 2
+        assert KNOWLEDGE_SCHEMA_VERSION == 3
     finally:
         await _drop_isolated_schema(schema, admin_engine, scoped_engine)
 
@@ -595,3 +595,20 @@ async def test_resource_selection_migration_is_atomic_and_does_not_repeat(fail_v
         assert await manager.get_schema_versions() == {"business": 9}
     finally:
         await _drop_isolated_schema(schema, admin_engine, engine)
+
+
+
+async def test_knowledge_v2_to_v3_preserves_existing_document_and_adds_nullable_parse_fields():
+    """在真实 PG 的旧版表上执行两次升级，检查旧正文与新字段。"""
+    schema, admin_engine, scoped_engine, manager = await _create_isolated_manager("pytest_parse_assets")
+    try:
+        async with scoped_engine.begin() as connection:
+            await connection.execute(text("CREATE TABLE knowledge_files (file_id VARCHAR(64) PRIMARY KEY, markdown_file TEXT)"))
+            await connection.execute(text("INSERT INTO knowledge_files VALUES ('old', 'original.md')"))
+        await manager.upgrade_knowledge_schema_v2_to_v3()
+        await manager.upgrade_knowledge_schema_v2_to_v3()
+        async with scoped_engine.connect() as connection:
+            row = (await connection.execute(text("SELECT markdown_file, parse_assets_file, parse_runtime FROM knowledge_files WHERE file_id = 'old'"))).one()
+        assert tuple(row) == ("original.md", None, None)
+    finally:
+        await _drop_isolated_schema(schema, admin_engine, scoped_engine)

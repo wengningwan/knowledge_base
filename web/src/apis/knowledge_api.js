@@ -234,12 +234,12 @@ export const documentApi = {
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/basic`)
   },
 
-  /**
-   * 获取文档解析内容和分块
-   * @param {string} kbId - 知识库ID
-   * @param {string} docId - 文档ID
-   * @returns {Promise} - 文档内容信息
-   */
+  /** 按需读取与解析 attempt 绑定的图片和校对结果。 */
+  getDocumentParseAssets: async (kbId, docId) => {
+    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/parse-assets`)
+  },
+
+  /** 获取解析正文、读取错误和分块，正文不由分块拼接替代。 */
   getDocumentContent: async (kbId, docId) => {
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/content`)
   },
@@ -292,10 +292,11 @@ export const documentApi = {
    * @param {Object} params - 处理参数（如 ocr_engine）
    * @returns {Promise} - 解析任务结果
    */
-  parseDocuments: async (kbId, fileIds, params = {}) => {
+  parseDocuments: async (kbId, fileIds, params = {}, reparse = false) => {
     return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/parse`, {
       file_ids: fileIds,
-      params
+      params,
+      reparse
     })
   },
 

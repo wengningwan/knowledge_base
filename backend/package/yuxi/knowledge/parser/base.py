@@ -59,6 +59,19 @@ class BaseDocumentProcessor(ABC):
         """
         pass
 
+    async def process_file_result(self, file_path, params=None, control=None):
+        """为现有字符串处理器提供惰性加载的结构化结果入口。"""
+        import asyncio
+
+        from yuxi.knowledge.parser.result import ParsedDocument
+
+        if control is not None:
+            await control.check_cancelled()
+        markdown = await asyncio.to_thread(self.process_file, file_path, params)
+        if control is not None:
+            await control.check_cancelled()
+        return ParsedDocument(markdown=markdown)
+
     @abstractmethod
     def check_health(self) -> dict[str, Any]:
         """

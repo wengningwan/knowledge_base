@@ -83,6 +83,8 @@ class KnowledgeBase(ABC):
             "file_type": record.file_type,
             "path": record.path,
             "markdown_file": record.markdown_file,
+            "parse_assets_file": getattr(record, "parse_assets_file", None),
+            "has_parse_assets": bool(getattr(record, "parse_assets_file", None)),
             "status": record.status,
             "content_hash": record.content_hash,
             "size": record.file_size,
@@ -111,6 +113,7 @@ class KnowledgeBase(ABC):
             "path": meta.get("path"),
             "minio_url": meta.get("minio_url"),
             "markdown_file": meta.get("markdown_file"),
+            "parse_assets_file": meta.get("parse_assets_file"),
             "status": meta.get("status"),
             "content_hash": meta.get("content_hash"),
             "file_size": meta.get("size"),
@@ -233,167 +236,100 @@ class KnowledgeBase(ABC):
         if operator_id:
             metadata["created_by"] = operator_id
 
-        await self._persist_file_meta(file_id, metadata)
+        from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
+
+        async with KnowledgeFileRepository().lock_file_operation(kb_id, file_id):
+            await self._persist_file_meta(file_id, metadata)
 
         return metadata
 
     async def parse_file(
-        self,
-        kb_id: str,
-        file_id: str,
-        operator_id: str | None = None,
-        *,
-        additional_params: dict[str, Any],
-        processing_task_id: str | None = None,
-        processing_owner: str | None = None,
+        self, kb_id: str, file_id: str, operator_id: str | None = None, *,
+        additional_params: dict[str, Any], processing_task_id: str | None = None,
+        processing_owner: str | None = None, task_context=None, reparse: bool = False,
     ) -> dict:
-        """
-        Parse file to Markdown and save to MinIO (Status: PARSING -> PARSED/ERROR_PARSING)
-
-        Args:
-            kb_id: Database ID
-            file_id: File ID
-            operator_id: ID of the user performing the operation
-
-        Returns:
-            Updated file metadata
-        """
-        # Validate current status - only allow parsing from these states
-        allowed_statuses = {
-            FileStatus.UPLOADED,
-            FileStatus.ERROR_PARSING,
-            "failed",  # Legacy status
-        }
+        """生成同次解析的正文和附属产物，持有owner的任务才能发布。"""
+        import uuid
 
         from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
-
-        file_repo = KnowledgeFileRepository()
-        owner_filter = (
-            {"processing_task_id": processing_task_id, "processing_owner": processing_owner}
-            if processing_task_id is not None and processing_owner is not None
-            else {}
+        from yuxi.services.knowledge_parse_service import (
+            FileParseControl, cleanup_unpublished_attempt, save_parse_bundle,
         )
-        claim_data = {
-            "status": FileStatus.PARSING,
-            "error_message": None,
-            "processing_task_id": processing_task_id,
-            "processing_owner": processing_owner,
-        }
-        if operator_id:
-            claim_data["updated_by"] = operator_id
-        claimed_record = await file_repo.update_fields_if_status(
-            kb_id=kb_id,
-            file_id=file_id,
-            allowed_statuses=allowed_statuses,
-            data=claim_data,
-        )
-        if claimed_record is None:
-            current_meta = await self._load_file_meta(kb_id, file_id)
-            current_status = current_meta.get("status")
-            raise ValueError(
-                f"Cannot parse file with status '{current_status}'. "
-                f"File must be in one of these states: {', '.join(allowed_statuses)}"
-            )
+        from yuxi.services.ocr_service import parse_document_result
+        from yuxi.storage.minio import get_minio_client
 
-        file_meta = self._file_record_to_meta(claimed_record)
-        file_path = file_meta.get("path")
-        if not file_path:
-            message = f"File {file_id} has no valid path in metadata"
-            update_data = {"status": FileStatus.ERROR_PARSING, "error_message": message}
+        attempt_id = uuid.uuid4().hex
+        control = FileParseControl(
+            kb_id, file_id, attempt_id, task_context,
+            task_id=processing_task_id, owner=processing_owner,
+        )
+        repo = KnowledgeFileRepository()
+        allowed = {FileStatus.UPLOADED, FileStatus.ERROR_PARSING, "failed"}
+        if reparse:
+            allowed.update({FileStatus.PARSED, FileStatus.INDEXED, FileStatus.ERROR_INDEXING, "done"})
+        async with repo.lock_file_operation(kb_id, file_id, control):
+            previous = await self._load_file_meta(kb_id, file_id)
+            if previous.get("is_folder"):
+                raise ValueError("文件夹不支持解析")
+            if reparse and not (previous.get("path") or previous.get("minio_url")):
+                raise ValueError("缺少原文件，无法重新解析")
+            claim = {
+                "status": FileStatus.PARSING, "error_message": None,
+                "processing_task_id": processing_task_id, "processing_owner": processing_owner,
+            }
             if operator_id:
-                update_data["updated_by"] = operator_id
-            update_data.update({"processing_task_id": None, "processing_owner": None})
-            updated_record = await file_repo.update_fields_if_status(
-                file_id=file_id,
-                kb_id=kb_id,
-                allowed_statuses={FileStatus.PARSING},
-                data=update_data,
-                **owner_filter,
+                claim["updated_by"] = operator_id
+            record = await repo.update_fields_if_status(
+                kb_id=kb_id, file_id=file_id, allowed_statuses=allowed, data=claim,
             )
-            if updated_record is None and processing_owner is not None:
-                raise asyncio.CancelledError("File processing owner was lost")
-            raise ValueError(message)
+            if record is None:
+                raise ValueError("文件正在处理或当前状态不允许解析")
+            file_meta = self._file_record_to_meta(record)
+            control.file_claimed = True
+            control.runtime = dict(getattr(record, "parse_runtime", None) or {})
 
         try:
-            from yuxi.services.ocr_service import parse_document
-
-            # Prepare params
+            file_path = file_meta.get("minio_url") or file_meta.get("path")
+            if not file_path:
+                raise ValueError("文件缺少可读取的原文路径")
             params = resolve_processing_params(
                 kb_additional_params=additional_params,
                 file_processing_params=file_meta.get("processing_params"),
             )
-            from yuxi.storage.minio import get_minio_client
-
             params["image_bucket"] = get_minio_client().KB_BUCKETS["images"]
-            params["image_prefix"] = f"{kb_id}/kb-images"
-
-            markdown_content = await parse_document(
-                source=file_path,
-                params=params,
+            params["image_prefix"] = f"{kb_id}/kb-images/{file_id}/{attempt_id}"
+            result = await parse_document_result(source=file_path, params=params, control=control)
+            if not result.markdown.strip() and not result.blocks:
+                raise ValueError("没有生成可用的论文内容")
+            markdown_url, assets_url = await save_parse_bundle(kb_id, file_id, attempt_id, result, control)
+            async with repo.lock_file_operation(kb_id, file_id, control):
+                await control.check_cancelled()
+                # 原文发布前清除与旧版关联的索引，失败时保留旧正文指针。
+                if reparse or previous.get("markdown_file") or previous.get("chunk_count"):
+                    cleanup = getattr(self, "delete_file_chunks_only", None)
+                    if cleanup is None:
+                        raise ValueError("当前知识库不支持重新解析派生数据清理")
+                    await cleanup(kb_id, file_id)
+                data = {
+                    "status": FileStatus.PARSED, "markdown_file": markdown_url,
+                    "parse_assets_file": assets_url, "parse_runtime": None,
+                    "error_message": None, "processing_task_id": None, "processing_owner": None,
+                }
+                if operator_id:
+                    data["updated_by"] = operator_id
+                await control.write_fields(data)
+            return await self._load_file_meta(kb_id, file_id)
+        except (Exception, asyncio.CancelledError) as exc:
+            await cleanup_unpublished_attempt(kb_id, file_id, attempt_id)
+            error = "解析任务已取消" if isinstance(exc, asyncio.CancelledError) else str(exc)
+            await repo.update_fields_if_status(
+                kb_id=kb_id, file_id=file_id, allowed_statuses={FileStatus.PARSING},
+                processing_task_id=processing_task_id, processing_owner=processing_owner,
+                data={
+                    "status": FileStatus.ERROR_PARSING, "error_message": error,
+                    "processing_task_id": None, "processing_owner": None,
+                },
             )
-
-            # Save Markdown to MinIO
-            markdown_file_path = await self._save_markdown_to_minio(kb_id, file_id, markdown_content)
-
-            # Update metadata
-            file_meta["status"] = FileStatus.PARSED
-            file_meta["markdown_file"] = markdown_file_path
-            file_meta["error"] = None
-            file_meta["updated_at"] = utc_isoformat()
-            if operator_id:
-                file_meta["updated_by"] = operator_id
-            update_data = {
-                "status": FileStatus.PARSED,
-                "markdown_file": markdown_file_path,
-                "error_message": None,
-                "processing_task_id": None,
-                "processing_owner": None,
-            }
-            if operator_id:
-                update_data["updated_by"] = operator_id
-            updated_record = await file_repo.update_fields_if_status(
-                file_id=file_id,
-                kb_id=kb_id,
-                allowed_statuses={FileStatus.PARSING},
-                data=update_data,
-                **owner_filter,
-            )
-            if updated_record is None:
-                raise asyncio.CancelledError("File processing owner was lost")
-
-            return file_meta
-
-        except (Exception, asyncio.CancelledError) as e:
-            if isinstance(e, asyncio.CancelledError):
-                current_task = asyncio.current_task()
-                if current_task is not None and current_task.cancelling():
-                    current_task.uncancel()
-            error_msg = "File parsing was cancelled" if isinstance(e, asyncio.CancelledError) else str(e)
-            logger.error(f"Failed to parse file {file_id}: {error_msg}")
-
-            file_meta["status"] = FileStatus.ERROR_PARSING
-            file_meta["error"] = error_msg
-            file_meta["updated_at"] = utc_isoformat()
-            if operator_id:
-                file_meta["updated_by"] = operator_id
-            update_data = {
-                "status": FileStatus.ERROR_PARSING,
-                "error_message": error_msg,
-                "processing_task_id": None,
-                "processing_owner": None,
-            }
-            if operator_id:
-                update_data["updated_by"] = operator_id
-            updated_record = await file_repo.update_fields_if_status(
-                file_id=file_id,
-                kb_id=kb_id,
-                allowed_statuses={FileStatus.PARSING},
-                data=update_data,
-                **owner_filter,
-            )
-            if updated_record is None and processing_owner is not None:
-                raise asyncio.CancelledError("File processing owner was lost")
-
             raise
 
     async def update_file_params(
@@ -435,6 +371,24 @@ class KnowledgeBase(ABC):
         record = await KnowledgeFileRepository().update_fields(file_id=file_id, kb_id=kb_id, data=update_data)
         if record is None:
             raise ValueError(f"File {file_id} not found")
+
+    async def get_file_parse_assets(self, kb_id: str, file_id: str) -> dict:
+        """读取当前文件同次解析的图片解释、校对与诊断。"""
+        import json
+
+        meta = await self._load_file_meta(kb_id, file_id)
+        pointer = meta.get("parse_assets_file")
+        if not pointer:
+            return {
+                "figures": [], "reviews": [], "diagnostics": [],
+                "attempt_id": None, "legacy_without_assets": True,
+            }
+        data = json.loads((await self._read_minio_bytes(pointer)).decode("utf-8"))
+        if not isinstance(data, dict) or data.get("schema_version") != 1:
+            raise ValueError("解析附属数据格式无效，请重新解析")
+        if data.get("file_id") != file_id or data.get("kb_id") != kb_id:
+            raise ValueError("解析附属数据不属于当前文件")
+        return {**data, "legacy_without_assets": False}
 
     async def _save_markdown_to_minio(self, kb_id: str, file_id: str, content: str) -> str:
         """Save markdown content to MinIO and return HTTP URL"""
@@ -500,6 +454,7 @@ class KnowledgeBase(ABC):
             "status": file_meta.get("status", "done"),
             "has_original_file": bool(original_path),
             "has_parsed_markdown": bool(file_meta.get("markdown_file")),
+            "has_parse_assets": bool(file_meta.get("parse_assets_file")),
         }
 
     def _sort_file_entries(self, entries: list[dict]) -> list[dict]:

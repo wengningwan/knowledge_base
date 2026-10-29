@@ -63,6 +63,8 @@ class KnowledgeFile(Base):
     path = Column(String(1024))
     minio_url = Column(String(1024))
     markdown_file = Column(String(1024))
+    parse_assets_file = Column(String(1024))
+    parse_runtime = Column(JSON_VALUE)
     status = Column(String(32), default="uploaded", index=True)
     content_hash = Column(String(128), index=True)
     file_size = Column(BigInteger)

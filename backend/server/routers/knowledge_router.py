@@ -88,6 +88,7 @@ class MoveDocumentRequest(BaseModel):
 class ParseDocumentsRequest(BaseModel):
     file_ids: list[str] = Field(default_factory=list)
     params: dict | None = None
+    reparse: bool = False
 
 
 class PendingParseDocumentsRequest(BaseModel):
@@ -132,27 +133,6 @@ media_types = {
     ".h": "text/x-chdr",
     ".hpp": "text/x-c++hdr",
 }
-
-
-async def _delete_document_storage_objects(kb_id: str, doc_id: str, file_path: str) -> None:
-    minio_client = get_minio_client()
-
-    if is_minio_url(file_path):
-        try:
-            bucket_name, object_name = parse_minio_url(file_path)
-            await minio_client.adelete_file(bucket_name, object_name)
-        except Exception as minio_error:
-            logger.warning(f"从MinIO删除原始文件失败: {minio_error}")
-
-    try:
-        await minio_client.adelete_file(minio_client.KB_BUCKETS["parsed"], f"{kb_id}/parsed/{doc_id}.md")
-    except Exception as minio_error:
-        logger.warning(f"从MinIO删除解析结果失败: {minio_error}")
-
-    try:
-        await minio_client.adelete_file(minio_client.KB_BUCKETS["parsed"], f"{kb_id}/preview/{doc_id}.pdf")
-    except Exception as minio_error:
-        logger.warning(f"从MinIO删除预览 PDF 失败: {minio_error}")
 
 
 async def _require_manage_permission_if_kb_id(kb_id: str | None, current_user: User) -> None:
@@ -849,6 +829,7 @@ async def _enqueue_document_action_task(
     operator_id: str,
     db_info: KnowledgeBaseDetail,
     action: str,
+    reparse: bool = False,
 ) -> dict:
     """提交管理端指定文件的解析或入库任务。"""
     label = "解析" if action == "parse" else "入库"
@@ -861,6 +842,7 @@ async def _enqueue_document_action_task(
                 "file_ids": file_ids,
                 "params": params,
                 "operator_id": operator_id,
+                "reparse": reparse,
             },
         )
         return {"message": f"{label}任务已提交", "status": "queued", "task_id": task.id}
@@ -928,9 +910,11 @@ async def parse_documents(
     if isinstance(payload, list):
         file_ids = payload
         params = None
+        reparse = False
     else:
         file_ids = payload.file_ids
         params = payload.params
+        reparse = payload.reparse
     file_ids = _validate_direct_document_action_file_ids(file_ids)
     logger.debug(f"Parse documents for kb_id {kb_id}: {file_ids} {params=}")
     db_info = await _ensure_database_supports_documents(kb_id, "文档解析")
@@ -941,6 +925,7 @@ async def parse_documents(
         operator_id=current_user.uid,
         db_info=db_info,
         action="parse",
+        reparse=reparse,
     )
 
 
@@ -1036,6 +1021,18 @@ async def get_document_basic_info(kb_id: str, doc_id: str, current_user: User = 
         return {"message": "Failed to get file basic info", "status": "failed"}
 
 
+@knowledge.get("/databases/{kb_id}/documents/{doc_id}/parse-assets")
+async def get_document_parse_assets(
+    kb_id: str, doc_id: str, current_user: User = Depends(require_knowledge_base_read)
+):
+    """在知识库与文档归属检查后返回独立解析产物。"""
+    await _ensure_database_supports_documents(kb_id, "解析产物查看")
+    try:
+        return await knowledge_base.get_file_parse_assets(kb_id, doc_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @knowledge.get("/databases/{kb_id}/documents/{doc_id}/content")
 async def get_document_content(kb_id: str, doc_id: str, current_user: User = Depends(require_knowledge_base_read)):
     """获取文档内容信息（chunks和lines）"""
@@ -1080,11 +1077,6 @@ async def batch_delete_documents(
                 deleted_count += 1
                 continue
 
-            file_path = file_meta_info.get("meta", {}).get("path", "")
-
-            await _delete_document_storage_objects(kb_id, doc_id, file_path)
-
-            # 无论MinIO删除是否成功，都继续从知识库删除
             await knowledge_base.delete_file(kb_id, doc_id)
             deleted_count += 1
 
@@ -1125,11 +1117,6 @@ async def delete_document(kb_id: str, doc_id: str, current_user: User = Depends(
             await knowledge_base.delete_folder(kb_id, doc_id)
             return {"message": "文件夹删除成功"}
 
-        file_path = file_meta_info.get("meta", {}).get("path", "")
-
-        await _delete_document_storage_objects(kb_id, doc_id, file_path)
-
-        # 无论MinIO删除是否成功，都继续从知识库删除
         await knowledge_base.delete_file(kb_id, doc_id)
 
         # 同步清理导图快照，移除已删除文件对应的叶子节点

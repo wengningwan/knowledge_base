@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -25,6 +27,59 @@ KB_FILE_STATS_CACHE_TTL = 10
 
 
 class KnowledgeFileRepository:
+    @asynccontextmanager
+    async def lock_file_operation(self, kb_id: str, file_id: str, control=None) -> AsyncIterator[None]:
+        """串行化同文件的发布、索引和删除，取消时事务自动释放锁。"""
+        key = int.from_bytes(
+            hashlib.blake2b(f"knowledge-file:{kb_id}:{file_id}".encode(), digest_size=8).digest(),
+            byteorder="big", signed=True,
+        )
+        database_key = int.from_bytes(hashlib.blake2b(f"knowledge-database:{kb_id}".encode(), digest_size=8).digest(), "big", signed=True)
+        async with pg_manager.get_async_session_context() as session:
+            while not await session.scalar(select(func.pg_try_advisory_xact_lock_shared(database_key))):
+                if control is not None:
+                    await control.check_cancelled()
+                await asyncio.sleep(0.2)
+            while not await session.scalar(select(func.pg_try_advisory_xact_lock(key))):
+                if control is not None:
+                    await control.check_cancelled()
+                await asyncio.sleep(0.2)
+            if control is not None:
+                await control.check_cancelled()
+            yield
+
+    @asynccontextmanager
+    async def lock_database_maintenance(self, kb_id: str) -> AsyncIterator[None]:
+        """图谱构建与整库删除独占变更边界，排除活动文档解析和索引。"""
+        key = int.from_bytes(hashlib.blake2b(f"knowledge-database:{kb_id}".encode(), digest_size=8).digest(), "big", signed=True)
+        async with pg_manager.get_async_session_context() as session:
+            await session.execute(select(func.pg_advisory_xact_lock(key)))
+            active = await session.scalar(select(KnowledgeFile.file_id).where(
+                KnowledgeFile.kb_id == kb_id, KnowledgeFile.status.in_(["parsing", "indexing"]),
+            ).limit(1))
+            if active is not None:
+                raise ValueError("知识库存在处理中文件，请取消或等待完成后执行")
+            yield
+
+    async def update_parse_in_session(
+        self, session, *, kb_id, file_id, task_id, owner, data
+    ) -> KnowledgeFile | None:
+        """在领域任务已锁定的事务内写入文件 checkpoint 或发布结果。"""
+        filters = [
+            KnowledgeFile.kb_id == kb_id,
+            KnowledgeFile.file_id == file_id,
+            KnowledgeFile.status == "parsing",
+            KnowledgeFile.processing_task_id == task_id,
+            KnowledgeFile.processing_owner == owner,
+        ]
+        record = await session.scalar(select(KnowledgeFile).where(*filters).with_for_update())
+        if record is None:
+            return None
+        for key, value in self._sanitize_data(data).items():
+            setattr(record, key, value)
+        await session.flush()
+        return record
+
     @asynccontextmanager
     async def lock_file_tree(self, kb_id: str) -> AsyncIterator[None]:
         """按知识库串行化目录树结构修改。"""
@@ -180,6 +235,8 @@ class KnowledgeFileRepository:
         "path",
         "minio_url",
         "markdown_file",
+        "parse_assets_file",
+        "parse_runtime",
         "status",
         "content_hash",
         "file_size",
@@ -790,6 +847,10 @@ class KnowledgeFileRepository:
                     .with_for_update()
                 )
                 if task_record is None:
+                    return None
+                if task_record.cancel_requested and sanitized_data.get("status") not in {
+                    "error_parsing", "error_indexing"
+                }:
                     return None
                 file_record = await session.scalar(select(KnowledgeFile).where(*filters).with_for_update())
                 if file_record is None:

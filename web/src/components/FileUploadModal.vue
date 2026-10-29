@@ -79,7 +79,7 @@
         </div>
 
         <!-- PDF 文字直接提取，模型只用于单独提取的插图 -->
-        <div class="setting-row" v-if="uploadMode !== 'url' && !isOcrEnabled">
+        <div class="setting-row" v-if="uploadMode !== 'url' && showFigureModel">
           <div class="col-item">
             <div class="setting-label">插图解析模型（可选，仅用于 PDF 插图）</div>
             <div class="setting-content">
@@ -88,12 +88,29 @@
                 placeholder="选择支持图像输入的模型"
                 display-name="short"
                 clearable
-                @select-model="(value) => (processingParams.image_analysis_model = value)"
+                @select-model="(value) => selectParseModel('image_analysis_model', value)"
               />
             </div>
             <p class="param-description">
-              不启用 OCR 时直接提取 PDF 文字，选择模型后单独解析插图；未选择模型时保留原图，不生成图片说明
+              noOCR / OXR PDF 的插图单独解析；未选择模型时保留原图，不生成图片说明
             </p>
+          </div>
+        </div>
+
+        <div class="setting-row" v-if="uploadMode !== 'url' && isOxrEnabled">
+          <div class="col-item">
+            <div class="setting-label">正文校对模型（可选，仅用于 OXR PDF）</div>
+            <div class="setting-content">
+              <ModelSelectorComponent
+                :model_spec="processingParams.document_review_model"
+                placeholder="未选择：不启用模型校对"
+                display-name="short"
+                clearable
+                @select-model="(value) => selectParseModel('document_review_model', value)"
+              />
+            </div>
+            <p class="param-description">可与插图模型相同。{{ processingParams.document_review_model ? '已启用模型校对' : '未启用模型校对' }}；OXR 自动比对 PDF 文字层。</p>
+            <p class="param-description">免费远端服务会接收文档，服务稳定性不作保证。</p>
           </div>
         </div>
 
@@ -331,6 +348,7 @@ import { buildChunkParamsPayload } from '@/utils/chunkUtils'
 import ChunkParamsConfig from '@/components/ChunkParamsConfig.vue'
 import OCRSelector from '@/components/OCRSelector.vue'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
+import { resolveDocumentParseParams, buildDocumentParseParams } from '@/utils/document_parse_params'
 import WorkspacePathPicker from '@/components/WorkspacePathPicker.vue'
 
 const props = defineProps({
@@ -751,19 +769,22 @@ const isWorkspaceFileSelectable = (entry) => isSupportedExtension(entry.name || 
 
 const ocrEngineTouched = ref(false)
 
-// 解析参数
-const processingParams = ref({
-  ocr_engine: DEFAULT_OCR_ENGINE,
-  image_analysis_model: ''
-})
-
-// 预填系统默认插图解析模型（用户已手动选择时不覆盖）
-const applyDefaultImageAnalysisModel = () => {
-  if (processingParams.value.image_analysis_model) return
-  processingParams.value.image_analysis_model = String(
-    configStore.config?.default_image_analysis_model || ''
-  )
+// 只在首次使用时继承默认模型；用户清空后保留显式空值。
+const modelSelectionTouched = new Set()
+const processingParams = ref(resolveDocumentParseParams({}, configStore.config, DEFAULT_OCR_ENGINE))
+const selectParseModel = (key, value) => {
+  modelSelectionTouched.add(key)
+  processingParams.value[key] = value || ''
 }
+const applyDefaultImageAnalysisModel = () => {
+  for (const key of ['image_analysis_model', 'document_review_model']) {
+    if (!modelSelectionTouched.has(key)) {
+      processingParams.value[key] = String(configStore.config?.[`default_${key}`] || '')
+    }
+  }
+}
+const isOxrEnabled = computed(() => processingParams.value.ocr_engine === 'oxr_ocr')
+const showFigureModel = computed(() => ['disable', 'oxr_ocr'].includes(processingParams.value.ocr_engine))
 
 // 自动入库相关
 const autoIndex = ref(false)
@@ -884,7 +905,7 @@ watch(
 )
 
 watch(
-  () => configStore.config?.default_image_analysis_model,
+  () => [configStore.config?.default_image_analysis_model, configStore.config?.default_document_review_model],
   () => {
     if (props.visible) applyDefaultImageAnalysisModel()
   }
@@ -1250,7 +1271,7 @@ const chunkData = async () => {
         }
       }
 
-      const params = { ...processingParams.value, content_hashes, file_sizes }
+      const params = { ...buildDocumentParseParams(processingParams.value), content_hashes, file_sizes }
       if (autoIndex.value) {
         params.auto_index = true
         Object.assign(params, buildAutoIndexParams())
@@ -1309,7 +1330,7 @@ const chunkData = async () => {
 
     try {
       store.state.chunkLoading = true
-      const params = { ...processingParams.value }
+      const params = { ...buildDocumentParseParams(processingParams.value) }
       if (autoIndex.value) {
         params.auto_index = true
         Object.assign(params, buildAutoIndexParams())
@@ -1395,7 +1416,7 @@ const chunkData = async () => {
 
   try {
     store.state.chunkLoading = true
-    const params = { ...processingParams.value, content_hashes, file_sizes }
+    const params = { ...buildDocumentParseParams(processingParams.value), content_hashes, file_sizes }
     if (Object.keys(source_paths).length > 0) {
       params.source_paths = source_paths
     }

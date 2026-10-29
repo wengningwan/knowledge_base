@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,6 +20,16 @@ from yuxi.knowledge.graphs.extractors.base import (
 from yuxi.knowledge.graphs.milvus_graph_service import MilvusGraphService
 from yuxi.knowledge.graphs.milvus_graph_vector_store import MilvusGraphVectorStore
 from yuxi.storage.postgres.models_knowledge import KnowledgeGraphEntity, KnowledgeGraphTriple
+
+
+@pytest.fixture(autouse=True)
+def isolated_maintenance_lock(monkeypatch):
+    """本模块验证图谱流水线；PG互斥由真实数据库集成测试覆盖。"""
+    @asynccontextmanager
+    async def lock(self, kb_id):
+        yield
+
+    monkeypatch.setattr("yuxi.repositories.knowledge_file_repository.KnowledgeFileRepository.lock_database_maintenance", lock)
 
 
 def _raw_graph_node(node_id: str, *, labels: list[str] | None = None, name: str | None = None) -> dict:

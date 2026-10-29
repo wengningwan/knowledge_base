@@ -1,5 +1,6 @@
 from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -675,7 +676,8 @@ async def test_virtual_folder_migration_uses_registered_durable_handler(monkeypa
     )
 
 
-async def test_parse_documents_accepts_payload_with_params(monkeypatch):
+@pytest.mark.parametrize("reparse", [False, True])
+async def test_parse_documents_accepts_payload_with_params(monkeypatch, reparse):
     """parse_documents 支持传入包含 params 的对象并更新文件参数。"""
     captured = {"updated": [], "parsed": []}
 
@@ -688,8 +690,9 @@ async def test_parse_documents_accepts_payload_with_params(monkeypatch):
     async def fake_update_file_params(kb_id: str, file_id: str, params: dict, operator_id: str | None = None):
         captured["updated"].append({"kb_id": kb_id, "file_id": file_id, "params": params, "operator_id": operator_id})
 
-    async def fake_parse_file(kb_id: str, file_id: str, operator_id: str | None = None, **_kwargs):
+    async def fake_parse_file(kb_id: str, file_id: str, operator_id: str | None = None, **kwargs):
         captured["parsed"].append({"kb_id": kb_id, "file_id": file_id, "operator_id": operator_id})
+        captured["parse_control"] = kwargs
         return {"file_id": file_id, "status": "parsed"}
 
     async def fake_enqueue(name: str, task_type: str, payload: dict):
@@ -710,12 +713,18 @@ async def test_parse_documents_accepts_payload_with_params(monkeypatch):
     params = {"ocr_engine": "rapid_ocr"}
     result = await knowledge_router.parse_documents(
         "kb_1",
-        payload=knowledge_router.ParseDocumentsRequest(file_ids=["file_1"], params=params),
+        payload=knowledge_router.ParseDocumentsRequest(file_ids=["file_1"], params=params, reparse=reparse),
         current_user=SimpleNamespace(uid="uid-user"),
     )
 
     assert result["status"] == "queued"
     assert captured["payload"]["params"] == params
+    assert captured["payload"]["reparse"] is reparse
+    assert "reparse" not in captured["updated"][0]["params"]
+    assert captured["parse_control"]["reparse"] is reparse
+    assert captured["parse_control"]["processing_task_id"] == "task_1"
+    assert captured["parse_control"]["processing_owner"] == "worker_1"
+    assert isinstance(captured["parse_control"]["task_context"], FakeTaskContext)
     assert captured["updated"] == [{"kb_id": "kb_1", "file_id": "file_1", "params": params, "operator_id": "uid-user"}]
     assert captured["parsed"] == [{"kb_id": "kb_1", "file_id": "file_1", "operator_id": "uid-user"}]
 
@@ -773,3 +782,52 @@ async def test_parse_pending_documents_uses_params(monkeypatch):
         {"kb_id": "kb_1", "file_id": "file_pending_1", "params": params, "operator_id": "uid-user"}
     ]
     assert captured["parsed"] == [{"kb_id": "kb_1", "file_id": "file_pending_1", "operator_id": "uid-user"}]
+
+
+@pytest.mark.parametrize("deletion_fails", [False, True])
+async def test_delete_document_delegates_storage_and_updates_mindmap_only_on_success(monkeypatch, deletion_fails):
+    """文档资源由删除用例清理，HTTP 层只在删除完成后同步导图。"""
+    monkeypatch.setattr(knowledge_router, "_ensure_database_supports_documents", AsyncMock())
+    monkeypatch.setattr(
+        knowledge_router.knowledge_base,
+        "get_file_basic_info",
+        AsyncMock(return_value={"meta": {"is_folder": False, "filename": "paper.pdf"}}),
+    )
+    delete_file = AsyncMock(side_effect=RuntimeError("storage unavailable") if deletion_fails else None)
+    remove_mindmap = AsyncMock()
+    monkeypatch.setattr(knowledge_router.knowledge_base, "delete_file", delete_file)
+    monkeypatch.setattr(knowledge_router, "remove_file_from_mindmap", remove_mindmap)
+
+    if deletion_fails:
+        with pytest.raises(HTTPException) as caught:
+            await knowledge_router.delete_document("kb_1", "file_1", current_user=SimpleNamespace(uid="user_1"))
+        assert caught.value.status_code == 400
+        assert "storage unavailable" in caught.value.detail
+        remove_mindmap.assert_not_awaited()
+    else:
+        result = await knowledge_router.delete_document("kb_1", "file_1", current_user=SimpleNamespace(uid="user_1"))
+        assert result == {"message": "删除成功"}
+        remove_mindmap.assert_awaited_once_with("kb_1", "file_1", "paper.pdf")
+    delete_file.assert_awaited_once_with("kb_1", "file_1")
+
+
+async def test_batch_delete_preserves_failed_document_mindmap_entry(monkeypatch):
+    """部分删除失败时只移除已成功文件的导图条目。"""
+    monkeypatch.setattr(knowledge_router, "_ensure_database_supports_documents", AsyncMock())
+    monkeypatch.setattr(
+        knowledge_router.knowledge_base,
+        "get_file_basic_info",
+        AsyncMock(side_effect=lambda kb_id, file_id: {"meta": {"filename": f"{file_id}.pdf"}}),
+    )
+    delete_file = AsyncMock(side_effect=[None, RuntimeError("object cleanup unavailable")])
+    remove_mindmap = AsyncMock()
+    monkeypatch.setattr(knowledge_router.knowledge_base, "delete_file", delete_file)
+    monkeypatch.setattr(knowledge_router, "batch_remove_files_from_mindmap", remove_mindmap)
+
+    result = await knowledge_router.batch_delete_documents(
+        "kb_1", ["file_ok", "file_failed"], current_user=SimpleNamespace(uid="user_1")
+    )
+
+    assert result["deleted_count"] == 1
+    assert result["failed_items"] == [{"doc_id": "file_failed", "error": "object cleanup unavailable"}]
+    remove_mindmap.assert_awaited_once_with("kb_1", [("file_ok", "file_ok.pdf")])

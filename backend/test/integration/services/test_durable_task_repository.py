@@ -844,3 +844,79 @@ async def test_concurrent_dedupe_creates_one_active_task(durable_task_schema) ->
     reused = [(record.id, is_created) for record, is_created in results if not is_created]
     assert len(created) == 1
     assert reused == [(created[0][0], False)]
+
+
+
+async def test_parse_checkpoint_survives_cancel_flag_but_publication_is_rejected(durable_task_schema):
+    """取消只允许记录已知远端副作用，MD/sidecar发布仍在同一事务拒绝。"""
+    from yuxi.services.knowledge_parse_service import FileParseControl
+
+    kb_id, file_id, task_id = "kb_parse_cancel", "file_parse_cancel", uuid.uuid4().hex
+    tasks = TaskRepository()
+    await tasks.create(task_id, _task_data())
+    _, claimed = await tasks.claim(task_id, worker_id="owner", lease_seconds=30)
+    assert claimed
+    async with durable_task_schema.get_async_session_context() as session:
+        session.add(KnowledgeBase(kb_id=kb_id, name="parse", kb_type="milvus"))
+        await session.flush()
+        session.add(KnowledgeFile(kb_id=kb_id, file_id=file_id, filename="source.pdf", status="parsing", processing_task_id=task_id, processing_owner="owner", markdown_file="old.md", parse_assets_file="old.json"))
+        await session.execute(text("UPDATE tasks SET cancel_requested=1 WHERE id=:task"), {"task": task_id})
+    context = TaskContext(task_id, "owner", {})
+    control = FileParseControl(kb_id, file_id, "attempt", context)
+    await control.save_checkpoint({"oxr": {"remote_task_id": "known-submission"}})
+    with pytest.raises(asyncio.CancelledError):
+        await control.write_fields({"markdown_file": "new.md", "parse_assets_file": "new.json", "status": "parsed"})
+    row = await KnowledgeFileRepository().get_by_file_id(file_id)
+    assert row.parse_runtime == {"oxr": {"remote_task_id": "known-submission"}}
+    assert (row.markdown_file, row.parse_assets_file, row.status) == ("old.md", "old.json", "parsing")
+
+
+async def test_file_operation_lock_serializes_only_same_document(durable_task_schema):
+    """独立会话必须等待同文件锁，其它文件继续，释放后下一会话才能进入。"""
+    repo = KnowledgeFileRepository()
+    entered = asyncio.Event()
+
+    async def competing():
+        async with repo.lock_file_operation("kb", "file"):
+            entered.set()
+
+    task = None
+    try:
+        async with repo.lock_file_operation("kb", "file"):
+            task = asyncio.create_task(competing())
+            await asyncio.sleep(0.1)
+            assert not entered.is_set()
+            async with repo.lock_file_operation("kb", "other"):
+                assert not entered.is_set()
+        await asyncio.wait_for(task, 2)
+        assert entered.is_set()
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
+
+
+async def test_database_maintenance_excludes_file_mutations(durable_task_schema):
+    """真实PG维护锁持有期间，文件共享锁不可进入，释放后继续。"""
+    repo = KnowledgeFileRepository()
+    entered = asyncio.Event()
+
+    async def mutate_file():
+        async with repo.lock_file_operation("maintenance_kb", "file"):
+            entered.set()
+
+    task = None
+    try:
+        async with repo.lock_database_maintenance("maintenance_kb"):
+            task = asyncio.create_task(mutate_file())
+            await asyncio.sleep(0.1)
+            assert not entered.is_set()
+        await asyncio.wait_for(task, 2)
+        assert entered.is_set()
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)

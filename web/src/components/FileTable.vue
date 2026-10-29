@@ -32,7 +32,7 @@
           </div>
           <p class="param-description">选择用于识别 PDF 和图片中文字的 OCR 引擎</p>
         </div>
-        <div class="setting-item" v-if="!isParseOcrEnabled">
+        <div class="setting-item" v-if="showParseFigureModel">
           <div class="setting-label">插图解析模型（可选，仅用于 PDF 插图）</div>
           <div class="setting-content">
             <ModelSelectorComponent
@@ -44,9 +44,26 @@
             />
           </div>
           <p class="param-description">
-            不启用 OCR 时直接提取 PDF 文字，选择模型后单独解析插图；未选择模型时保留原图，不生成图片说明
+            noOCR / OXR PDF 的插图单独解析；未选择模型时保留原图，不生成图片说明
           </p>
         </div>
+        <div class="setting-item" v-if="isParseOxrEnabled">
+          <div>
+            <div class="setting-label">正文校对模型（可选，仅用于 OXR PDF）</div>
+            <div class="setting-content">
+              <ModelSelectorComponent
+                :model_spec="parseParams.document_review_model"
+                placeholder="未选择：不启用模型校对"
+                display-name="short"
+                clearable
+                @select-model="(value) => (parseParams.document_review_model = value)"
+              />
+            </div>
+            <p class="param-description">可与插图模型相同。{{ parseParams.document_review_model ? '已启用模型校对' : '未启用模型校对' }}；OXR 自动比对 PDF 文字层。</p>
+            <p class="param-description">免费远端服务会接收文档，服务稳定性不作保证。</p>
+          </div>
+        </div>
+
       </div>
     </a-modal>
 
@@ -258,6 +275,9 @@
             >
               批量解析
             </a-button>
+            <a-button type="link" @click="handleBatchReparse" :disabled="lock || !canBatchReparse" :icon="h(RotateCw, { size: 16 })">
+              批量重新解析
+            </a-button>
             <a-button
               type="link"
               @click="handleBatchIndex"
@@ -439,6 +459,17 @@
                     {{ getFilePrimaryAction(row)?.label || '解析文件' }}
                   </a-button>
 
+                  <a-button
+                    v-if="!readonly && canReparseFile(row)"
+                    type="text"
+                    block
+                    @click="handleReparseFile(row)"
+                    :disabled="lock"
+                  >
+                    <template #icon><component :is="h(RotateCw)" size="14" /></template>
+                    重新解析
+                  </a-button>
+
                   <!-- Index Action -->
                   <a-button
                     v-if="!readonly && getFilePrimaryAction(row)?.type === FILE_ACTIONS.INDEX"
@@ -492,6 +523,7 @@ import { useDatabaseStore } from '@/stores/database'
 import { useConfigStore } from '@/stores/config'
 import OCRSelector from '@/components/OCRSelector.vue'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
+import { resolveDocumentParseParams, buildDocumentParseParams } from '@/utils/document_parse_params'
 import { message, Modal } from 'ant-design-vue'
 import { documentApi } from '@/apis/knowledge_api'
 import {
@@ -503,6 +535,7 @@ import {
   canOpenFileDetail,
   canParseFile,
   canReindexFile,
+  canReparseFile,
   canSelectFile,
   getFilePrimaryAction,
   getFileStatusSortWeight,
@@ -860,20 +893,10 @@ const isPendingParseOperation = ref(false)
 const pendingParseTotal = ref(0)
 const defaultOcrEngine = ref(DEFAULT_OCR_ENGINE)
 
-const isParseOcrEnabled = computed(() => parseParams.value.ocr_engine !== 'disable')
-
-const resolveDefaultOcrEngine = () => {
-  return configStore.config?.default_ocr_engine || defaultOcrEngine.value || DEFAULT_OCR_ENGINE
-}
-
-const resolveDefaultImageAnalysisModel = () => {
-  return String(configStore.config?.default_image_analysis_model || '')
-}
-
-const parseParams = ref({
-  ocr_engine: resolveDefaultOcrEngine(),
-  image_analysis_model: resolveDefaultImageAnalysisModel()
-})
+const isReparseOperation = ref(false)
+const isParseOxrEnabled = computed(() => parseParams.value.ocr_engine === 'oxr_ocr')
+const showParseFigureModel = computed(() => ['disable', 'oxr_ocr'].includes(parseParams.value.ocr_engine))
+const parseParams = ref(resolveDocumentParseParams({}, configStore.config, defaultOcrEngine.value))
 
 const pendingParseTotalText = computed(() =>
   Number(pendingParseTotal.value || 0).toLocaleString('zh-CN')
@@ -882,25 +905,12 @@ const pendingParseTotalText = computed(() =>
 const handleOcrOptionsLoaded = (data) => {
   defaultOcrEngine.value = data?.default_engine || DEFAULT_OCR_ENGINE
   if (!parseParams.value.ocr_engine) {
-    parseParams.value.ocr_engine = resolveDefaultOcrEngine()
+    parseParams.value.ocr_engine = configStore.config?.default_ocr_engine || defaultOcrEngine.value
   }
 }
 
 const resetParseParams = (processingParams = null) => {
-  if (processingParams?.ocr_engine) {
-    parseParams.value = {
-      ocr_engine: processingParams.ocr_engine,
-      image_analysis_model: String(processingParams.image_analysis_model || '')
-    }
-  } else {
-    parseParams.value = {
-      ocr_engine: resolveDefaultOcrEngine(),
-      image_analysis_model: resolveDefaultImageAnalysisModel()
-    }
-  }
-  if (!processingParams || !Object.hasOwn(processingParams, 'image_analysis_model')) {
-    parseParams.value.image_analysis_model = resolveDefaultImageAnalysisModel()
-  }
+  parseParams.value = resolveDocumentParseParams(processingParams || {}, configStore.config, defaultOcrEngine.value)
 }
 
 const createDefaultIndexParams = () => ({
@@ -1100,7 +1110,32 @@ const handleBatchDelete = () => {
   store.handleBatchDelete()
 }
 
+const canBatchReparse = computed(() => selectedRowKeys.value.some((key) =>
+  canReparseFile(files.value.find((file) => file.file_id === key))))
+
+const handleBatchReparse = () => {
+  if (readonly.value || lock.value) return
+  const ids = selectedRowKeys.value.filter((key) => canReparseFile(files.value.find((file) => file.file_id === key)))
+  if (!ids.length) return
+  currentParseFileIds.value = ids
+  isReparseOperation.value = true
+  isBatchParseOperation.value = true
+  isPendingParseOperation.value = false
+  pendingParseTotal.value = 0
+  parseConfigModalTitle.value = '批量重新解析参数配置'
+  resetParseParams()
+  parseConfigModalVisible.value = true
+}
+
+const handleReparseFile = async (record) => {
+  if (readonly.value || lock.value || !canReparseFile(record)) return
+  await handleParseFile(record)
+  isReparseOperation.value = true
+  parseConfigModalTitle.value = '重新解析参数配置'
+}
+
 const handleBatchParse = async () => {
+  isReparseOperation.value = false
   if (readonly.value) return
   const validKeys = selectedRowKeys.value.filter((key) => {
     const file = files.value.find((f) => f.file_id === key)
@@ -1122,6 +1157,7 @@ const handleBatchParse = async () => {
 }
 
 const startPendingParse = (count = 0) => {
+  isReparseOperation.value = false
   if (lock.value) {
     message.warning('当前有文件处理中，请稍后再试')
     return false
@@ -1227,6 +1263,7 @@ const handleDownloadFile = async (record) => {
 }
 
 const handleParseFile = async (record) => {
+  isReparseOperation.value = false
   closePopover(record.file_id)
   currentParseFileIds.value = [record.file_id]
   isBatchParseOperation.value = false
@@ -1243,13 +1280,10 @@ const handleParseFile = async (record) => {
 
 const handleParseConfigConfirm = async () => {
   try {
-    const params = { ocr_engine: parseParams.value.ocr_engine }
-    if (!isParseOcrEnabled.value) {
-      params.image_analysis_model = parseParams.value.image_analysis_model || ''
-    }
+    const params = buildDocumentParseParams(parseParams.value)
     const result = isPendingParseOperation.value
       ? await store.parsePendingFiles(params, pendingParseTotal.value)
-      : await store.parseFiles(currentParseFileIds.value, params)
+      : await store.parseFiles(currentParseFileIds.value, params, isReparseOperation.value)
     if (result) {
       currentParseFileIds.value = []
       pendingParseTotal.value = 0
@@ -1269,6 +1303,7 @@ const handleParseConfigConfirm = async () => {
 }
 
 const handleParseConfigCancel = () => {
+  isReparseOperation.value = false
   parseConfigModalVisible.value = false
   currentParseFileIds.value = []
   isBatchParseOperation.value = false

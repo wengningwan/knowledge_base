@@ -39,7 +39,7 @@
                 </a-menu-item>
                 <a-menu-item
                   key="markdown"
-                  :disabled="downloadingMarkdown || contentState.loading || !mergedContent"
+                  :disabled="downloadingMarkdown || contentState.loading || Boolean(contentState.error) || !mergedContent"
                 >
                   <template #icon><FileText :size="16" /></template>
                   下载 Markdown
@@ -62,6 +62,14 @@
       <p>{{ detailError }}</p>
     </div>
     <div v-else-if="file && hasAvailableView" class="file-detail-content">
+      <a-alert
+        v-if="viewMode !== 'source' && (file.markdown_file || file.has_parsed_markdown) && ['parsing', 'error_parsing'].includes(file.status)"
+        type="warning"
+        show-icon
+        message="当前显示上一版解析结果"
+        :description="file.error || '新一轮解析尚未成功，正文、图片解析和校对记录属于上一版。'"
+        class="previous-parse-notice"
+      />
       <div v-if="viewMode === 'source'" class="content-panel source-panel">
         <AgentFilePreview
           :file="sourcePreviewFile"
@@ -92,6 +100,19 @@
           <p>{{ contentState.error || '暂无文件内容' }}</p>
         </div>
       </div>
+
+      <FigureAnalysisPanel
+        v-else-if="viewMode === 'figures'"
+        :key="`figures-${file.file_id}-${assetsState.attempt_id || ''}`"
+        :state="assetsState"
+        :kb-id="kbId"
+      />
+      <DocumentReviewPanel
+        v-else-if="viewMode === 'review'"
+        :key="`review-${file.file_id}-${assetsState.attempt_id || ''}`"
+        :state="assetsState"
+        :kb-id="kbId"
+      />
 
       <!-- Chunks 模式：使用 Grid 布局 -->
       <div v-else-if="viewMode === 'chunks'" class="chunks-panel">
@@ -133,12 +154,18 @@ import {
   canPreviewChunks,
   canPreviewOriginal,
   canPreviewParsed,
+  canPreviewParseAssets,
   getDefaultDetailView
 } from '@/utils/knowledge_file_policy'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
+import FigureAnalysisPanel from '@/components/knowledge/FigureAnalysisPanel.vue'
+import DocumentReviewPanel from '@/components/knowledge/DocumentReviewPanel.vue'
+import {
+  createDocumentParseLoader, emptyDocumentContent, emptyDocumentAssets, documentMarkdown
+} from '@/utils/document_parse_state'
 import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
 import AgentFilePreview from '@/components/AgentFilePreview.vue'
-import { Download, ChevronDown, FileSearch, FileText, Rows3, X } from '@lucide/vue'
+import { Download, ChevronDown, FileSearch, FileText, Rows3, Image, ScanText, X } from '@lucide/vue'
 
 const props = defineProps({
   open: {
@@ -167,12 +194,15 @@ const basicLoading = ref(false)
 const detailError = ref('')
 const downloadingOriginal = ref(false)
 const downloadingMarkdown = ref(false)
-const contentState = ref({
-  loading: false,
-  loaded: false,
-  lines: [],
-  content: '',
-  error: ''
+const contentState = ref(emptyDocumentContent())
+const assetsState = ref(emptyDocumentAssets())
+const parseLoader = createDocumentParseLoader({
+  loadContent: ({ kbId, fileId }) => documentApi.getDocumentContent(kbId, fileId),
+  loadAssets: ({ kbId, fileId }) => documentApi.getDocumentParseAssets(kbId, fileId),
+  onChange: ({ content, assets }) => {
+    contentState.value = content
+    assetsState.value = assets
+  }
 })
 const sourcePreview = ref({
   loading: false,
@@ -184,23 +214,12 @@ const sourcePreview = ref({
 })
 
 let basicRequestSeq = 0
-let contentRequestSeq = 0
 let sourceRequestSeq = 0
 
 const revokeSourcePreviewUrl = () => {
   if (sourcePreview.value.url) {
     window.URL.revokeObjectURL(sourcePreview.value.url)
     sourcePreview.value.url = ''
-  }
-}
-
-const resetContentState = () => {
-  contentState.value = {
-    loading: false,
-    loaded: false,
-    lines: [],
-    content: '',
-    error: ''
   }
 }
 
@@ -219,13 +238,12 @@ const resetSourcePreview = () => {
 
 const resetLocalState = () => {
   basicRequestSeq += 1
-  contentRequestSeq += 1
   file.value = null
   basicLoading.value = false
   detailError.value = ''
   downloadingOriginal.value = false
   downloadingMarkdown.value = false
-  resetContentState()
+  parseLoader.reset()
   resetSourcePreview()
   viewMode.value = 'markdown'
 }
@@ -297,6 +315,7 @@ const availableViewModes = computed(() => {
   if (hasSourcePreview.value) modes.push('source')
   if (hasMarkdownPreview.value) modes.push('markdown')
   if (hasChunkPreview.value) modes.push('chunks')
+  if (canPreviewParseAssets(file.value)) modes.push('figures', 'review')
   return modes
 })
 const hasAvailableView = computed(() => availableViewModes.value.length > 0)
@@ -318,7 +337,9 @@ const viewModeOptions = computed(() => {
   const optionMap = {
     source: makeViewModeOption('源文件', 'source', FileSearch),
     markdown: makeViewModeOption('Markdown', 'markdown', FileText),
-    chunks: makeViewModeOption('Chunks', 'chunks', Rows3)
+    chunks: makeViewModeOption('Chunks', 'chunks', Rows3),
+    figures: makeViewModeOption('图片解析', 'figures', Image),
+    review: makeViewModeOption('校对结果', 'review', ScanText)
   }
   return availableViewModes.value.map((mode) => optionMap[mode])
 })
@@ -326,13 +347,15 @@ const viewModeOptions = computed(() => {
 const loadBasicInfo = async () => {
   const kbId = String(props.kbId || '')
   const fileId = String(props.fileId || '')
-  if (!kbId || !fileId) return
+  if (!kbId || !fileId) {
+    resetLocalState()
+    return
+  }
 
   const requestId = ++basicRequestSeq
-  contentRequestSeq += 1
   file.value = null
   detailError.value = ''
-  resetContentState()
+  parseLoader.reset({ kbId, fileId })
   resetSourcePreview()
   viewMode.value = 'markdown'
   basicLoading.value = true
@@ -359,43 +382,6 @@ const loadBasicInfo = async () => {
     if (requestId === basicRequestSeq) {
       basicLoading.value = false
     }
-  }
-}
-
-const loadParsedContent = async () => {
-  if (!props.kbId || !props.fileId || contentState.value.loading || contentState.value.loaded)
-    return
-
-  const requestId = ++contentRequestSeq
-  contentState.value = {
-    ...contentState.value,
-    loading: true,
-    error: ''
-  }
-
-  try {
-    const data = await documentApi.getDocumentContent(props.kbId, props.fileId)
-    if (requestId !== contentRequestSeq) return
-    ensureApiSuccess(data, '加载解析内容失败')
-    contentState.value = {
-      loading: false,
-      loaded: true,
-      lines: data?.lines || [],
-      content: data?.content || '',
-      error: ''
-    }
-  } catch (error) {
-    if (requestId !== contentRequestSeq) return
-    console.error('加载解析内容失败:', error)
-    const errorMessage = error.message || '加载解析内容失败'
-    contentState.value = {
-      loading: false,
-      loaded: false,
-      lines: [],
-      content: '',
-      error: errorMessage
-    }
-    message.error(errorMessage)
   }
 }
 
@@ -429,7 +415,10 @@ watch(
       (currentViewMode === 'markdown' && canPreviewParsed(currentFile)) ||
       (currentViewMode === 'chunks' && canPreviewChunks(currentFile))
     ) {
-      await loadParsedContent()
+      await parseLoader.content()
+    }
+    if (['figures', 'review'].includes(currentViewMode) && canPreviewParseAssets(currentFile)) {
+      await parseLoader.assets()
     }
   },
   { immediate: true }
@@ -453,12 +442,14 @@ watch(
 // 统计信息
 const mergeResult = computed(() => mergeChunks(contentState.value.lines || []))
 const mappedChunks = computed(() => mergeResult.value.chunks)
-const mergedContent = computed(() => contentState.value.content || mergeResult.value.content || '')
+const mergedContent = computed(() => documentMarkdown(contentState.value))
 const charCount = computed(() => mergedContent.value.length)
 const chunkCount = computed(
   () => mappedChunks.value.length || contentState.value.lines?.length || 0
 )
 const viewInfoText = computed(() => {
+  if (viewMode.value === 'figures') return assetsState.value.loading ? '' : `${assetsState.value.figures.length} 张图片`
+  if (viewMode.value === 'review') return assetsState.value.loading ? '' : `${assetsState.value.reviews.length} 条记录`
   if (viewMode.value === 'chunks') {
     if (contentState.value.loading) return ''
     return `${chunkCount.value} 个片段`
@@ -541,6 +532,7 @@ const handleDownloadOriginal = async () => {
     return
   }
 
+  const requestId = basicRequestSeq
   downloadingOriginal.value = true
   try {
     const response = await documentApi.downloadDocument(props.kbId, props.fileId)
@@ -549,6 +541,7 @@ const handleDownloadOriginal = async () => {
     const filename = parseDownloadFilename(contentDisposition) || file.value.filename
     // 创建blob并下载
     const blob = await response.blob()
+    if (requestId !== basicRequestSeq || !props.open) return
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
@@ -560,10 +553,11 @@ const handleDownloadOriginal = async () => {
     window.URL.revokeObjectURL(url)
     message.success('下载成功')
   } catch (error) {
+    if (requestId !== basicRequestSeq) return
     console.error('下载文件时出错:', error)
     message.error(error.message || '下载文件失败')
   } finally {
-    downloadingOriginal.value = false
+    if (requestId === basicRequestSeq) downloadingOriginal.value = false
   }
 }
 
@@ -572,11 +566,12 @@ const handleDownloadMarkdown = async () => {
   if (downloadingMarkdown.value) return
   const content = mergedContent.value
 
-  if (!content) {
-    message.error('没有可下载的 Markdown 内容')
+  if (!content || contentState.value.error) {
+    message.error(contentState.value.error || '没有可下载的 Markdown 内容')
     return
   }
 
+  const requestId = basicRequestSeq
   downloadingMarkdown.value = true
   try {
     // 生成文件名（如果原文件没有 .md 扩展名，则添加）
@@ -592,7 +587,8 @@ const handleDownloadMarkdown = async () => {
     }
 
     // 创建 blob 并下载
-    const portableContent = await inlineKnowledgeImages(content, documentApi.getImageBlob)
+    const portableContent = await inlineKnowledgeImages(content, documentApi.getImageBlob, props.kbId)
+    if (requestId !== basicRequestSeq || !props.open) return
     const blob = new Blob([portableContent], { type: 'text/markdown;charset=utf-8' })
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -605,10 +601,11 @@ const handleDownloadMarkdown = async () => {
     window.URL.revokeObjectURL(url)
     message.success('下载成功')
   } catch (error) {
+    if (requestId !== basicRequestSeq) return
     console.error('下载 Markdown 时出错:', error)
     message.error(error.message || '下载 Markdown 失败')
   } finally {
-    downloadingMarkdown.value = false
+    if (requestId === basicRequestSeq) downloadingMarkdown.value = false
   }
 }
 
@@ -616,6 +613,8 @@ onBeforeUnmount(resetLocalState)
 </script>
 
 <style scoped>
+.previous-parse-notice { flex-shrink: 0; margin: 0 0 12px; }
+
 .file-detail-content {
   height: 100%;
   overflow-y: auto;

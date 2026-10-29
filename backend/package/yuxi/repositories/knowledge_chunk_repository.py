@@ -183,6 +183,20 @@ class KnowledgeChunkRepository:
             for chunk in chunks
         ]
 
+    async def has_graph_data_by_file_id(self, file_id: str) -> bool:
+        """结构已提交、向量未完成的块同样需要清理图谱。"""
+        from sqlalchemy import or_
+        from yuxi.storage.postgres.models_knowledge import KnowledgeGraphEntityMention, KnowledgeGraphTripleMention
+
+        async with pg_manager.get_async_session_context() as session:
+            for model in (KnowledgeGraphEntityMention, KnowledgeGraphTripleMention):
+                if await session.scalar(select(model.id).where(model.file_id == file_id).limit(1)) is not None:
+                    return True
+            return await session.scalar(select(KnowledgeChunk.id).where(
+                KnowledgeChunk.file_id == file_id,
+                or_(KnowledgeChunk.graph_indexed.is_(True), KnowledgeChunk.graph_structure_indexed.is_(True)),
+            ).limit(1)) is not None
+
     async def count_graph_indexed_by_file_id(self, file_id: str) -> int:
         async with pg_manager.get_async_session_context() as session:
             result = await session.execute(

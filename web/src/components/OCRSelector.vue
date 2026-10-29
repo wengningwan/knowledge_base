@@ -203,6 +203,7 @@ const healthLabel = (engineId) => {
   if (engineId === 'disable') return '无需检测'
   if (healthLoading.value && !healthStatus(engineId)) return '检测中'
   if (!healthStatus(engineId)) return '未检测'
+  if (healthStatus(engineId) === 'configured') return '已配置'
   return isHealthy(engineId) ? '可用' : '不可用'
 }
 

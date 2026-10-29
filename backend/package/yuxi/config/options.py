@@ -122,6 +122,12 @@ system_options = Option(
                 "default": "disable",
             },
             {
+                "key": "default_document_review_model",
+                "label": "默认正文校对模型",
+                "type": "model",
+                "default": "",
+            },
+            {
                 "key": "default_image_analysis_model",
                 "label": "默认插图解析模型",
                 "type": "model",
@@ -212,6 +218,34 @@ paddleocr_api_opts = Option(
     },
 )
 
+oxr_api_opts = Option(
+    key="oxr_api_opts",
+    name="OXR 服务",
+    description="配置 OXR 免费试用或自部署 API；远程服务会接收上传的文件。免费接口不保证稳定。",
+    params={
+        "fields": [
+            {
+                "key": "server_url",
+                "label": "API Base URL",
+                "type": "url",
+                "environment": "OXR_API_URI",
+                "default": "https://free-oxr.somark.cn/api/v1",
+                "placeholder": "https://free-oxr.somark.cn/api/v1",
+                "help": "免费接口可直接试用；自部署填写完整地址，例如 http://oxr:8000/v1。",
+            },
+            {
+                "key": "api_key",
+                "label": "API Key（可选）",
+                "type": "password",
+                "environment": "OXR_API_KEY",
+                "sensitive": True,
+                "help": "免费接口无需密钥；自部署有鉴权时填写。",
+            },
+        ]
+    },
+)
+
+
 remote_skill_source_policy = Option(
     key="remote_skill_source_policy",
     name="远程 Skill 来源",
@@ -236,6 +270,7 @@ OPTION_DEFINITIONS = {
         mineru_official_api_opts,
         pp_structure_v3_ocr_host_opts,
         paddleocr_api_opts,
+        oxr_api_opts,
         remote_skill_source_policy,
         system_options,
     )

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.config.options import (
     mineru_ocr_host_opts,
     mineru_official_api_opts,
+    oxr_api_opts,
     paddleocr_api_opts,
     pp_structure_v3_ocr_host_opts,
     system_options,
@@ -61,12 +62,22 @@ async def resolve_ocr_task_params(
     # 知识库任务有明确图片归属；API 调用方也能复用默认视觉模型。
     # 临时附件没有该归属时保留纯文字能力，不向 unknown 前缀写入图片。
     image_analysis_model = str(resolved.get("image_analysis_model") or "").strip()
-    if engine_id == "disable" and "image_analysis_model" not in resolved and resolved.get("image_prefix"):
-        image_analysis_model = str((await system_options.get(db)).get("default_image_analysis_model") or "").strip()
-    if engine_id == "disable" and image_analysis_model:
+    enrich_pdf = engine_id in {"disable", "oxr_ocr"} and bool(resolved.get("image_prefix"))
+    needs_defaults = enrich_pdf and (
+        "image_analysis_model" not in resolved or engine_id == "oxr_ocr" and "document_review_model" not in resolved
+    )
+    defaults = await system_options.get(db) if needs_defaults else {}
+    if enrich_pdf and "image_analysis_model" not in resolved:
+        image_analysis_model = str(defaults.get("default_image_analysis_model") or "").strip()
+    if enrich_pdf:
         resolved["image_analysis_model"] = image_analysis_model
     else:
         resolved.pop("image_analysis_model", None)
+    if engine_id == "oxr_ocr" and enrich_pdf:
+        if "document_review_model" not in resolved:
+            resolved["document_review_model"] = str(defaults.get("default_document_review_model") or "").strip()
+    else:
+        resolved.pop("document_review_model", None)
 
     if engine_id == "disable":
         kwargs = {}
@@ -82,11 +93,12 @@ async def resolve_ocr_task_params(
     return resolved
 
 
-async def parse_document(
+async def parse_document_result(
     source: str,
     params: dict[str, Any] | None = None,
     db: AsyncSession | None = None,
-) -> str:
+    control=None,
+):
     """使用当前运行时配置将文件解析为 Markdown。
 
     这是业务代码唯一应调用的文档解析入口。函数负责区分应用层配置解析和
@@ -107,7 +119,7 @@ async def parse_document(
             时仅在 OCR 配置解析需要查询数据库时创建独立会话。
 
     Returns:
-        解析后的 Markdown 文本。
+        解析后的 ParsedDocument，包含 Markdown 与独立附属结果。
 
     Raises:
         ValueError: OCR 引擎无效、图片禁用 OCR 或文件类型不受支持。
@@ -123,9 +135,14 @@ async def parse_document(
         if engine_id != "disable" and suffix not in get_parser_capability(engine_id).supported_extensions:
             raise ValueError(f"OCR 引擎 {engine_id} 不支持文件类型 {suffix}")
 
-    from yuxi.knowledge.parser.unified import parse_resolved_document
+    from yuxi.knowledge.parser.unified import parse_resolved_document_result
 
-    return await parse_resolved_document(source=source, params=resolved_params)
+    return await parse_resolved_document_result(source=source, params=resolved_params, control=control)
+
+
+async def parse_document(source: str, params=None, db=None) -> str:
+    """保持附件与工具调用的字符串契约，复用唯一解析流程。"""
+    return (await parse_document_result(source, params, db)).markdown
 
 
 async def check_all_ocr_health(db: AsyncSession) -> dict[str, Any]:
@@ -153,6 +170,9 @@ async def check_all_ocr_health(db: AsyncSession) -> dict[str, Any]:
 
 
 async def _build_processor_kwargs(db: AsyncSession, engine_id: str) -> dict[str, Any]:
+    if engine_id == "oxr_ocr":
+        opts = await oxr_api_opts.get(db)
+        return {key: value for key, value in opts.items() if value}
     if engine_id == "mineru_ocr":
         opts = await mineru_ocr_host_opts.get(db)
         return {"server_url": opts["server_url"]} if opts["server_url"] else {}

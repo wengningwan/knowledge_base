@@ -19,8 +19,19 @@
         @select-model="configStore.setConfigValue('default_image_analysis_model', $event)"
       />
       <p class="section-description">
-        不启用 OCR 解析 PDF 时，将提取文字层并把插图交由此模型解析；留空则上传 PDF 时需手动选择。
+        noOCR / OXR 解析 PDF 时可单独分析插图；留空保留原图，不生成图片说明。
       </p>
+    </div>
+
+    <div class="settings-panel">
+      <div class="setting-label">{{ items?.default_document_review_model?.des || '默认正文校对模型' }}</div>
+      <ModelSelectorComponent
+        :model_spec="configStore.config?.default_document_review_model"
+        clearable
+        placeholder="请选择支持图像输入的模型"
+        @select-model="configStore.setConfigValue('default_document_review_model', $event)"
+      />
+      <p class="section-description">OXR PDF 正文校对使用此模型，可与插图模型相同；留空不启用模型校对。</p>
     </div>
 
     <div class="section-title">OCR 服务配置</div>
@@ -33,6 +44,7 @@
           <div>
             <h4>{{ option.name }}</h4>
             <p>{{ option.description }}</p>
+            <p v-if="option.key === 'oxr_api_opts'">免费远端服务会接收上传文档，服务稳定性不作保证。API Key 可留空。</p>
           </div>
           <div class="option-actions" :class="{ editing: editingKey === option.key }">
             <template v-if="editingKey === option.key">
@@ -107,7 +119,8 @@ const OCR_OPTION_KEYS = new Set([
   'mineru_ocr_host_opts',
   'mineru_official_api_opts',
   'pp_structure_v3_ocr_host_opts',
-  'paddleocr_api_opts'
+  'paddleocr_api_opts',
+  'oxr_api_opts'
 ])
 const items = computed(() => configStore.config?._config_items || {})
 const configOptions = ref([])

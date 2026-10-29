@@ -554,9 +554,14 @@ class KnowledgeBaseManager:
 
         try:
             kb_instance = await self.get_kb_executor(kb_id)
-            result = await kb_instance.cleanup_database_resources(kb_id)
-            await KnowledgeBaseRepository().delete(kb_id)
-            return result
+            from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
+
+            async with KnowledgeFileRepository().lock_database_maintenance(kb_id):
+                from yuxi.services.knowledge_parse_service import complete_storage_mutation
+
+                result = await complete_storage_mutation(kb_instance.cleanup_database_resources(kb_id))
+                await KnowledgeBaseRepository().delete(kb_id)
+                return result
         except KBNotFoundError as e:
             logger.warning(f"Database {kb_id} not found during deletion: {e}")
             return {"message": "删除成功"}
@@ -586,6 +591,8 @@ class KnowledgeBaseManager:
         *,
         processing_task_id: str | None = None,
         processing_owner: str | None = None,
+        task_context=None,
+        reparse: bool = False,
     ) -> dict:
         """Parse file to Markdown"""
         config = await self.get_kb_config(kb_id)
@@ -599,6 +606,8 @@ class KnowledgeBaseManager:
                 additional_params=config.additional_params,
                 processing_task_id=processing_task_id,
                 processing_owner=processing_owner,
+                task_context=task_context,
+                reparse=reparse,
             ),
         )
 
@@ -709,6 +718,7 @@ class KnowledgeBaseManager:
             "children_count": child_count,
             "has_original_file": bool(getattr(record, "minio_url", None) or getattr(record, "path", None)),
             "has_parsed_markdown": bool(getattr(record, "markdown_file", None)),
+            "has_parse_assets": bool(getattr(record, "parse_assets_file", None)),
             "is_virtual_folder": bool(getattr(record, "is_virtual_folder", False)),
             "path_prefix": getattr(record, "path_prefix", None),
         }
@@ -1007,6 +1017,11 @@ class KnowledgeBaseManager:
         """获取文件基本信息（仅元数据）"""
         kb_instance = await self.get_kb_executor(kb_id)
         return await kb_instance.get_file_basic_info(kb_id, file_id)
+
+    async def get_file_parse_assets(self, kb_id: str, file_id: str) -> dict:
+        """读取当前知识库中文件的解析附属内容。"""
+        executor = await self.get_kb_executor(kb_id)
+        return await executor.get_file_parse_assets(kb_id, file_id)
 
     async def get_file_content(self, kb_id: str, file_id: str) -> dict:
         """获取文件内容信息（chunks和lines）"""

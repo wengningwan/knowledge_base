@@ -1,4 +1,5 @@
 import types
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
@@ -74,6 +75,10 @@ def make_file_record(file_id: str, meta: dict):
         path=meta.get("path"),
         minio_url=meta.get("minio_url"),
         markdown_file=meta.get("markdown_file"),
+        parse_assets_file=meta.get("parse_assets_file"),
+        parse_runtime=meta.get("parse_runtime"),
+        processing_task_id=meta.get("processing_task_id"),
+        processing_owner=meta.get("processing_owner"),
         status=meta.get("status"),
         content_hash=meta.get("content_hash"),
         file_size=meta.get("size", meta.get("file_size")),
@@ -95,6 +100,17 @@ class FakeFileRepository:
     def __init__(self, records: dict[str, types.SimpleNamespace]):
         self.records = records
         self.update_calls = []
+        self.locked_database = None
+
+    @asynccontextmanager
+    async def lock_database_maintenance(self, kb_id: str):
+        """标记整库删除边界；真实 advisory lock 在 PostgreSQL integration 验证。"""
+        assert self.locked_database is None
+        self.locked_database = kb_id
+        try:
+            yield
+        finally:
+            self.locked_database = None
 
     async def list_by_kb_id(self, kb_id: str):
         return [record for record in self.records.values() if record.kb_id == kb_id]
@@ -146,6 +162,74 @@ class FakeFileRepository:
 
 def make_file_records(files: dict[str, dict]) -> dict[str, types.SimpleNamespace]:
     return {file_id: make_file_record(file_id, meta) for file_id, meta in files.items()}
+
+
+@pytest.mark.parametrize("has_assets", [False, True])
+def test_file_metadata_preserves_parse_assets_pointer_without_runtime_checkpoint(tmp_path, has_assets):
+    """已发布 sidecar 指针可持久化和读取，运行期 checkpoint 不进入公开元数据。"""
+    pointer = "minio://knowledgebases/db/parsed/file-1/attempt/assets.json" if has_assets else None
+    kb = make_kb(tmp_path)
+    record = make_file_record(
+        "file-1",
+        {"kb_id": "db", "parse_assets_file": pointer, "parse_runtime": {"remote_task_id": "running"}},
+    )
+
+    meta = kb._file_record_to_meta(record)
+    persisted = kb._file_meta_to_record_data(meta)
+
+    assert meta["parse_assets_file"] == pointer
+    assert meta["has_parse_assets"] is has_assets
+    assert persisted["parse_assets_file"] == pointer
+    assert "parse_runtime" not in meta
+    assert "parse_runtime" not in persisted
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_manager_database_deletion_holds_lock_and_preserves_record_on_cleanup_failure(
+    tmp_path, monkeypatch, cleanup_fails
+):
+    """整库删除从外部清理到主记录删除共用独占边界，失败保留重试入口。"""
+    manager = KnowledgeBaseManager(str(tmp_path))
+    file_repo = FakeFileRepository({})
+    persisted = {"db": {"name": "paper database"}}
+    events = []
+
+    async def cleanup(kb_id):
+        """验证外部清理发生时主记录仍存在且删除锁仍持有。"""
+        assert file_repo.locked_database == kb_id
+        assert kb_id in persisted
+        events.append("cleanup")
+        if cleanup_fails:
+            raise RuntimeError("external cleanup unavailable")
+        return {"message": "删除成功"}
+
+    async def delete(kb_id):
+        """只有外部清理成功后才移除知识库记录。"""
+        assert file_repo.locked_database == kb_id
+        events.append("delete")
+        persisted.pop(kb_id)
+
+    monkeypatch.setattr(
+        manager,
+        "get_kb_executor",
+        AsyncMock(return_value=types.SimpleNamespace(cleanup_database_resources=cleanup)),
+    )
+    monkeypatch.setattr("yuxi.repositories.knowledge_file_repository.KnowledgeFileRepository", lambda: file_repo)
+    monkeypatch.setattr(
+        "yuxi.repositories.knowledge_base_repository.KnowledgeBaseRepository",
+        lambda: types.SimpleNamespace(delete=delete),
+    )
+
+    if cleanup_fails:
+        with pytest.raises(RuntimeError, match="external cleanup unavailable"):
+            await manager.delete_database("db")
+        assert "db" in persisted
+        assert events == ["cleanup"]
+    else:
+        assert await manager.delete_database("db") == {"message": "删除成功"}
+        assert persisted == {}
+        assert events == ["cleanup", "delete"]
+    assert file_repo.locked_database is None
 
 
 async def test_create_database_persists_allowed_record_fields(tmp_path, monkeypatch):

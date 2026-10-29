@@ -1,5 +1,7 @@
 import MarkdownIt from 'markdown-it'
 import markdownItKatex from '@vscode/markdown-it-katex'
+import katex from 'katex'
+import 'katex/contrib/mhchem'
 import taskLists from 'markdown-it-task-lists'
 import DOMPurify from 'dompurify'
 import { createHighlighter } from 'shiki'
@@ -194,7 +196,7 @@ export const createMarkdownRenderer = ({ themeName, highlighter }) =>
         }
       : undefined
   })
-    .use(markdownKatexPlugin, { throwOnError: false, errorColor: '#cc0000', trust: false })
+    .use(markdownKatexPlugin, { katex, throwOnError: false, errorColor: '#cc0000', trust: false })
     .use(taskLists, { enabled: false, label: false, labelAfter: false })
     .use(markdownItFrontmatterCard)
 

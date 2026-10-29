@@ -1,49 +1,39 @@
-# PDF 原生文字与独立插图解析
+# OXR 论文解析与独立校对产物
 
 状态：proposed
-类型：bug-fix
-Owner：backend/package/yuxi/knowledge/parser/unified.py
+类型：feature
+Owner：backend/package/yuxi/services/knowledge_parse_service.py
 
 ## 问题
 
-“不使用 OCR”的目标是直接提取原文文字，另行提取插图并使用所选模型生成说明。整页视觉转录把正文生成和图片分类都交给模型，要求页面 JSON、跨页续段和全部图片占位符同时满足契约。模型一次返回非法 JSON 或报告不可读区域就阻断整份原本可提取文字的 PDF，图片模型的随机输出变成正文可用性的前置条件。
-
-原生文字层的公式、字体编码和版面损失属于文字提取能力边界，图片说明没有可靠修复这些问题的职责。把模型支持图像输入等同于稳定、完整的页面转录，会使接口契约超出实际能力证据。
+整页视觉转录把原文识别、图片定位和严格 JSON 契约交给一次模型输出，造成随机失败。纯原生文字提取又会损失公式、字体编码和阅读次序。把诊断和图片解释写入论文 Markdown，使下载文件混入原文以外内容，并让分块与论文正文难以区分。
 
 ## 提案
 
 ### 实现方案
 
-保留原有引擎选择边界：默认值由配置 Owner 维护为 disable，启用 OCR 时继续使用现有引擎。不使用 OCR 时由 pypdf 直接读取各页文字，内嵌位图由 pdf_figures 单独提取。只有原图发送到图片模型，不渲染整页作为模型输入，不让模型重写正文，也不提供页面 JSON 或图片分类契约。
+在现有 OCR 注册和配置中增加 OXR，保留初始 disable 默认值和其他解析器入口。OXR 结构化块是主结果；原生文字按区域作为第二候选，局部视觉模型只校对疑点。插图模型独立生成说明。正文模型显式清空表示未启用，不把模型配置完整性当作主解析成功条件。
 
-原文与“插图与模型说明”分开展示，图片按来源页码标识。图片模型只返回自然语言；单图失败、空回复或明显乱码最多尝试两次，仍失败则保留图片并显示未完成状态，其他图片和原文继续输出。提图诊断进入 Markdown，不能只保留日志。真正没有可提取文字或图片、文件结构损坏等核心失败仍显式报错。
+parser 的 ParsedDocument 统一携带 Markdown、块、图片资源、修订和诊断，既有字符串消费者使用包装入口。knowledge_parse_service 负责任务控制、不可变对象和发布准备，KnowledgeFileRepository 负责文件/知识库操作边界与同事务 owner fencing。正文与附属 JSON 的两个指针归同一 attempt，失败清理只删除自己未发布的前缀。schema 相邻升级为旧文件增加可空字段。
 
-服务端区分未指定模型与显式清空：未指定时可读取系统默认，清空表示本次不生成图片说明。临时附件没有知识库图片归属时维持原文提取，不写入未知图片目录。已有私有图片授权、下载内嵌能力以及 PDFium 原生调用共同锁保留。
+前端详情展示正文、图片解析和校对结果，导出只读取保存的正文并内嵌知识库图片。legacy 文件通过重新解析获得新产物；重新解析成功发布前清理旧派生索引，随后由用户重新入库。失败重试、取消、外部清理失败和整库删除的边界由同一文件/知识库锁体系闭合。
+
+当前代码实现已准备；真实服务、数据库并发和论文视觉验收按用户要求在另一台电脑进行，运行证据取得后收敛此记录。配置事实由[文档处理与 OCR](../../../advanced/document-processing.md)拥有，产物和生命周期由[知识库机制](../../../mechanisms/knowledge-base.md)拥有。
 
 ## 替代方案
 
-给整页转录增加重试可以降低部分瞬时失败，却保留了错误的职责边界和正文重写风险。更换更大的模型同样不能保证严格 JSON 或内容保真。放宽页面守卫、将未定位图片追加到页末仍然要求模型主导整页生成。使用明确的 OCR 引擎处理复杂版面保留为用户主动选择，不能在“不使用 OCR”时静默切换。
+只给整页模型转录重试仍让正文受随机生成影响。只用文字提取无法恢复缺失的字体和公式。让模型重写整篇论文会增加语义改写风险。商业 API 的高级开关不能假定在开源或免费部署上均有效，因此请求仅使用核实契约，本地整理保留来源依据。
 
 ## 验收标准
 
 | 验收主张 | 失败面 | 语义 Owner | 直接证据 / 命令 | 负向案例 | 当前结果 |
 |---|---|---|---|---|---|
-| 原文直接来自文字层，只有原图进入模型 | 整页渲染或正文进入模型 | PDF parser | 相关 pytest 比较原文并检查多模态原图字节 | 恢复整页转录会导致模型输入断言失败 | Not run：用户在另一台电脑验证 |
-| 图片异常保留正文并明确显示状态 | 图片失败阻断全文或静默缺说明 | PDF parser / pdf_figures | 重试、局部失败、无模型、错误配置及提图诊断用例 | 恢复抛出单图异常或省略提示会失败 | Not run |
-| 选择 OCR 继续走原引擎 | 图片模型劫持 OCR 路径 | ocr_service | 原引擎参数回归用例及已有 parser facade 测试 | 图片模型参数不得进入已启用 OCR 引擎 | Not run |
-| 默认模型与清空操作一致 | 清空后又恢复系统默认 | ocr_service / Web | 显式模型、缺省值、空字符串和临时附件用例；真实上传界面 | 清空模型仍读取默认值会失败 | Not run |
-
-在具备依赖的运行环境执行：
-
-```bash
-docker compose exec api uv run --group test pytest test/unit/knowledge/test_pdf_disable_figures.py test/unit/knowledge/test_parser_facade.py test/unit/knowledge/test_pdf_utils.py -q
-docker compose exec web pnpm run lint:check
-docker compose exec web pnpm run test:unit
-docker compose exec web pnpm run build
-```
-
-真实验收使用有原生文字层且包含插图的 PDF：确认文字来自直接提取，模型请求只包含单张提取原图，说明出现在对应图片后。模拟图片模型不可用时，确认正文和原图保留且说明失败可见。未选模型仍能提取原文与图片；启用 OCR 时检查原有引擎。原文公式异常提示不代表公式已修复，仍需对照 PDF 核对。
+| OXR 表单、状态、恢复正确 | HTTP 与业务码、取消 | parser/oxr.py | test_oxr_parser.py 协议用例 | 200+非零业务码、worker.cancel | 已编写，Not run |
+| MD 保留论文图文 | 块序列与公式、浮图 | parser/pdf_structure.py | test_oxr_structure.py、人工对 PDF | 双栏跨页、未知类型、四公式编号 | 已编写，Not run |
+| 模型不污染正文 | 局部 patch 与独立说明 | services/pdf_review_service.py | test_pdf_review.py、test_pdf_disable_figures.py | 改写整段、替换原图、无效JSON | 已编写，Not run |
+| 发布与清理有归属 | PG、对象存储与任务取消 | services/knowledge_parse_service.py | 真实 PG durable/schema 集成用例 | 取消时记录task_id、拒绝发布 | 已编写，Not run |
+| 前端与导出保持版本 | HTTP、权限与异步请求 | FileDetailModal.vue | web unit 与真实页面验收 | 旧请求、版本变化、图片读取失败 | 已编写，Not run |
 
 ## 风险
 
-原生文本层仍可能损坏数学符号和阅读结构，内嵌位图提取不能覆盖所有矢量图。图片解释是模型生成内容，不能视作论文作者的原话。模型和图片处理允许明确的局部未完成，业务状态 parsed 只证明产物生成，完整性以产物中的诊断和逐图状态为准。应用、真实模型和浏览器检查按用户要求留在其运行环境，静态检查不能证明实际识别准确率。
+OXR 与视觉模型都可能识别错误；双候选和局部校对提高可审查性，不能保证零误差。免费服务可用性和不同部署版本需要实际验证。不可变 attempt 在文件删除前保留历史已发布资源，增加对象存储占用。真实 PostgreSQL、MinIO、Milvus、Neo4j、worker、浏览器、模型及目标论文视觉验收尚未执行，本机只进行静态源码检查。

@@ -228,6 +228,13 @@ class MilvusGraphService:
         return {"kb_id": kb_id, "samples": samples}
 
     async def build_pending_chunks(self, kb_id: str, *, context=None) -> dict[str, Any]:
+        """构建期间独占知识库写边界，避免重解析/删除与旧图谱写入交错。"""
+        from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
+
+        async with KnowledgeFileRepository().lock_database_maintenance(kb_id):
+            return await self._build_pending_chunks_owned(kb_id, context=context)
+
+    async def _build_pending_chunks_owned(self, kb_id: str, *, context=None) -> dict[str, Any]:
         kb = await self._get_milvus_kb(kb_id)
         config = self._get_locked_config(kb.additional_params or {})
         extractor_options = self._runtime_extractor_options(config)
@@ -307,12 +314,11 @@ class MilvusGraphService:
                         raise ValueError(f"图谱写入找不到 chunk: {chunk_id}")
                     extraction_result = await self._get_chunk_extraction_result(kb_id, chunk, extractor)
                     write_started_at = time.monotonic()
-                    entities, triples = await asyncio.to_thread(
-                        self.write_chunk_graph,
-                        kb_id,
-                        chunk,
-                        extraction_result,
-                    )
+                    from yuxi.services.knowledge_parse_service import complete_storage_mutation
+
+                    entities, triples = await complete_storage_mutation(asyncio.to_thread(
+                        self.write_chunk_graph, kb_id, chunk, extraction_result,
+                    ))
                     await self.graph_repo.upsert_chunk_graph(
                         kb_id=kb_id,
                         file_id=chunk.file_id,
@@ -351,12 +357,12 @@ class MilvusGraphService:
             record_ids = [record["id"] for record in records]
             try:
                 graph_vector_store = await self.get_graph_vector_store()
-                await graph_vector_store.upsert_graph_records(
-                    kb_id=kb_id,
-                    embedding_model_spec=kb.embedding_model_spec,
-                    record_type=record_type,
-                    records=records,
-                )
+                from yuxi.services.knowledge_parse_service import complete_storage_mutation
+
+                await complete_storage_mutation(graph_vector_store.upsert_graph_records(
+                    kb_id=kb_id, embedding_model_spec=kb.embedding_model_spec,
+                    record_type=record_type, records=records,
+                ))
                 await self.graph_repo.mark_vector_records_indexed(
                     record_type=record_type,
                     record_ids=record_ids,
@@ -704,6 +710,14 @@ class MilvusGraphService:
         return records
 
     async def reset(self, kb_id: str, *, clear_extraction_result: bool, clear_config: bool) -> dict[str, Any]:
+        """图谱维护与文档发布、索引及整库删除互斥。"""
+        from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
+        from yuxi.services.knowledge_parse_service import complete_storage_mutation
+
+        async with KnowledgeFileRepository().lock_database_maintenance(kb_id):
+            return await complete_storage_mutation(self._reset_owned(kb_id, clear_extraction_result=clear_extraction_result, clear_config=clear_config))
+
+    async def _reset_owned(self, kb_id: str, *, clear_extraction_result: bool, clear_config: bool) -> dict[str, Any]:
         kb = await self._get_milvus_kb(kb_id)
         await asyncio.to_thread(self.delete_graph, kb_id)
         await self.graph_repo.delete_by_kb_id(kb_id)
@@ -721,6 +735,14 @@ class MilvusGraphService:
         }
 
     async def reconcile_vectors(self, kb_id: str, *, all_vectors: bool) -> dict[str, Any]:
+        """图谱维护与文档发布、索引及整库删除互斥。"""
+        from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
+        from yuxi.services.knowledge_parse_service import complete_storage_mutation
+
+        async with KnowledgeFileRepository().lock_database_maintenance(kb_id):
+            return await complete_storage_mutation(self._reconcile_vectors_owned(kb_id, all_vectors=all_vectors))
+
+    async def _reconcile_vectors_owned(self, kb_id: str, *, all_vectors: bool) -> dict[str, Any]:
         await self._get_milvus_kb(kb_id)
         reset_records = await self.graph_repo.reconcile_vector_records(kb_id, all_vectors=all_vectors)
         if all_vectors:
@@ -742,13 +764,15 @@ class MilvusGraphService:
         self.graph_vector_store.drop_graph_collections(kb_id)
 
     async def delete_file_graph(self, kb_id: str, file_id: str) -> None:
-        orphan_entity_ids, orphan_triple_ids = await self.graph_repo.delete_file_references(file_id)
-        await self.graph_vector_store.delete_graph_records(
-            kb_id,
-            entity_ids=orphan_entity_ids,
-            triple_ids=orphan_triple_ids,
-        )
-        await asyncio.to_thread(self._delete_file_graph_from_neo4j, kb_id, file_id)
+        from yuxi.services.knowledge_parse_service import complete_storage_mutation
+
+        async def clean_external(entity_ids, triple_ids):
+            await complete_storage_mutation(self.graph_vector_store.delete_graph_records(
+                kb_id, entity_ids=entity_ids, triple_ids=triple_ids,
+            ))
+            await complete_storage_mutation(asyncio.to_thread(self._delete_file_graph_from_neo4j, kb_id, file_id))
+
+        await self.graph_repo.delete_file_references(file_id, before_commit=clean_external)
 
     def _delete_file_graph_from_neo4j(self, kb_id: str, file_id: str) -> None:
         label = safe_neo4j_label(kb_id)
