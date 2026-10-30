@@ -18,6 +18,7 @@ class FileParseControl:
     def __init__(self, kb_id, file_id, attempt_id, task_context=None, runtime=None, task_id=None, owner=None):
         self.kb_id = kb_id
         self.file_id = file_id
+        self.filename = ""
         self.attempt_id = attempt_id
         self.context = task_context
         self.task_id = task_id or getattr(task_context, "task_id", None)
@@ -77,11 +78,13 @@ class FileParseControl:
             await self.write_fields({"parse_runtime": data})
         self.runtime = dict(data)
 
-    async def write_fields(self, data: dict) -> None:
+    async def write_fields(self, data: dict, *, figure_task: dict | None = None) -> None:
         """原子校验取消、任务lease和文件owner后写入。"""
         await self.check_cancelled()
         repo = KnowledgeFileRepository()
         if self.context is None:
+            if figure_task:
+                raise ValueError("后台图片任务必须与持久解析任务一起提交")
             record = await repo.update_fields_if_status(
                 kb_id=self.kb_id, file_id=self.file_id, allowed_statuses={"parsing"}, data=data,
                 processing_task_id=self.task_id, processing_owner=self.owner,
@@ -99,6 +102,10 @@ class FileParseControl:
             )
             if record is None:
                 raise asyncio.CancelledError("File processing owner was lost")
+            if figure_task:
+                from yuxi.repositories.task_repository import TaskRepository
+
+                await TaskRepository.create_in_session(session, figure_task["id"], figure_task["data"])
 
         await self.context.run_owned_transaction(operation)
 
@@ -129,6 +136,9 @@ async def save_parse_bundle(kb_id: str, file_id: str, attempt_id: str, result, c
         urls[str(asset_id)] = build_kb_image_proxy_url(object_name)
     finalize_document(result, urls)
     result.metadata["attempt_id"] = attempt_id
+    if "pdf_repair" in result.metadata:
+        result.metadata["pdf_repair"]["final_markdown_hash"] = hashlib.sha256(result.markdown.encode("utf-8")).hexdigest()
+        result.metadata["pdf_repair"]["publication_asset_map"] = urls
     await control.check_cancelled()
     prefix = f"{kb_id}/parsed/{file_id}/{attempt_id}"
     markdown = await complete_storage_mutation(client.aupload_file(

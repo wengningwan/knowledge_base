@@ -10,6 +10,9 @@
       <article v-for="(review, index) in state.reviews" :key="`${review.id || review.block_id || 'review'}-${index}`" class="asset-card" :class="{ critical: review.critical }">
         <header>
           <strong>{{ statusLabel(review.status) }}</strong>
+          <a-tag v-if="review.source === 'rule'">规则修复</a-tag>
+          <a-tag v-else-if="review.source === 'model'">模型复核</a-tag>
+          <a-tag v-if="review.classification === 'excluded'">出版元素</a-tag>
           <a-tag v-if="review.critical" color="warning">关键修改</a-tag>
           <span v-if="review.page">第 {{ review.page }} 页</span>
         </header>
@@ -46,10 +49,10 @@ const imageMarkdown = (source) => knowledgeAssetImageMarkdown(source, props.kbId
 const reviewSummary = computed(() => ({
   not_requested: '未选择正文校对模型，未启用模型校对。',
   needs_review: '部分内容仍需人工核对，请结合原文裁图检查。',
-  completed: '本次模型校对已完成。'
-})[props.state.metadata.review_status] || '暂无模型校对状态。')
+  completed: '本次登记疑点已处理，仍可结合原PDF复核。'
+})[props.state.metadata.review_status] || '暂无检查状态。')
 const statusLabel = (status) => ({
-  machine_corrected: '模型已修正', checked: '已核对', unresolved: '仍需核对', not_checked: '未核对'
+  machine_corrected: '已修复', checked: '已核对', unresolved: '仍需核对', not_checked: '未核对'
 })[status] || status
 </script>
 

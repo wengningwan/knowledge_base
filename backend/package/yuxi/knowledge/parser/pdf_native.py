@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import io
 import math
 from pathlib import Path
@@ -53,7 +54,15 @@ def read_native_blocks(file_path: str, *, page_info: dict | None = None) -> list
                                     if abs(math.sin(angle - old_angle)) > 0.25 or distance > line_height * 0.7:
                                         _append_line(blocks, line, page_index + 1)
                                         line = []
-                            line.append({"index": index, "text": char, "bbox": bbox, "baseline": (normal, extent, angle)})
+                            origin_x, origin_y = ctypes.c_double(), ctypes.c_double()
+                            has_origin = pdfium.raw.FPDFText_GetCharOrigin(textpage, index, ctypes.byref(origin_x), ctypes.byref(origin_y))
+                            origin_normal = -origin_x.value * math.sin(angle) + origin_y.value * math.cos(angle) if has_origin else None
+                            font_size = float(pdfium.raw.FPDFText_GetFontSize(textpage, index))
+                            line.append({
+                                "index": index, "text": char, "bbox": bbox, "baseline": (normal, extent, angle),
+                                "font_size": font_size if math.isfinite(font_size) and font_size > 0 else None,
+                                "origin_normal": origin_normal if origin_normal is not None and math.isfinite(origin_normal) else None,
+                            })
                         _append_line(blocks, line, page_index + 1)
                     finally:
                         textpage.close()

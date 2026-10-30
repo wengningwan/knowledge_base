@@ -201,11 +201,12 @@ class GeneralResponse:
 
 
 class LangChainChatAdapter:
-    def __init__(self, model, *, model_name: str, base_url: str | None = None, info: dict | None = None):
+    def __init__(self, model, *, model_name: str, base_url: str | None = None, info: dict | None = None, safe_error_logging: bool = False):
         self.model = model
         self.model_name = model_name
         self.base_url = base_url
         self.info = info or {}
+        self.safe_error_logging = safe_error_logging
 
     async def call(self, message, stream=False):
         messages = self._normalize_messages(message)
@@ -215,6 +216,9 @@ class LangChainChatAdapter:
             response = await self.model.ainvoke(messages)
             return GeneralResponse(response.text)
         except Exception as e:
+            if self.safe_error_logging:
+                logger.error(f"PDF model request failed: error={type(e).__name__}")
+                raise RuntimeError(f"PDF model request failed: {type(e).__name__}") from None
             err = f"Error calling model: {e}, URL: {self.base_url}, Model: {self.model_name}"
             logger.error(err)
             raise Exception(err)
@@ -231,7 +235,7 @@ class LangChainChatAdapter:
                 yield GeneralResponse(chunk.text)
 
 
-def select_model(model_spec: str, **kwargs) -> LangChainChatAdapter:
+def select_model(model_spec: str, *, safe_error_logging: bool = False, **kwargs) -> LangChainChatAdapter:
     if not model_spec:
         raise ValueError("model_spec 不能为空")
 
@@ -248,6 +252,7 @@ def select_model(model_spec: str, **kwargs) -> LangChainChatAdapter:
         model_name=info.model_id,
         base_url=info.base_url,
         info={"provider_type": info.provider_type, "provider_id": info.provider_id},
+        safe_error_logging=safe_error_logging,
     )
 
 

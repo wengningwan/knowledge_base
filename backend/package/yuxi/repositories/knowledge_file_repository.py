@@ -61,6 +61,22 @@ class KnowledgeFileRepository:
                 raise ValueError("知识库存在处理中文件，请取消或等待完成后执行")
             yield
 
+    async def publish_parse_assets_in_session(
+        self, session, *, kb_id, file_id, markdown_file, previous_assets_file, assets_file
+    ) -> bool:
+        """只更新仍指向同一正文与附属版本的文件，调用方负责 Task lease。"""
+        record = await session.scalar(select(KnowledgeFile).where(
+            KnowledgeFile.kb_id == kb_id, KnowledgeFile.file_id == file_id,
+            KnowledgeFile.markdown_file == markdown_file,
+            KnowledgeFile.parse_assets_file == previous_assets_file,
+        ).with_for_update())
+        if record is None:
+            return False
+        record.parse_assets_file = assets_file
+        record.updated_at = utc_now()
+        await session.flush()
+        return True
+
     async def update_parse_in_session(
         self, session, *, kb_id, file_id, task_id, owner, data
     ) -> KnowledgeFile | None:

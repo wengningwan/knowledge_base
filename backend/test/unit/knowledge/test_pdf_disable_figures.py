@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+from test.unit.services.pdf_model_fakes import configure_pdf_budget
+
 import yuxi.knowledge.parser.pdf_figures as pdf_figures
 import yuxi.knowledge.parser.unified as parser_unified
 from yuxi.knowledge.parser.pdf_figures import PdfFigure, extract_pdf_figures
@@ -99,6 +101,7 @@ async def test_native_model_explanation_never_enters_paper_markdown(monkeypatch)
     from yuxi.knowledge.parser.pdf_structure import finalize_document
     from yuxi.services.pdf_document_service import build_native_document, enrich_document
 
+    configure_pdf_budget(monkeypatch)
     source = _png_bytes(50, 30, noise=False)
     monkeypatch.setattr(native, "read_native_blocks", lambda _: [
         {"page": 1, "bbox": [.1, .1, .9, .2], "content": "Original text 12 mg."},
@@ -113,7 +116,7 @@ async def test_native_model_explanation_never_enters_paper_markdown(monkeypatch)
         received.extend(messages)
         return SimpleNamespace(content="模型生成说明：a visible curve")
 
-    monkeypatch.setattr(chat, "select_model", lambda _: SimpleNamespace(call=call))
+    monkeypatch.setattr(chat, "select_model", lambda *args, **kwargs: SimpleNamespace(call=call))
     result = await build_native_document("source.pdf")
     result.diagnostics.append({"reason": "解析提示仅在侧栏"})
     await enrich_document(result, "source.pdf", {"ocr_engine": "disable", "image_analysis_model": "p:vision"})
@@ -131,16 +134,17 @@ async def test_failed_figure_model_preserves_original_and_reports_separate_statu
     import yuxi.models.chat as chat
     from yuxi.knowledge.parser.result import ParsedDocument
     from yuxi.services.pdf_figure_analysis_service import analyze_document_figures
+    configure_pdf_budget(monkeypatch)
     calls = []
 
     async def call(*args, **kwargs):
         calls.append(True)
         raise ValueError("unavailable")
 
-    monkeypatch.setattr(chat, "select_model", lambda _: SimpleNamespace(call=call))
+    monkeypatch.setattr(chat, "select_model", lambda *args, **kwargs: SimpleNamespace(call=call))
     result = ParsedDocument(markdown="Source ![](asset://a)", figures=[{"id": "f", "asset_id": "a"}], assets={"a": {"data": _png_bytes(10, 10)}})
     await analyze_document_figures(result, {"image_analysis_model": "p:vision"})
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert result.markdown == "Source ![](asset://a)"
     assert result.figures[0]["analysis_status"] == "failed"
 

@@ -114,7 +114,13 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
         await review_pdf_document(result, file_path, params, control)
     else:
         result.metadata.setdefault("review_status", "not_requested")
-    await analyze_document_figures(result, params, control)
+    model_spec = str(params.get("image_analysis_model") or "").strip()
+    if params.get("_defer_figure_analysis") and model_spec and result.figures:
+        for figure in result.figures:
+            figure.update(analysis_status="pending", analysis="", model=model_spec)
+        result.metadata["figure_analysis"] = {"status": "pending", "model": model_spec}
+    else:
+        await analyze_document_figures(result, params, control)
     result.markdown = render_document(result.blocks)
     return result
 

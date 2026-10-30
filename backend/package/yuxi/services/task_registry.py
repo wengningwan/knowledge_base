@@ -57,6 +57,11 @@ _TASK_DEFINITIONS = {
             failure_function="fail_knowledge_file_task",
         ),
         TaskDefinition(
+            "knowledge_figure_analysis",
+            "yuxi.services.knowledge_figure_analysis_service",
+            "run_knowledge_figure_analysis",
+        ),
+        TaskDefinition(
             "knowledge_index",
             "yuxi.services.knowledge_task_service",
             "run_knowledge_index",

@@ -285,6 +285,7 @@ class KnowledgeBase(ABC):
             if record is None:
                 raise ValueError("文件正在处理或当前状态不允许解析")
             file_meta = self._file_record_to_meta(record)
+            control.filename = str(file_meta.get("filename") or file_meta.get("original_filename") or file_id)
             control.file_claimed = True
             control.runtime = dict(getattr(record, "parse_runtime", None) or {})
 
@@ -298,10 +299,25 @@ class KnowledgeBase(ABC):
             )
             params["image_bucket"] = get_minio_client().KB_BUCKETS["images"]
             params["image_prefix"] = f"{kb_id}/kb-images/{file_id}/{attempt_id}"
+            params["_defer_figure_analysis"] = task_context is not None and os.path.splitext(str(file_path).split("?", 1)[0])[1].lower() == ".pdf"
             result = await parse_document_result(source=file_path, params=params, control=control)
             if not result.markdown.strip() and not result.blocks:
                 raise ValueError("没有生成可用的论文内容")
+            figure_job_id = None
+            figure_stage = result.metadata.get("figure_analysis", {})
+            if task_context is not None and figure_stage.get("status") == "pending":
+                figure_job_id = uuid.uuid4().hex
+                figure_stage["task_id"] = figure_job_id
             markdown_url, assets_url = await save_parse_bundle(kb_id, file_id, attempt_id, result, control)
+            figure_task = None
+            if figure_job_id:
+                from yuxi.services.knowledge_figure_analysis_service import figure_task_intent
+
+                figure_task = figure_task_intent(
+                    figure_job_id, kb_id=kb_id, file_id=file_id, attempt_id=attempt_id,
+                    markdown_file=markdown_url, assets_file=assets_url,
+                    model_spec=figure_stage["model"], filename=control.filename,
+                )
             async with repo.lock_file_operation(kb_id, file_id, control):
                 await control.check_cancelled()
                 # 原文发布前清除与旧版关联的索引，失败时保留旧正文指针。
@@ -317,7 +333,15 @@ class KnowledgeBase(ABC):
                 }
                 if operator_id:
                     data["updated_by"] = operator_id
-                await control.write_fields(data)
+                await control.write_fields(data, figure_task=figure_task)
+            if figure_task:
+                from yuxi.services.task_queue_service import publish_task
+
+                try:
+                    await publish_task(figure_task["id"])
+                except Exception as exc:
+                    # intent 已与正文指针提交；定期 publisher 会补投，不撤回已发布正文。
+                    logger.warning(f"[pdf_figures] 投递待重试 task_id={figure_task['id']} error={type(exc).__name__}")
             return await self._load_file_meta(kb_id, file_id)
         except (Exception, asyncio.CancelledError) as exc:
             await cleanup_unpublished_attempt(kb_id, file_id, attempt_id)
@@ -388,6 +412,9 @@ class KnowledgeBase(ABC):
             raise ValueError("解析附属数据格式无效，请重新解析")
         if data.get("file_id") != file_id or data.get("kb_id") != kb_id:
             raise ValueError("解析附属数据不属于当前文件")
+        from yuxi.services.knowledge_figure_analysis_service import project_figure_task_status
+
+        await project_figure_task_status(data, kb_id=kb_id, file_id=file_id)
         return {**data, "legacy_without_assets": False}
 
     async def _save_markdown_to_minio(self, kb_id: str, file_id: str, content: str) -> str:
