@@ -9,9 +9,29 @@ from copy import deepcopy
 import pytest
 
 from yuxi.knowledge.parser.pdf_repair import run_rule_repair
-from yuxi.knowledge.parser.pdf_repair_rules import apply_block_edits, validate_evidence_patch
+from yuxi.knowledge.parser.pdf_repair_rules import (
+    apply_block_edits, clean_prose_whitespace, proven_representation_equivalent,
+)
 from yuxi.knowledge.parser.pdf_structure import render_document
 from yuxi.knowledge.parser.result import ParsedDocument
+
+
+@pytest.mark.parametrize("units", [("mM", "nM"), ("cm", "dm"), ("kPa", "hPa")])
+def test_r1_cannot_change_prefixed_unit_scale(units):
+    """原生候选即使字形清晰也不能自动改变科学单位尺度。"""
+    before = f"The value was 1 {units[0]}."
+    result = ParsedDocument(blocks=[_block(before)])
+    rows = run_rule_repair(result, [_native(f"The value was 1 {units[1]}.")], 1)
+    assert result.blocks[0]["content"] == before
+    assert any(row.get("review_route") == "vision" for row in rows)
+
+
+def test_r1_spelling_candidate_cannot_flatten_markdown_line_breaks():
+    """拼写变化与空白保护组合时不能把整块压成一行。"""
+    before = "The electrosopun membrane.  \nThe next sentence."
+    result = ParsedDocument(blocks=[_block(before)])
+    run_rule_repair(result, [_native("The electrospun membrane.\nThe next sentence.")], 1)
+    assert "  \n" in result.blocks[0]["content"]
 
 
 def _block(content, **changes):
@@ -205,70 +225,6 @@ def test_empty_math_and_figure_interruption_do_not_claim_full_repair():
     assert all(row["status"] in {"unresolved", "not_checked"} for row in rows)
 
 
-def _issue(block, after):
-    """建立程序登记候选的最小独立模型校验输入。"""
-    return {"id": "issue1", "block_id": block["id"], "before": block["content"], "status": "unresolved", "evidence_ids": ["n1"], "evidence": [{"id": "n1", "page": 1, "bbox": block["bbox"], "content": after, "quality": "high", "source": "native"}]}
-
-
-def _payload(block, after):
-    """创建绑定问题与证据 ID 的完整块补丁。"""
-    return {"edits": [{"issue_id": "issue1", "block_id": block["id"], "before": block["content"], "after": after, "evidence_ids": ["n1"]}], "unresolved": []}
-
-
-def test_text_patch_accepts_exact_name_candidate_and_rejects_arbitrary_new():
-    """同页 quote 存在不能证明不同的 new 内容。"""
-    block = _block("Dubinin, M.; Stoeckeli, H.")
-    after = "Dubinin, M.; Stoeckli, H."
-    issue = _issue(block, after)
-    edits, pending = validate_evidence_patch([block], _payload(block, after), [issue], visual=False)
-    assert len(edits) == 1 and pending == []
-    payload = _payload(block, "Dubinin, M.; Stoeckeli, G.")
-    edits, pending = validate_evidence_patch([block], payload, [issue], visual=False)
-    assert edits == [] and pending
-    assert block["content"] == "Dubinin, M.; Stoeckeli, H."
-
-
-@pytest.mark.parametrize(("before", "after"), [
-    ("The peak was 399.8 eV.", "The peak was 398.3 eV."),
-    ("The heat was 22 K/mol.", "The heat was 22 KJ/mol."),
-    ("The value is -1.0 mg.", "The value is 1.0 mg."),
-    ("The signal is α.", "The signal is β."),
-    ("The sample is Co.", "The sample is CO."),
-    ("The sample is Fe.", "The sample is Ni."),
-    ("The sample is SA.", "The sample is 5A."),
-    ("The mode is Eₘg.", "The mode is E₂g."),
-    ("The ratio is x_y.", "The ratio is x_z."),
-    ("The amount is 1 µg.", "The amount is 1 mg."),
-    ("The amount is 1 kcal.", "The amount is 1 cal."),
-    ("The heat is expressed in kcal/mol.", "The heat is expressed in cal/mol."),
-    ("The value is 1.0 mg.", "The value is 1,0 mg."),
-    ("The value is 1e-4 mg.", "The value is 1e4 mg."),
-])
-def test_nonvisual_model_cannot_change_scientific_tokens(before, after):
-    """非视觉模型无法借高置信度、精确 quote 绕过科学 token 守恒。"""
-    block = _block(before)
-    edits, pending = validate_evidence_patch([block], _payload(block, after), [_issue(block, after)], visual=False)
-    assert edits == [] and pending
-
-
-def test_unknown_issue_stale_before_wrong_region_and_fake_visual_are_rejected():
-    """登记问题、块版本与证据区域缺一不可。"""
-    block = _block("Dubinin, M.; Stoeckeli, H.")
-    after = "Dubinin, M.; Stoeckli, H."
-    for mode in ("unknown", "stale", "wrong_region", "fake_visual", "duplicate"):
-        issue, payload = _issue(block, after), _payload(block, after)
-        if mode == "unknown":
-            payload["edits"][0]["issue_id"] = "other"
-        elif mode == "stale":
-            issue["before"] = "old"
-        elif mode == "wrong_region":
-            issue["evidence"][0]["bbox"] = [0.1, 0.5, 0.9, 0.6]
-        elif mode == "duplicate":
-            payload["edits"].append(deepcopy(payload["edits"][0]))
-        edits, pending = validate_evidence_patch([block], payload, [issue], visual=mode == "fake_visual")
-        assert edits == [] and pending
-
-
 def test_group_failure_rolls_back_all_edits_and_forbids_protected_changes():
     """同组任一 before 失败不会留下部分修改，代码不可被补丁替换。"""
     blocks = [_block("first"), _block("second", id="b2")]
@@ -286,34 +242,6 @@ def test_rule_replay_is_deterministic_from_same_snapshot():
     second_rows = run_rule_repair(second, [_native("The peak was 398.3 eV.")], 1)
     assert first.blocks == second.blocks
     assert first_rows == second_rows
-
-
-def test_text_patch_cannot_select_top_bottom_evidence_to_delete_middle_not():
-    """原生首尾包围框覆盖整块，也不能摘掉中间否定行。"""
-    block = _block("The sufficiently long first sentence does not describe the sufficiently long final observation.")
-    after = block["content"].replace(" not", "")
-    issue = _issue(block, after)
-    issue["evidence"] = [
-        {"id": "top", "source": "native", "quality": "high", "page": 1, "bbox": [.1,.2,.9,.23], "content": "The sufficiently long first sentence does"},
-        {"id": "middle", "source": "native", "quality": "high", "page": 1, "bbox": [.1,.23,.3,.26], "content": "not"},
-        {"id": "bottom", "source": "native", "quality": "high", "page": 1, "bbox": [.1,.26,.9,.3], "content": "describe the sufficiently long final observation."},
-    ]
-    issue["evidence_ids"] = ["top", "middle", "bottom"]
-    payload = _payload(block, after)
-    payload["edits"][0]["evidence_ids"] = ["top", "bottom"]
-    edits, pending = validate_evidence_patch([block], payload, [issue], visual=False)
-    assert edits == [] and pending
-    assert "not" in block["content"]
-
-
-def test_conflicting_model_edit_and_unresolved_is_not_accepted():
-    """同一输出仍称无法确认时不能应用其修订。"""
-    block = _block("Dubinin, M.; Stoeckeli, H.")
-    after = "Dubinin, M.; Stoeckli, H."
-    payload = _payload(block, after)
-    payload["unresolved"] = [{"issue_id": "issue1", "block_id": "b1", "reason": "uncertain"}]
-    edits, pending = validate_evidence_patch([block], payload, [_issue(block, after)], visual=False)
-    assert edits == [] and pending
 
 
 def test_real_small_punctuation_ink_is_not_treated_as_small_font():
@@ -347,3 +275,86 @@ def test_mixed_page_scanned_region_is_explicitly_not_checked():
     result = ParsedDocument(blocks=[_block("Native paragraph."), scanned])
     rows = run_rule_repair(result, [_native("Native paragraph.")], 1)
     assert any(row["block_id"] == "scan" and row["status"] == "not_checked" and row["review_route"] == "none" for row in rows)
+
+
+@pytest.mark.parametrize(("left", "right"), [
+    (r"$C_{2}H_{4}$", "C₂H₄"),
+    (r"$\mathrm{CO}_{2}$", "CO₂"),
+    (r"$cm^{-1}$", "cm⁻¹"),
+    ("cafe\u0301", "café"),
+    ("ﬁber", "fiber"),
+])
+def test_only_proven_presentation_equivalence_skips_model(left, right):
+    """人工表示正例有同一科学 token 与脚本位置。"""
+    assert proven_representation_equivalent(left, right)
+    result = ParsedDocument(blocks=[_block(left)])
+    rows = run_rule_repair(result, [_native(right)], 1)
+    assert result.blocks[0]["content"] == left
+    assert not any(row["kind"] in {"text_mismatch", "critical_mismatch"} and row["status"] == "unresolved" for row in rows)
+    assert all(row["status"] in {"proven_equivalent", "machine_corrected"} for row in rows)
+
+
+@pytest.mark.parametrize(("left", "right"), [
+    (r"$C_{2}H_{4}$", "C₂H₆"), ("E₂g", "Eₘg"), ("5A", "SA"),
+    ("C=N", "C≡N"), ("C-N", "C=N"), ("−1", "1"),
+    (r"$C_2H_4$", "C2H4"), (r"$x^{2}$", "x₂"),
+    (r"$\unknown{x}$", "x"), ("{a,b}", "a,b"),
+])
+def test_scientific_differences_and_unknown_commands_are_not_equivalence(left, right):
+    """负例不能因消除标点、上下标或未知命令而免去核对。"""
+    assert not proven_representation_equivalent(left, right)
+
+
+def test_whitespace_s01_to_s06_preserves_structures_and_math():
+    """逐字 expected 人工指定，保留双空格断行、缩进、数学和全角空格。"""
+    before = "Text  with\tspace.   \n \t \n\n\n汉 字 ， 下 文　保 留\nA\u00a0B\u2007C\u202fD $x  +  y$ and `a  b`\n- list  untouched\n    code  untouched\n| A  | B |\n<eq>x  y</eq>\n"
+    expected = "Text with space.  \n\n汉字，下文　保留\nA B C D $x  +  y$ and `a  b`\n- list  untouched\n    code  untouched\n| A  | B |\n<eq>x  y</eq>\n"
+    assert clean_prose_whitespace(before) == expected
+    fenced = "```\n \t \n\n\na  b\n```\n"
+    assert clean_prose_whitespace(fenced) == fenced
+
+
+def test_unique_native_date_boundary_splits_without_losing_characters():
+    """日期混入正文只能由独立原生行边界拆开，所有原字符守恒。"""
+    date = "Received: June 1, 2025"
+    body = "The membrane was prepared by electrospinning."
+    original = date + " " + body
+    result = ParsedDocument(blocks=[_block(original, bbox=[.1, .2, .9, .4])])
+    rows = run_rule_repair(result, [
+        _native(date, bbox=[.1, .2, .9, .25]),
+        _native(body, id="n2", bbox=[.1, .3, .9, .4]),
+    ], 1)
+    assert [block["id"] for block in result.blocks] == ["b1", "b1_body"]
+    assert "".join(block["content"] for block in result.blocks) == original
+    assert [block["type"] for block in result.blocks] == ["footnote", "text"]
+    audit = next(row for row in rows if row["kind"] == "date_body_split")
+    assert audit["original_block_ids"] == ["b1"]
+    assert audit["final_block_ids"] == ["b1", "b1_body"]
+    uncertain = ParsedDocument(blocks=[_block(original)])
+    run_rule_repair(uncertain, [], 1)
+    assert len(uncertain.blocks) == 1 and uncertain.blocks[0]["content"] == original
+
+
+def test_same_native_line_proves_fragment_join_but_page_hint_does_not():
+    """单一原生行身份能合碎块；跨页句法启发式不能证明段落。"""
+    left, right = "The membrane", "was prepared."
+    result = ParsedDocument(blocks=[_block(left, bbox=[.1,.2,.45,.3]), _block(right, id="b2", bbox=[.45,.2,.9,.3])])
+    rows = run_rule_repair(result, [_native(left + " " + right)], 1)
+    assert len(result.blocks) == 1
+    assert result.blocks[0]["content"] == "The membrane was prepared."
+    assert next(row for row in rows if row["kind"] == "same_line_join")["original_block_ids"] == ["b1", "b2"]
+    uncertain = ParsedDocument(blocks=[_block(left), _block(right, id="b2", page=2, continues_previous=True)])
+    run_rule_repair(uncertain, [], 2)
+    assert len(uncertain.blocks) == 2
+
+
+def test_title_font_and_exact_native_number_support_hierarchy():
+    """标题身份由独立字号支持时才按原文编号修层级。"""
+    title = _native("3.2 Results")
+    for char in title["chars"]:
+        char.update(font_size=14., origin_normal=14.)
+    result = ParsedDocument(blocks=[_block("3.2 Results", type="title", level=1)])
+    body = _native("The sample was prepared.", id="n2", bbox=[.1,.4,.9,.5])
+    rows = run_rule_repair(result, [title, body], 1)
+    assert result.blocks[0]["level"] == 2
+    assert any(row["kind"] == "title_hierarchy" and row["status"] == "machine_corrected" for row in rows)

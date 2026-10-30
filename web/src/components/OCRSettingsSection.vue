@@ -34,6 +34,13 @@
       <p class="section-description">OXR PDF 正文校对使用此模型，可与插图模型相同；留空不启用模型校对。</p>
     </div>
 
+    <div class="settings-panel">
+      <div class="setting-label">文档模型请求并发数（每端点与模型共享）</div>
+      <a-input-number v-model:value="modelConcurrency" :min="1" :precision="0" :disabled="savingConcurrency" />
+      <a-button :loading="savingConcurrency" @click="saveConcurrency">保存</a-button>
+      <p class="section-description">正文校对与图片解析、多文件及 worker 共用此额度；剩余请求继续排队。默认 2，实际并行能力取决于模型服务。</p>
+    </div>
+
     <div class="section-title">OCR 服务配置</div>
     <p class="section-description">
       仅展示需要配置的服务。保存空值会清除数据库配置，并读取对应环境变量。
@@ -107,14 +114,35 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { configOptionsApi } from '@/apis/system_api'
+import { configApi, configOptionsApi } from '@/apis/system_api'
 import { useConfigStore } from '@/stores/config'
 import OCRSelector from '@/components/OCRSelector.vue'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
 
 const configStore = useConfigStore()
+const modelConcurrency = ref(Number(configStore.config?.document_model_concurrency ?? 2))
+const savingConcurrency = ref(false)
+watch(() => configStore.config?.document_model_concurrency, (value) => {
+  modelConcurrency.value = Number(value ?? 2)
+})
+const saveConcurrency = async () => {
+  if (!Number.isSafeInteger(modelConcurrency.value) || modelConcurrency.value < 1) {
+    message.error('并发数必须是正整数')
+    return
+  }
+  savingConcurrency.value = true
+  try {
+    await configApi.updateConfig('document_model_concurrency', modelConcurrency.value)
+    await configStore.refreshConfig()
+    message.success('并发配置已保存')
+  } catch (error) {
+    message.error(error.message || '保存并发配置失败')
+  } finally {
+    savingConcurrency.value = false
+  }
+}
 const OCR_OPTION_KEYS = new Set([
   'mineru_ocr_host_opts',
   'mineru_official_api_opts',

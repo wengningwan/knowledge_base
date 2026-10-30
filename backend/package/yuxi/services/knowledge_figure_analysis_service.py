@@ -22,7 +22,7 @@ def figure_task_intent(job_id, *, kb_id, file_id, attempt_id, markdown_file, ass
     """提供与正文指针在同事务提交的待投递任务，不自行投递。"""
     return {"id": job_id, "data": {
         "name": f"插图解析：{filename}", "type": TASK_TYPE, "status": "pending", "progress": 0,
-        "message": "正文已生成，等待独立图片解析", "handler_version": 1, "timeout_seconds": 360,
+        "message": "正文已生成，等待独立图片解析", "handler_version": 1,
         "cancel_requested": 0, "attempt_count": 0,
         "payload": {"kb_id": kb_id, "file_id": file_id, "attempt_id": attempt_id,
                     "markdown_file": markdown_file, "assets_file": assets_file, "model_spec": model_spec, "filename": filename},
@@ -51,7 +51,9 @@ class FigureTaskControl:
         self.kb_id = self.payload["kb_id"]
         self.file_id = self.payload["file_id"]
         self.filename = self.payload.get("filename", "")
-        self.deadline = context.deadline or time.monotonic() + 360
+        from yuxi.services.task_service import TASKER_DEFAULT_TIMEOUT_SECONDS
+
+        self.deadline = context.deadline or time.monotonic() + TASKER_DEFAULT_TIMEOUT_SECONDS
 
     def remaining_seconds(self):
         """为附属文件上传和 CAS 预留阶段以外的时间。"""
@@ -177,4 +179,3 @@ async def _read_sidecar(client, pointer, payload):
     if not isinstance(data, dict) or data.get("schema_version") != 1 or any(data.get(key) != payload[key] for key in ("kb_id", "file_id", "attempt_id")):
         raise ValueError("附属快照归属无效")
     return data
-

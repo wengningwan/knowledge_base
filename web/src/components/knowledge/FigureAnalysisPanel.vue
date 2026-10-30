@@ -7,7 +7,7 @@
     <template v-else>
       <p class="panel-description">图片解释为模型生成的独立结果，不写入论文正文。</p>
       <a-alert v-if="['pending', 'running'].includes(state.metadata?.figure_analysis?.status)" type="info" message="正文已就绪，插图正在后台解析。可在任务中心查看进度，完成后关闭并重新打开文件详情。" show-icon />
-      <a-alert v-else-if="['failed', 'cancelled'].includes(state.metadata?.figure_analysis?.status)" type="warning" message="图片任务未完成，原图和已生成的正文仍可查看。" show-icon />
+      <a-alert v-else-if="['failed', 'cancelled', 'incomplete'].includes(state.metadata?.figure_analysis?.status)" type="warning" message="图片任务未完成，原图和已生成的正文仍可查看。" show-icon />
       <article v-for="figure in state.figures" :key="figure.id" class="asset-card">
         <header>
           <strong>{{ figure.caption || figure.id }}</strong>

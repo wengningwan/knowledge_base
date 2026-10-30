@@ -342,7 +342,9 @@ class KnowledgeBase(ABC):
                 except Exception as exc:
                     # intent 已与正文指针提交；定期 publisher 会补投，不撤回已发布正文。
                     logger.warning(f"[pdf_figures] 投递待重试 task_id={figure_task['id']} error={type(exc).__name__}")
-            return await self._load_file_meta(kb_id, file_id)
+            published_meta = await self._load_file_meta(kb_id, file_id)
+            published_meta["review_status"] = result.metadata.get("review_status", "not_requested")
+            return published_meta
         except (Exception, asyncio.CancelledError) as exc:
             await cleanup_unpublished_attempt(kb_id, file_id, attempt_id)
             error = "解析任务已取消" if isinstance(exc, asyncio.CancelledError) else str(exc)

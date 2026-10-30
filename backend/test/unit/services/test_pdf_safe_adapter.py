@@ -26,10 +26,10 @@ async def test_pdf_adapter_redacts_remote_exception_and_does_not_forward_logging
     monkeypatch.setattr(chat, "logger", SimpleNamespace(info=logs.append, error=logs.append))
     monkeypatch.setattr(chat, "_require_chat_model_info", lambda spec: SimpleNamespace(model_id="model", base_url="https://example.invalid/v1?key=PRIVATE", provider_id="provider", provider_type="openai"))
     monkeypatch.setattr(chat, "load_chat_model", load)
-    adapter = chat.select_model("test:model", timeout=90, max_retries=0, safe_error_logging=True)
+    adapter = chat.select_model("test:model", timeout=None, max_retries=0, safe_error_logging=True)
     with pytest.raises(RuntimeError) as caught:
         await adapter.call("PRIVATE_DOCUMENT")
-    assert options == [{"timeout": 90, "max_retries": 0}]
+    assert options == [{"timeout": None, "max_retries": 0}]
     assert "ValueError" in str(caught.value)
     assert "PRIVATE" not in str(caught.value) + "\n".join(logs)
     assert caught.value.__suppress_context__ is True

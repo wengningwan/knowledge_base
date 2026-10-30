@@ -100,8 +100,8 @@ def validate_review_patch(blocks: list[dict], payload) -> tuple[list[dict], list
             reason = "before 必须完整且精确匹配原块"
         elif not isinstance(edit.get("after"), str) or not edit["after"].strip():
             reason = "after 必须是非空字符串"
-        elif len(edit["after"]) > 24000 or len(edit["before"]) > 24000:
-            reason = "补丁文本超过长度上限"
+        elif len(edit["after"]) > max(len(edit["before"]) * 2, len(edit["before"]) + 4096):
+            reason = "补丁文本增长超出局部修改范围"
         elif any(unicodedata.category(char) == "Cc" and char not in "\n\r\t" for char in edit["after"]):
             reason = "after 含非法控制字符"
         elif not _preserves_image_evidence(edit["before"], edit["after"]):

@@ -15,7 +15,7 @@ DOCUMENT_ACTION_RESULT_ITEM_LIMIT = 200
 
 
 def _is_failed_item(item: dict) -> bool:
-    return item.get("status") == "failed" or bool(item.get("error"))
+    return item.get("status") == "failed" or bool(item.get("error")) or item.get("review_status") == "incomplete"
 
 
 def _append_result_sample(items: list[dict], item: dict) -> None:
@@ -101,7 +101,7 @@ async def run_knowledge_ingest(context: TaskContext) -> dict:
                     **processing_owner,
                 )
                 record["file_meta"] = file_meta
-                if not auto_index or file_meta.get("status") != "parsed":
+                if not auto_index or file_meta.get("status") != "parsed" or file_meta.get("review_status") == "incomplete":
                     processed_items[record["index"]] = file_meta
             except Exception as exc:
                 logger.error("解析文件失败 %s (file_id=%s): %s", record["item"], record["file_id"], exc)
@@ -115,7 +115,7 @@ async def run_knowledge_ingest(context: TaskContext) -> dict:
                 }
 
         if auto_index:
-            parsed_files = [record for record in added_files if record["file_meta"].get("status") == "parsed"]
+            parsed_files = [record for record in added_files if record["file_meta"].get("status") == "parsed" and record["file_meta"].get("review_status") != "incomplete"]
             for index, record in enumerate(parsed_files, 1):
                 await context.raise_if_cancelled()
                 await context.set_progress(
@@ -239,6 +239,8 @@ async def _run_file_ids(context: TaskContext, *, action: str) -> dict:
     result = {"items": processed_items, "processed": len(processed_items), "failed": failed_count}
     await context.set_result(result)
     await context.set_progress(100.0, f"{label}完成，失败 {failed_count} 个")
+    if any(item.get("review_status") == "incomplete" for item in processed_items):
+        raise RuntimeError("正文已生成，但模型复核尚未完成，请查看校对结果与日志")
     return result
 
 
@@ -258,6 +260,7 @@ async def _run_pending_files(context: TaskContext, *, action: str) -> dict:
 
     processed_count = 0
     failed_count = 0
+    review_incomplete_count = 0
     result_items: list[dict] = []
     after_file_id = None
     while True:
@@ -302,6 +305,10 @@ async def _run_pending_files(context: TaskContext, *, action: str) -> dict:
                         params=params,
                         **processing_owner,
                     )
+                if _is_failed_item(result):
+                    failed_count += 1
+                if result.get("review_status") == "incomplete":
+                    review_incomplete_count += 1
                 _append_result_sample(result_items, result)
             except Exception as exc:
                 failed_count += 1
@@ -323,6 +330,8 @@ async def _run_pending_files(context: TaskContext, *, action: str) -> dict:
         100.0,
         f"{label}完成，失败 {failed_count} 个" if processed_count else f"没有待{label}文档",
     )
+    if review_incomplete_count:
+        raise RuntimeError("正文已生成，但部分模型复核未完成，请查看校对结果与日志")
     return result
 
 

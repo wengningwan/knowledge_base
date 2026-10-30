@@ -4,7 +4,7 @@
     <a-alert v-else-if="state.error" type="error" :message="state.error" show-icon />
     <a-empty v-else-if="state.legacy_without_assets" description="此文件尚无独立解析产物，请重新解析生成图片解析和校对结果。" />
     <template v-else>
-      <a-alert :type="state.metadata.review_status === 'needs_review' ? 'warning' : 'info'" :message="reviewSummary" show-icon />
+      <a-alert :type="['needs_review', 'incomplete'].includes(state.metadata.review_status) ? 'warning' : 'info'" :message="reviewSummary" show-icon />
       <p class="panel-description">校对记录独立展示；关键修改以醒目标记提示，诊断信息不写入论文正文。</p>
       <a-empty v-if="!state.reviews.length" description="本次解析没有校对记录。" />
       <article v-for="(review, index) in state.reviews" :key="`${review.id || review.block_id || 'review'}-${index}`" class="asset-card" :class="{ critical: review.critical }">
@@ -49,10 +49,11 @@ const imageMarkdown = (source) => knowledgeAssetImageMarkdown(source, props.kbId
 const reviewSummary = computed(() => ({
   not_requested: '未选择正文校对模型，未启用模型校对。',
   needs_review: '部分内容仍需人工核对，请结合原文裁图检查。',
+  incomplete: '正文已生成，但模型复核存在失败或缺失回执，尚未完成校对；自动入库已跳过。',
   completed: '本次登记疑点已处理，仍可结合原PDF复核。'
 })[props.state.metadata.review_status] || '暂无检查状态。')
 const statusLabel = (status) => ({
-  machine_corrected: '已修复', checked: '已核对', unresolved: '仍需核对', not_checked: '未核对'
+  machine_corrected: '已修复', checked: '已核对', unresolved: '仍需核对', not_checked: '未核对', technical_failed: '复核未完成', proven_equivalent: '已证明等价'
 })[status] || status
 </script>
 

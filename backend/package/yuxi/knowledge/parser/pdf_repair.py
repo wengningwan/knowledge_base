@@ -11,17 +11,19 @@ from statistics import median
 from yuxi.knowledge.parser.pdf_repair_rules import (
     apply_block_edits,
     covers_block_region,
+    clean_prose_whitespace,
     critical_signature,
     damaged_text,
     is_local_candidate,
     layout_text,
     overlap_fraction,
     protected_spans,
+    proven_representation_equivalent,
 )
 from yuxi.knowledge.parser.result import ParsedDocument
 
 
-RULE_VERSION = "yuxi-r1-1"
+RULE_VERSION = "yuxi-r2-1"
 
 
 def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_count: int) -> list[dict]:
@@ -35,11 +37,12 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
         evidence.append({
             "id": native["id"], "page": native["page"], "bbox": native.get("bbox"),
             "content": str(native.get("content") or ""), "source": "native",
-            "quality": _native_quality(native), "role": role,
+            "quality": _native_quality(native), "role": role, "chars": native.get("chars", []),
         })
     evidence_by_page = defaultdict(list)
     for entry in evidence:
         evidence_by_page[entry["page"]].append(entry)
+    structure_rows = _repair_proven_structure(result, evidence)
     matches = {
         block["id"]: [entry for entry in evidence_by_page[block["page"]] if overlap_fraction(entry["bbox"], block.get("bbox")) >= 0.85]
         for block in result.blocks
@@ -48,7 +51,7 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
     for block in result.blocks:
         for entry in matches[block["id"]]:
             owners[entry["id"]].append(block)
-    rows = []
+    rows = structure_rows
     removed = set()
     for block in result.blocks:
         content = str(block.get("content") or "")
@@ -62,6 +65,22 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
             if block["type"] == "table" and re.search(r"<(?:eq|th)\b", content, re.I) and re.search(r"[_^{}]", content):
                 rows.append(_row(block, "table_math", sources, reason="表格单元数学需专用结构证明，本版保留原表", severity="medium"))
             continue
+        if block["type"] in {"text", "caption", "footnote"}:
+            whitespace = clean_prose_whitespace(content)
+            if whitespace != content and apply_block_edits(result.blocks, [{"block_id": block["id"], "before": content, "after": whitespace}], allow_prose_cleanup=True):
+                row = _row(block, "prose_whitespace", [], status="machine_corrected", reason="S01–S06仅清理普通正文的空白，保护公式、结构与有效换行", severity="low", route="none")
+                row.update(before=content, after=whitespace, source="rule", source_quality="syntax", validation="accepted")
+                row["candidates"]["ocr"] = content
+                rows.append(row)
+                content = whitespace
+        fixed = _delimit_bare_math(content)
+        if fixed != content and block["type"] in {"text", "caption", "footnote"}:
+            if apply_block_edits(result.blocks, [{"block_id": block["id"], "before": content, "after": fixed}]):
+                row = _row(block, "math_delimiter", [], status="machine_corrected", reason="仅给完整下标或指数 token 添加数学定界，可见 token 守恒", severity="medium")
+                row.update(before=content, after=fixed, source="rule", source_quality="syntax", review_route="none")
+                row["candidates"]["ocr"] = content
+                rows.append(row)
+                content = fixed
         if damaged_text(content):
             rows.append(_row(block, "damaged_glyph", sources, reason="控制、私用或替换字形需原页视觉裁决", route="vision"))
             continue
@@ -88,7 +107,9 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
                     row["validation"] = "accepted"
                     rows.append(row)
                     continue
-        if sources and layout_text(content) != candidate:
+        if sources and layout_text(content) != candidate and strong and proven_representation_equivalent(content, candidate):
+            rows.append(_row(block, "representation_equivalent", sources, status="proven_equivalent", reason="唯一同区域原生证据与有限排印语法证明等价，正文逐字保留", route="none", severity="low"))
+        elif sources and layout_text(content) != candidate:
             critical = critical_signature(content) != critical_signature(candidate)
             row = _row(block, "critical_mismatch" if critical else "text_mismatch", sources, reason="同区域候选存在精确差异", route="vision" if critical or not strong else "text")
             plain = not protected_spans(content, include_math=True) and not re.search(r"[_^{}\\]", content + candidate)
@@ -102,14 +123,6 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
             elif critical:
                 row["reason"] = "数值、单位、引用或科学 token 有差异，本版 R1 不自动改写，需视觉裁决"
             rows.append(row)
-        fixed = _delimit_bare_math(content)
-        if fixed != content and block["type"] in {"text", "caption", "footnote"}:
-            if apply_block_edits(result.blocks, [{"block_id": block["id"], "before": content, "after": fixed}]):
-                row = _row(block, "math_delimiter", [], status="machine_corrected", reason="仅给完整下标或指数 token 添加数学定界，可见 token 守恒", severity="medium")
-                row.update(before=content, after=fixed, source="rule", source_quality="syntax", review_route="none")
-                row["candidates"]["ocr"] = content
-                rows.append(row)
-                content = fixed
         lint = _math_problem(content)
         if lint:
             rows.append(_row(block, "math_syntax", sources, reason=lint, route="vision", severity="medium"))
@@ -117,7 +130,15 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
             numbered = re.match(r"^\s*(\d+(?:\.\d+)*)(?:[.)]?\s+)\S", content)
             expected = min(6, numbered[1].count(".") + 1) if numbered else None
             if expected and expected != block.get("level"):
-                row = _row(block, "title_hierarchy", sources, reason="标题身份与编号存在层级冲突，缺少独立字体依据", severity="medium")
+                body_sizes = [char["font_size"] for entry in evidence if entry["page"] == block["page"] and entry["role"] == "body" and entry not in sources for char in entry.get("chars", []) if isinstance(char.get("font_size"), (int, float))]
+                title_sizes = [char["font_size"] for entry in sources for char in entry.get("chars", []) if isinstance(char.get("font_size"), (int, float))]
+                if strong and candidate == layout_text(content) and body_sizes and title_sizes and min(title_sizes) > median(body_sizes) * 1.15:
+                    old_level = block.get("level")
+                    block["level"] = expected
+                    row = _row(block, "title_hierarchy", sources, status="machine_corrected", reason="唯一原生标题字号和原文编号共同支持层级，标题文字保持", severity="medium", route="none")
+                    row.update(source="rule", before_level=old_level, after_level=expected, original_block_ids=[block["id"]], final_block_ids=[block["id"]], original_order=[block.get("order")], final_order=[block.get("order")])
+                else:
+                    row = _row(block, "title_hierarchy", sources, reason="标题身份与编号存在层级冲突，缺少独立字体依据", severity="medium", route="none")
                 rows.append(row)
     # 遗漏检测按区域和精确 token 执行，中文和短数字不经过英文指纹过滤。
     for entry in evidence:
@@ -152,6 +173,75 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
         "model_requests": 0,
     }
     return rows
+
+
+
+def _repair_proven_structure(result: ParsedDocument, evidence: list[dict]) -> list[dict]:
+    """只按唯一原生行身份拆日期或合并同行碎块，跨页关系不猜测。"""
+    rows, index = [], 0
+    while index < len(result.blocks):
+        block = result.blocks[index]
+        content = str(block.get("content") or "")
+        if block.get("type") != "text" or protected_spans(content, include_math=True):
+            index += 1
+            continue
+        sources = [entry for entry in evidence if entry["page"] == block["page"] and overlap_fraction(entry.get("bbox"), block.get("bbox")) >= .98]
+        unique = all(sum(other["page"] == entry["page"] and overlap_fraction(entry.get("bbox"), other.get("bbox")) >= .98 for other in result.blocks) == 1 for entry in sources)
+        date_count = 0
+        for entry in sources:
+            if not re.match(r"^(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:\s*.*\d", entry["content"], re.I):
+                break
+            date_count += 1
+        if 0 < date_count < len(sources) and unique and all(entry["quality"] == "high" for entry in sources) and covers_block_region(block.get("bbox"), sources):
+            first_body = sources[date_count]["content"]
+            boundary = content.find(first_body)
+            body_id = f"{block['id']}_body"
+            if boundary > 0 and len(first_body) >= 16 and content.count(first_body) == 1 and all(other["id"] != body_id for other in result.blocks) and layout_text(content[:boundary]) == layout_text("\n".join(entry["content"] for entry in sources[:date_count])) and layout_text(content[boundary:]) == layout_text("\n".join(entry["content"] for entry in sources[date_count:])):
+                metadata = {**block, "type": "footnote", "content": content[:boundary], "bbox": _region_envelope(sources[:date_count])}
+                body = {**block, "id": body_id, "content": content[boundary:], "bbox": _region_envelope(sources[date_count:])}
+                if metadata["content"] + body["content"] == content:
+                    row = _row(block, "date_body_split", sources, status="machine_corrected", reason="唯一高质量原生行给出日期/正文边界，原始字符逐字守恒", route="none", severity="medium")
+                    row.update(source="rule", original_block_ids=[block["id"]], final_block_ids=[block["id"], body_id], original_order=[block.get("order", index)], final_order=[index, index + 1], before=content, after=content)
+                    rows.append(row)
+                    result.blocks[index:index + 1] = [metadata, body]
+                    index += 2
+                    continue
+        if index + 1 < len(result.blocks):
+            right = result.blocks[index + 1]
+            right_text = str(right.get("content") or "")
+            if right.get("type") == "text" and right["page"] == block["page"] and content == content.strip() and right_text == right_text.strip() and not protected_spans(right_text, include_math=True):
+                proof = []
+                for entry in evidence:
+                    text = entry["content"]
+                    if entry["page"] != block["page"] or entry["quality"] != "high" or not text.startswith(content) or not text.endswith(right_text):
+                        continue
+                    middle = text[len(content):len(text) - len(right_text)] if right_text else ""
+                    if middle and middle.isspace() and text.count(content) == 1 and text.count(right_text) == 1 and overlap_fraction(block.get("bbox"), entry.get("bbox")) >= .98 and overlap_fraction(right.get("bbox"), entry.get("bbox")) >= .98:
+                        proof.append(entry)
+                if len(proof) == 1:
+                    after = proof[0]["content"]
+                    if layout_text(content + " " + right_text) == layout_text(after):
+                        row = _row(block, "same_line_join", proof, status="machine_corrected", reason="唯一原生同一行证明OCR碎块相邻，按原生空白连接且可见字符守恒", route="none", severity="medium")
+                        row.update(source="rule", original_block_ids=[block["id"], right["id"]], final_block_ids=[block["id"]], original_order=[block.get("order", index), right.get("order", index + 1)], final_order=[index], before=content + " " + right_text, after=after)
+                        rows.append(row)
+                        result.blocks[index:index + 2] = [{**block, "content": after, "bbox": _region_envelope([block, right])}]
+                        index += 1
+                        continue
+        index += 1
+    if rows:
+        final_orders = {}
+        for order, block in enumerate(result.blocks):
+            block["order"] = order
+            final_orders[block["id"]] = order
+        for row in rows:
+            row["final_order"] = [final_orders[block_id] for block_id in row["final_block_ids"]]
+    return rows
+
+
+def _region_envelope(regions: list[dict]) -> list:
+    """合并已有真实区域，不为文字片段推造坐标。"""
+    boxes = [entry["bbox"] for entry in regions]
+    return [min(box[0] for box in boxes), min(box[1] for box in boxes), max(box[2] for box in boxes), max(box[3] for box in boxes)]
 
 
 def _row(block, kind, sources, *, status="unresolved", reason, route="text", classification="content", severity="high") -> dict:
@@ -198,7 +288,7 @@ def _native_quality(native: dict) -> str:
 def _region_role(region: dict, repeats) -> str:
     """出版用途需位置佐证，唯一 DOI、SI 和通讯信息始终保留。"""
     content = layout_text(str(region.get("content") or ""))
-    if re.search(r"\bdoi\b|10\.\d{4,9}/|Supporting Information|Correspond(?:ing|ence)|\bE[-\s]?mail\b|[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}|orcid\.org|Author|Acknowledg|Cite This", content, re.I):
+    if re.search(r"\bdoi\b|10\.\d{4,9}/|Supporting Information|Correspond(?:ing|ence)|^(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:|\bE[-\s]?mail\b|[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}|orcid\.org|Author|Acknowledg|Cite This", content, re.I):
         return "article_metadata"
     box = region.get("bbox")
     margin = bool(box) and (box[3] <= 0.10 or box[1] >= 0.90 or box[0] >= 0.92)

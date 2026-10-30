@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from test.unit.services.pdf_model_fakes import configure_pdf_budget
+from test.unit.services.pdf_model_fakes import configure_pdf_execution
 
 import yuxi.knowledge.parser.pdf_figures as pdf_figures
 import yuxi.knowledge.parser.unified as parser_unified
@@ -101,7 +101,7 @@ async def test_native_model_explanation_never_enters_paper_markdown(monkeypatch)
     from yuxi.knowledge.parser.pdf_structure import finalize_document
     from yuxi.services.pdf_document_service import build_native_document, enrich_document
 
-    configure_pdf_budget(monkeypatch)
+    configure_pdf_execution(monkeypatch)
     source = _png_bytes(50, 30, noise=False)
     monkeypatch.setattr(native, "read_native_blocks", lambda _: [
         {"page": 1, "bbox": [.1, .1, .9, .2], "content": "Original text 12 mg."},
@@ -134,7 +134,7 @@ async def test_failed_figure_model_preserves_original_and_reports_separate_statu
     import yuxi.models.chat as chat
     from yuxi.knowledge.parser.result import ParsedDocument
     from yuxi.services.pdf_figure_analysis_service import analyze_document_figures
-    configure_pdf_budget(monkeypatch)
+    configure_pdf_execution(monkeypatch)
     calls = []
 
     async def call(*args, **kwargs):

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from contextlib import asynccontextmanager
 from typing import Any
 
 from pydantic import HttpUrl, TypeAdapter
@@ -72,7 +73,8 @@ class Option:
 
             stored_value = stored.get(field_key)
             environment_value = os.getenv(field.get("environment", ""))
-            resolved[field_key] = stored_value or environment_value or field.get("default")
+            effective = stored_value if stored_value is not None and stored_value != "" else environment_value or field.get("default")
+            resolved[field_key] = normalize_option_value(field, effective) if field.get("type") == "positive_int" else stored_value or environment_value or field.get("default")
         return resolved
 
     @property
@@ -126,6 +128,12 @@ system_options = Option(
                 "label": "默认正文校对模型",
                 "type": "model",
                 "default": "",
+            },
+            {
+                "key": "document_model_concurrency",
+                "label": "文档模型请求并发数（每端点与模型共享）",
+                "type": "positive_int",
+                "default": 2,
             },
             {
                 "key": "default_image_analysis_model",
@@ -406,11 +414,32 @@ async def invalidate_option_cache(key: str) -> None:
         logger.warning(f"Failed to invalidate option cache {key}: {exc}")
 
 
+@asynccontextmanager
+async def document_model_concurrency_policy():
+    """持配置共享行锁到准入结束，降额提交后不使用失效缓存旧值。"""
+    from yuxi.storage.postgres.manager import pg_manager
+
+    async with pg_manager.get_async_session_context() as session:
+        record = await session.scalar(select(ConfigOption).where(
+            ConfigOption.key == system_options.key,
+        ).with_for_update(read=True))
+        if record is None:
+            raise ValueError("系统配置尚未初始化")
+        yield system_options.resolve(dict(record.value or {}))["document_model_concurrency"]
+
+
 def _fields(record: ConfigOption) -> list[dict[str, Any]]:
     return list((record.params or {}).get("fields") or [])
 
 
 def normalize_option_value(field: dict[str, Any], value: Any) -> Any:
+    if field.get("type") == "positive_int":
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise ValueError("并发数必须是正整数")
+        text_value = str(value).strip()
+        if not text_value.isascii() or not text_value.isdecimal() or int(text_value) <= 0:
+            raise ValueError("并发数必须是正整数")
+        return int(text_value)
     if field.get("type") == "list[str]":
         if not isinstance(value, list):
             raise ValueError("配置值必须是列表")

@@ -8,11 +8,50 @@ from types import SimpleNamespace
 
 import pytest
 
-from test.unit.services.pdf_model_fakes import configure_pdf_budget
+from test.unit.services.pdf_model_fakes import configure_pdf_execution
 from yuxi.knowledge.parser.pdf_structure import finalize_document
 from yuxi.knowledge.parser.result import ParsedDocument
 from yuxi.services import knowledge_figure_analysis_service as tasks
 from yuxi.services import pdf_figure_analysis_service as figures
+
+
+@pytest.mark.asyncio
+async def test_complete_figure_queue_and_second_pass_cache_have_separate_token_accounting(monkeypatch):
+    """九张图都完成；重新读取成功缓存没有重复请求或 token 消耗。"""
+    configure_pdf_execution(monkeypatch, limit=3)
+    calls = []
+
+    async def call(messages, stream=False):
+        """供应商边界返回报告用量，执行与缓存走真实链路。"""
+        calls.append(messages)
+        return SimpleNamespace(content="Visible axes and legend.", usage_metadata={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14})
+
+    monkeypatch.setattr("yuxi.models.chat.select_model", lambda *args, **kwargs: SimpleNamespace(call=call))
+
+    async def check():
+        """保持原有任务取消接口。"""
+
+    control = SimpleNamespace(kb_id="kb", file_id="file", task_id="task", check_cancelled=check)
+    assets = {f"a{index}": {"data": f"unique image {index}".encode()} for index in range(9)}
+    source_figures = [{"id": f"f{index}", "asset_id": f"a{index}", "caption": "Original caption"} for index in range(9)]
+    first = ParsedDocument(markdown="Original body.", figures=deepcopy(source_figures), assets=deepcopy(assets))
+    await figures.analyze_document_figures(first, {"image_analysis_model": "p:model"}, control)
+    assert len(calls) == 9
+    assert all(figure["analysis_status"] == "completed" for figure in first.figures)
+    assert first.markdown == "Original body."
+    assert first.assets == assets
+    execution = first.metadata["figure_analysis"]["execution"]
+    assert execution["calls"] == execution["vision_calls"] == 9
+    assert execution["routes"]["figures"]["known_tokens"]["total_tokens"] == 126
+
+    second = ParsedDocument(markdown="Original body.", figures=deepcopy(source_figures), assets=deepcopy(assets))
+    await figures.analyze_document_figures(second, {"image_analysis_model": "p:model"}, control)
+    assert len(calls) == 9
+    assert all(figure["analysis_status"] == "completed" for figure in second.figures)
+    second_execution = second.metadata["figure_analysis"]["execution"]
+    assert second_execution["cache_hits"] == 9
+    assert second_execution["calls"] == 0
+    assert second_execution["known_tokens"]["total_tokens"] == 0
 
 
 @pytest.mark.parametrize("url", [
@@ -86,13 +125,12 @@ async def test_projection_rejects_task_from_another_document_version(monkeypatch
 @pytest.mark.parametrize("description", ["", "bad\ufffdglyph"])
 async def test_invalid_model_description_is_failed_and_never_cached(monkeypatch, description):
     """无效解释只进入失败状态，不进入成功缓存和正文。"""
-    redis, _ = configure_pdf_budget(monkeypatch)
-    monkeypatch.setattr("yuxi.models.chat.select_model", lambda *args, **kwargs: object())
+    redis, _ = configure_pdf_execution(monkeypatch)
 
-    async def model(*args):
-        return description
+    async def model(*args, **kwargs):
+        return SimpleNamespace(content=description)
 
-    monkeypatch.setattr(figures, "call_visual_text", model)
+    monkeypatch.setattr("yuxi.models.chat.select_model", lambda *args, **kwargs: SimpleNamespace(call=model))
     result = ParsedDocument(markdown="source", figures=[{"id": "f1", "asset_id": "image"}], assets={"image": {"data": b"image"}})
     control = SimpleNamespace(kb_id="kb", file_id="file", task_id="task", filename="paper.pdf", remaining_seconds=lambda: 360)
 
@@ -109,13 +147,12 @@ async def test_invalid_model_description_is_failed_and_never_cached(monkeypatch,
 @pytest.mark.asyncio
 async def test_model_figure_explanation_is_sidecar_only_even_after_final_render(monkeypatch):
     """模型解释可侧录下载，但再次渲染后的 Markdown 只包含原文图注。"""
-    redis, _ = configure_pdf_budget(monkeypatch)
-    monkeypatch.setattr("yuxi.models.chat.select_model", lambda *args, **kwargs: object())
+    redis, _ = configure_pdf_execution(monkeypatch)
 
-    async def model(*args):
-        return "MODEL_EXPLANATION_MUST_STAY_IN_SIDECAR"
+    async def model(*args, **kwargs):
+        return SimpleNamespace(content="MODEL_EXPLANATION_MUST_STAY_IN_SIDECAR")
 
-    monkeypatch.setattr(figures, "call_visual_text", model)
+    monkeypatch.setattr("yuxi.models.chat.select_model", lambda *args, **kwargs: SimpleNamespace(call=model))
     result = ParsedDocument(
         blocks=[{"id": "b1", "type": "text", "content": "Author paragraph."}, {"id": "b2", "type": "picture", "content": "![Original caption](asset://image)"}],
         figures=[{"id": "f1", "asset_id": "image", "caption": "Original caption"}], assets={"image": {"data": b"image"}},

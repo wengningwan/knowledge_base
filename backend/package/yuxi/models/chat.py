@@ -194,10 +194,21 @@ def normalize_tool_call_chunks(message: AIMessageChunk) -> None:
                 tool[key] = None
 
 
+class ModelRequestError(RuntimeError):
+    """PDF只公开安全错误类别，不把供应商正文或凭据放入异常链。"""
+
+    def __init__(self, error):
+        self.error_type = type(error).__name__
+        self.http_status = getattr(error, "status_code", None)
+        super().__init__(f"PDF model request failed: {self.error_type}")
+
+
 class GeneralResponse:
-    def __init__(self, content):
+    def __init__(self, content, *, usage_metadata=None, token_usage=None):
         self.content = content
         self.is_full = False
+        self.usage_metadata = usage_metadata
+        self.token_usage = token_usage
 
 
 class LangChainChatAdapter:
@@ -214,11 +225,15 @@ class LangChainChatAdapter:
             if stream:
                 return self._stream_response(messages)
             response = await self.model.ainvoke(messages)
-            return GeneralResponse(response.text)
+            metadata = getattr(response, "response_metadata", None) or {}
+            return GeneralResponse(
+                response.text, usage_metadata=getattr(response, "usage_metadata", None),
+                token_usage=metadata.get("token_usage") if isinstance(metadata, dict) else None,
+            )
         except Exception as e:
             if self.safe_error_logging:
                 logger.error(f"PDF model request failed: error={type(e).__name__}")
-                raise RuntimeError(f"PDF model request failed: {type(e).__name__}") from None
+                raise ModelRequestError(e) from None
             err = f"Error calling model: {e}, URL: {self.base_url}, Model: {self.model_name}"
             logger.error(err)
             raise Exception(err)
