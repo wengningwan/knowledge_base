@@ -7,6 +7,66 @@ from yuxi.services.pdf_review_service import review_pdf_document
 
 
 @pytest.mark.asyncio
+async def test_no_change_correction_does_not_trigger_redundant_retry(monkeypatch, tmp_path):
+    """Qwen式corrected+old==new应一次收敛，不能虚增修复或消费第二次请求。"""
+    def reply(payload):
+        """只改变状态标签，不制造任何内容补丁。"""
+        answer = acknowledge(payload)
+        for row, issue in zip(answer["results"], payload["issues"], strict=True):
+            row.update(status="corrected", patches=[{"target_id": target["id"], "old": target["old"], "new": target["old"]} for target in issue["targets"]])
+        return answer
+
+    result, path, requests, _ = configure_review_case(monkeypatch, tmp_path, reply=reply)
+    await review_pdf_document(result, path, {"document_review_model": "p:model"})
+    assert len(requests) == 1
+    assert result.blocks[0]["content"] == "The sample was 12 mg."
+    assert result.metadata["review_status"] == "completed"
+    assert result.metadata["pdf_repair"]["r2_patches"] == []
+    assert result.metadata["pdf_repair"]["execution"]["known_tokens"]["total_tokens"] == 14
+    assert [row["validation"] for row in result.reviews if row.get("targets")] == ["normalized_no_change"]
+
+
+@pytest.mark.asyncio
+async def test_retry_receives_specific_error_and_final_report_keeps_rejection(monkeypatch, tmp_path):
+    """错误原文继续拒绝，结束后仍显示invalid_target_patch而不是missing_issue_id。"""
+    def reply(payload):
+        """人工注入错old，模拟真实日志拒绝类型。"""
+        issue = payload["issues"][0]
+        return {"batch_id": payload["batch_id"], "results": [{"issue_id": issue["issue_id"], "status": "corrected",
+            "patches": [{"target_id": target["id"], "old": "wrong source", "new": "wrong replacement"} for target in issue["targets"]],
+            "evidence_ids": [entry["id"] for entry in issue["evidence"]], "reason": "人工错误原文负例"}]}
+
+    result, path, requests, redis = configure_review_case(monkeypatch, tmp_path, reply=reply)
+    await review_pdf_document(result, path, {"document_review_model": "p:model"})
+    assert len(requests) == 2
+    assert requests[1]["retry_errors"] == [{"issue_id": requests[0]["issues"][0]["issue_id"], "validation": "invalid_target_patch"}]
+    assert result.blocks[0]["content"] == "The sample was 12 mg."
+    assert result.metadata["review_status"] == "incomplete"
+    assert result.metadata["reviewed_regions"] == 0
+    assert [row["validation"] for row in result.reviews if row.get("targets")] == ["invalid_target_patch"]
+    assert redis.cache_writes == []
+
+
+@pytest.mark.asyncio
+async def test_successful_retry_clears_prior_failure_without_erasing_evidence(monkeypatch, tmp_path):
+    """第二次明确回执通过后不能因先前坏JSON留下假未完成。"""
+    attempts = 0
+
+    def reply(payload):
+        """第一次JSON非法，第二次使用有证据的显式无修改回执。"""
+        nonlocal attempts
+        attempts += 1
+        return "invalid JSON" if attempts == 1 else acknowledge(payload)
+
+    result, path, requests, _ = configure_review_case(monkeypatch, tmp_path, reply=reply)
+    await review_pdf_document(result, path, {"document_review_model": "p:model"})
+    assert requests[1]["retry_errors"][0]["validation"] == "invalid_batch_payload"
+    assert result.metadata["review_status"] == "completed"
+    assert result.metadata["reviewed_regions"] == 1
+    assert result.metadata["pdf_repair"]["execution"]["known_tokens"]["total_tokens"] == 28
+
+
+@pytest.mark.asyncio
 async def test_spelling_difference_with_bare_subscript_still_reaches_model(monkeypatch, tmp_path):
     """添加数学定界符不能使同块错字问题变成过期而漏检。"""
     result, path, requests, _ = configure_review_case(

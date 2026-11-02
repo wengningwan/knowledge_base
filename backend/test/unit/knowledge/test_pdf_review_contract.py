@@ -355,3 +355,59 @@ def test_visual_reconstruction_cannot_introduce_an_unregistered_asset():
     _vision(issue, bbox=block["bbox"])
     edits, outcomes = validate_issue_results([block], _payload(_result(issue, news=["![](asset://fake)"], visual=True)), [issue], batch_id="batch_1", visual=True)
     assert edits == [] and outcomes[0]["validation"] == "protected_content_changed"
+
+
+@pytest.mark.parametrize("status,empty", [("corrected", False), ("corrected", True), ("unchanged", False)])
+def test_valid_no_change_receipt_is_checked_without_creating_patch(status, empty):
+    """不同模型的无修改表达只归一状态，原文和所有证据守卫保持。"""
+    block = _block("The sample is SA.")
+    issue = prepare_review_issues([block], [_issue(block, "The sample is 5A.")])[0]
+    _vision(issue, bbox=block["bbox"])
+    result = _result(issue, news=[target["old"] for target in issue["targets"]], visual=True)
+    result["status"] = status
+    if empty:
+        result["patches"] = []
+    edits, outcomes = validate_issue_results([block], _payload(result), [issue], batch_id="batch_1", visual=True)
+    assert edits == [] and block["content"] == "The sample is SA."
+    assert outcomes[0]["status"] == "checked"
+    assert outcomes[0]["validation"] == "normalized_no_change"
+
+
+def test_text_no_change_receipt_cannot_resolve_native_disagreement():
+    """状态兼容不能让文字模型用原值自证与原生候选的冲突已解决。"""
+    block = _block("Dubinin, M.; Stoeckeli, H.")
+    issue = prepare_review_issues([block], [_issue(block, "Dubinin, M.; Stoeckli, H.")])[0]
+    result = _result(issue, news=[target["old"] for target in issue["targets"]])
+    edits, outcomes = validate_issue_results([block], _payload(result), [issue], batch_id="batch_1", visual=False)
+    assert edits == [] and outcomes[0]["status"] == "unresolved"
+    assert outcomes[0]["validation"] == "native_disagreement_requires_vision"
+
+
+@pytest.mark.parametrize("fault", ["old", "id", "page", "hash"])
+def test_no_change_receipt_still_rejects_invalid_target_or_evidence(fault):
+    """无修改不是绕过身份、原文和图像区域绑定的通行证。"""
+    block = _block("The sample is SA.")
+    issue = prepare_review_issues([block], [_issue(block, "The sample is 5A.")])[0]
+    _vision(issue, bbox=block["bbox"])
+    result = _result(issue, news=[target["old"] for target in issue["targets"]], visual=True)
+    if fault == "old":
+        result["patches"][0].update(old="invented", new="invented")
+    elif fault == "id":
+        result["patches"][0]["target_id"] = "unknown"
+    elif fault == "page":
+        issue["evidence"][-1]["page"] = 2
+    else:
+        issue["evidence"][-1]["block_hash"] = "obsolete"
+    edits, outcomes = validate_issue_results([block], _payload(result), [issue], batch_id="batch_1", visual=True)
+    assert edits == [] and outcomes[0]["status"] == "technical_failed"
+
+
+def test_request_gives_valid_unchanged_response_shape():
+    """示例复用登记身份和证据，不引导模型制造修正。"""
+    block = _block("The sample is SA.")
+    issue = prepare_review_issues([block], [_issue(block, "The sample is 5A.")])[0]
+    _vision(issue, bbox=block["bbox"])
+    request = make_review_request("batch_1", [issue], [block])
+    edits, outcomes = validate_issue_results([block], request["response_example"], [issue], batch_id="batch_1", visual=True)
+    assert request["schema_version"] == 3 and edits == []
+    assert outcomes[0]["status"] == "checked"

@@ -4,6 +4,8 @@
 类型：bug-fix
 Owner：backend/package/yuxi/services/pdf_review_service.py
 
+任务因复核未完成而失败的规则由[PDF回执兼容与主解析结果分离](2026-10-31-pdf-review-receipts-and-warnings.md)取代；完整队列、共享并发与用量统计继续有效。
+
 ## 问题
 
 正文模型阶段按总时长和请求次数截断队列，未发送项目仍可能伴随主解析成功发布；失败批次被累计为完成。完整段落的重复输入输出增加负担，模型回执遗漏也被当成已检查。适配器只保留文本，丢失服务用量。

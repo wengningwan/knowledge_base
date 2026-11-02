@@ -1,4 +1,4 @@
-"""复核技术失败保留已生成正文，但不得自动入库或宣称任务成功。"""
+"""主解析与模型复核分别对账，未完成复核仍保留且跳过自动入库。"""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -29,10 +29,12 @@ async def test_incomplete_review_skips_auto_index_but_other_file_still_indexes(m
     )
     monkeypatch.setattr(service, "knowledge_base", backend)
     monkeypatch.setattr(service, "params_for_uploaded_document", lambda item, params: params)
-    with pytest.raises(RuntimeError, match="失败 1 个"):
-        await service.run_knowledge_ingest(context)
+    returned = await service.run_knowledge_ingest(context)
     summary = context.set_result.await_args.args[0]
-    assert summary["failed"] == 1
+    assert summary["failed"] == 0
+    assert summary["review_incomplete"] == 1
+    assert returned == summary and summary["auto_index_skipped"] == 1
+    assert "复核未完成 1 个" in context.set_progress.await_args.args[1]
     assert summary["items"] == [incomplete, {"file_id": "b", "status": "indexed"}]
     assert backend.index_file.await_count == 1
     assert backend.index_file.await_args.args == ("kb", "b")
@@ -45,9 +47,9 @@ async def test_explicit_parse_exposes_incomplete_in_task_summary(monkeypatch):
     context = task_context({"kb_id": "kb", "operator_id": 1, "file_ids": ["a"]})
     incomplete = {"file_id": "a", "status": "parsed", "review_status": "incomplete"}
     monkeypatch.setattr(service, "knowledge_base", SimpleNamespace(parse_file=AsyncMock(return_value=incomplete)))
-    with pytest.raises(RuntimeError, match="复核尚未完成"):
-        await service.run_knowledge_parse(context)
-    assert context.set_result.await_args.args[0] == {"items": [incomplete], "processed": 1, "failed": 1}
+    result = await service.run_knowledge_parse(context)
+    assert result == context.set_result.await_args.args[0] == {"items": [incomplete], "processed": 1, "failed": 0, "review_incomplete": 1}
+    assert "复核未完成 1 个" in context.set_progress.await_args.args[1]
 
 
 @pytest.mark.asyncio
@@ -61,10 +63,39 @@ async def test_pending_parse_does_not_hide_incomplete_beyond_result_sample(monke
                                          {"file_id": "b", "status": "parsed", "review_status": "incomplete"}]),
     )
     monkeypatch.setattr(service, "knowledge_base", backend)
-    with pytest.raises(RuntimeError, match="部分模型复核未完成"):
-        await service.run_knowledge_parse(context)
+    await service.run_knowledge_parse(context)
     summary = context.set_result.await_args.args[0]
     assert summary["processed"] == 2
-    assert summary["failed"] == 1
+    assert summary["failed"] == 0
+    assert summary["review_incomplete"] == 1
     assert summary["result_truncated"] is True
     assert summary["items"][0]["file_id"] == "a"
+
+
+@pytest.mark.asyncio
+async def test_real_parse_failure_is_not_hidden_by_review_warning_handling(monkeypatch):
+    """真正OCR或发布异常仍使上传任务失败，不能被警告语义吞掉。"""
+    context = task_context({"kb_id": "kb", "operator_id": 1, "items": [{"filename": "a.pdf"}], "params": {"auto_index": True}})
+    backend = SimpleNamespace(add_file_record=AsyncMock(return_value={"file_id": "a"}),
+                              parse_file=AsyncMock(side_effect=RuntimeError("OCR publication failed")),
+                              index_file=AsyncMock())
+    monkeypatch.setattr(service, "knowledge_base", backend)
+    monkeypatch.setattr(service, "params_for_uploaded_document", lambda item, params: params)
+    with pytest.raises(RuntimeError, match="失败 1 个"):
+        await service.run_knowledge_ingest(context)
+    summary = context.set_result.await_args.args[0]
+    assert summary["failed"] == 1 and summary["review_incomplete"] == 0
+    assert "OCR publication failed" in summary["items"][0]["error"]
+    backend.index_file.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_is_not_reported_as_a_completed_parse(monkeypatch):
+    """任务取消继续传播，不因模型警告处理而变成成功。"""
+    import asyncio
+
+    context = task_context({"kb_id": "kb", "operator_id": 1, "file_ids": ["a"]})
+    monkeypatch.setattr(service, "knowledge_base", SimpleNamespace(parse_file=AsyncMock(side_effect=asyncio.CancelledError())))
+    with pytest.raises(asyncio.CancelledError):
+        await service.run_knowledge_parse(context)
+    context.set_result.assert_not_awaited()

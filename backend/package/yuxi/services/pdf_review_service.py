@@ -54,7 +54,7 @@ async def review_pdf_document(result, file_path: str, params: dict, control=None
     repair.update(ocr_snapshot_hash=content_digest(raw_blocks), native_snapshot_hash=content_digest(native),
                   ocr_blocks=raw_blocks, raw_markdown=raw_markdown, native_blocks=native,
                   r1_patches=copy.deepcopy([row for row in rows if row.get("status") == "machine_corrected"]),
-                  r2_patches=[], review_contract_version=2)
+                  r2_patches=[], review_contract_version=3)
     try:
         repair["source_hash"] = await asyncio.to_thread(_source_hash, file_path)
     except OSError:
@@ -78,7 +78,7 @@ async def review_pdf_document(result, file_path: str, params: dict, control=None
             scope = {"kb_id": getattr(control, "kb_id", None) if repair["source_hash"] else None,
                      "file_id": getattr(control, "file_id", None), "source": repair["source_hash"],
                      "ocr": repair["ocr_snapshot_hash"], "native": repair["native_snapshot_hash"], "rule": RULE_VERSION,
-                     "prompt_version": "review-2"}
+                     "prompt_version": "review-3"}
             batches = _batches(eligible)
             processed = 0
 
@@ -158,6 +158,8 @@ async def _review_batch(result, path, batch_id, issues, executor, scope):
                 row.setdefault("evidence_ids", []).append(asset_id)
                 row["source_image"] = f"asset://{asset_id}"
     raw_results, keys, cached_ids = {}, {}, set()
+    last_failures = {}
+    prefix = f"[pdf_review] task_id={getattr(executor.control, 'task_id', None) or '-'} file_id={getattr(executor.control, 'file_id', None) or '-'}"
     for issue in issues:
         key = executor.cache_key(scope, {"targets": issue["targets"], "evidence": issue.get("evidence", []), "images": [content_digest(data) for data in images]})
         keys[issue["id"]] = key
@@ -175,19 +177,28 @@ async def _review_batch(result, path, batch_id, issues, executor, scope):
             request_id = f"{batch_id}_{part_index}_{attempt}"
             payload = make_review_request(request_id, pending, result.blocks)
             payload["context"] = _context(result.blocks, pending)
-            prompt = REVIEW_PROMPT + (" 上次回执结构不完整，请严格逐问题返回。" if attempt == 2 else "") + "\n" + json.dumps(payload, ensure_ascii=False)
+            if attempt == 2:
+                payload["retry_errors"] = [{"issue_id": row["id"], "validation": last_failures[row["id"]]["validation"]} for row in pending]
+            prompt = REVIEW_PROMPT + (" 仅重试retry_errors列出的问题；修正对应校验错误，old从target.old逐字复制，无需修改请返回unchanged。" if attempt == 2 else "") + "\n" + json.dumps(payload, ensure_ascii=False)
             try:
                 response = await executor.request(prompt, images, batch_id=request_id, attempt=attempt)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning(f"[pdf_review] batch_id={request_id} request_failed error={getattr(exc, 'error_type', type(exc).__name__)} pending={len(pending)}")
+                for issue in pending:
+                    last_failures[issue["id"]] = {"issue_id": issue["id"], "block_id": issue["block_id"], "status": "technical_failed",
+                                                   "validation": "model_request_failed", "reason": "模型请求未完成，保留已识别正文",
+                                                   "error_type": getattr(exc, "error_type", type(exc).__name__)}
+                logger.warning(f"{prefix} batch_id={request_id} request_failed error={getattr(exc, 'error_type', type(exc).__name__)} pending={len(pending)}")
                 break
             try:
                 received = json.loads(_json_text(response.text))
             except (ValueError, TypeError):
                 received = None
             _, outcomes = validate_issue_results(result.blocks, received, pending, batch_id=request_id, visual=visual)
+            for outcome in outcomes:
+                if outcome["status"] == "technical_failed":
+                    last_failures[outcome["issue_id"]] = outcome
             accepted_ids = {row["issue_id"] for row in outcomes if row["status"] != "technical_failed"}
             returned = received.get("results", []) if isinstance(received, dict) and isinstance(received.get("results"), list) else []
             for row in returned:
@@ -195,10 +206,13 @@ async def _review_batch(result, path, batch_id, issues, executor, scope):
                     raw_results[row["issue_id"]] = row
             unbound_errors.extend(code for row in outcomes for code in row.get("protocol_errors", []))
             failed = {row["issue_id"] for row in outcomes if row["status"] == "technical_failed"}
-            logger.info(f"[pdf_review] batch_id={request_id} response_validated technical_failed={len(failed)} reasons={json.dumps(sorted({row.get('validation', 'invalid_response') for row in outcomes if row['status'] == 'technical_failed'}))}")
+            failures = [{"issue_id": row["issue_id"], "validation": row["validation"]} for row in outcomes if row["status"] == "technical_failed"]
+            logger.info(f"{prefix} batch_id={request_id} response_validated technical_failed={len(failed)} failures={json.dumps(failures)} reasons={json.dumps(sorted({row['validation'] for row in failures}))}")
             pending = [row for row in pending if row["id"] in failed]
     edits, outcomes = validate_issue_results(result.blocks, {"batch_id": str(batch_id), "results": list(raw_results.values())}, issues, batch_id=str(batch_id), visual=visual)
     for outcome in outcomes:
+        if outcome["status"] == "technical_failed" and outcome["issue_id"] not in raw_results and outcome["issue_id"] in last_failures:
+            outcome.update(last_failures[outcome["issue_id"]])
         if unbound_errors:
             outcome["protocol_errors"] = list(dict.fromkeys(unbound_errors))
         if outcome["status"] in {"checked", "machine_corrected"} and not outcome.get("protocol_errors"):

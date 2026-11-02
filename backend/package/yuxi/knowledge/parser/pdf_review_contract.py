@@ -113,8 +113,14 @@ def make_review_request(batch_id: str, issues: list[dict], blocks: list[dict]) -
             "block_type": block.get("type"), "evidence": evidence,
         })
     return {
-        "schema_version": 2, "batch_id": batch_id, "image_order": image_order, "issues": requests,
-        "instructions": "每个 issue_id 恰好返回一次，status 只能 corrected/unchanged/unresolved。corrected 的 patches 必须覆盖该问题全部 target_id，不变目标也返回 old==new，且至少一处实际变化；只允许 target_id/old/new。unchanged/unresolved 的 patches 必须为空。引用 evidence_ids，reason 简要说明。不得添加新目标、改写段落或根据常识修改原文。输出对象仅含 batch_id/results；每个结果仅含 issue_id/status/patches/evidence_ids/reason。",
+        "schema_version": 3, "batch_id": batch_id, "image_order": image_order, "issues": requests,
+        "instructions": "每个 issue_id 恰好返回一次，status 只能 corrected/unchanged/unresolved。原图与现有文字一致或只有等价排印差异时返回unchanged、patches=[]，不必为了交差制造修改。response_example仅展示无改动格式，不是预先结论；原图证明确有错误时必须corrected，看不清返回unresolved。corrected的patches覆盖该问题全部target_id，不变目标返回old==new，至少一处实际变化；只允许target_id/old/new，old必须逐字复制target.old，new仅包含该目标替换文字，不能填写整段或其他目标内容。unchanged/unresolved的patches为空。只引用请求给出的evidence_ids，reason简要说明。保留上下标、引用序号、数字单位和化学键，不按常识修改作者原文。输出对象仅含batch_id/results，每个结果仅含issue_id/status/patches/evidence_ids/reason，不输出解释性段落。",
+        "response_example": {
+            "batch_id": batch_id,
+            "results": [{"issue_id": issue["issue_id"], "status": "unchanged", "patches": [],
+                         "evidence_ids": [entry["id"] for entry in issue["evidence"]],
+                         "reason": "逐目标检查原图后，无需修改。"} for issue in requests],
+        },
     }
 
 
@@ -154,18 +160,10 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
         if error:
             outcomes.append(_outcome(issue, "technical_failed", error))
             continue
-        if item["status"] == "unchanged":
-            if item["patches"]:
-                outcomes.append(_outcome(issue, "technical_failed", "conflicting_status"))
-            elif not visual and any(target.get("native_new") != target["old"] for target in targets):
-                outcomes.append(_outcome(issue, "unresolved", "native_disagreement_requires_vision", item["reason"]))
-            else:
-                outcomes.append(_outcome(issue, "checked", "accepted", item["reason"]))
-            continue
         patches = item["patches"]
         target_by_id = {target["id"]: target for target in targets}
         ids = [patch.get("target_id") for patch in patches if isinstance(patch, dict) and isinstance(patch.get("target_id"), str)]
-        if len(ids) != len(patches) or len(ids) != len(set(ids)) or set(ids) != set(target_by_id):
+        if patches and (len(ids) != len(patches) or len(ids) != len(set(ids)) or set(ids) != set(target_by_id)):
             outcomes.append(_outcome(issue, "technical_failed", "missing_duplicate_or_unknown_target"))
             continue
         replacements = []
@@ -174,14 +172,22 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
             if set(patch) != {"target_id", "old", "new"} or patch.get("old") != target["old"] or not isinstance(patch.get("new"), str) or damaged_text(patch["new"]):
                 error = "invalid_target_patch"
                 break
-            if not visual and patch["new"] != target.get("native_new"):
-                error = "replacement_not_registered_native_span"
-                break
             replacements.append({**target, "new": patch["new"]})
-        if not error and all(target["old"] == target["new"] for target in replacements):
-            error = "corrected_without_change"
         if error:
             outcomes.append(_outcome(issue, "technical_failed", error))
+            continue
+        if not replacements or all(target["old"] == target["new"] for target in replacements):
+            if not visual and any(target.get("native_new") != target["old"] for target in targets):
+                outcomes.append(_outcome(issue, "unresolved", "native_disagreement_requires_vision", item["reason"]))
+            else:
+                normalized = item["status"] == "corrected" or bool(patches)
+                outcomes.append(_outcome(issue, "checked", "normalized_no_change" if normalized else "accepted", item["reason"]))
+            continue
+        if item["status"] == "unchanged":
+            outcomes.append(_outcome(issue, "technical_failed", "conflicting_status"))
+            continue
+        if not visual and any(target["new"] != target.get("native_new") for target in replacements):
+            outcomes.append(_outcome(issue, "technical_failed", "replacement_not_registered_native_span"))
             continue
         before = str(block.get("content") or "")
         after = _rebuild(before, replacements)
