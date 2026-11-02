@@ -113,6 +113,13 @@ def normalize_oxr_result(payload: dict) -> ParsedDocument:
                 result.diagnostics.append({"kind": "missing_bbox", "block_id": block_id})
             if block_type == "title":
                 block["level"] = _title_level(source, content, body_font)
+            font_size = source.get("font_size")
+            if isinstance(font_size, (int, float)) and not isinstance(font_size, bool) and math.isfinite(font_size) and font_size > 0:
+                block["font_size"] = font_size
+            if isinstance(source.get("role"), str):
+                block["role"] = source["role"]
+            if source.get("paragraph_start") is True:
+                block["paragraph_start"] = True
             if source.get("continues_previous") is True:
                 block["continues_previous"] = True
             _extract_images(block, source, result)
@@ -153,6 +160,7 @@ def render_document(blocks: list[dict], urls: dict[str, str] | None = None) -> s
     """按块顺序渲染正文，保留公式、HTML、图片与原图注。"""
     parts = []
     previous = None
+    references = False
     for block in blocks:
         kind = block["type"]
         if kind in {"page_header", "page_footer"}:
@@ -165,13 +173,18 @@ def render_document(blocks: list[dict], urls: dict[str, str] | None = None) -> s
             continue
         content = _replace_asset_urls(content, urls or {})
         if kind == "title":
+            references = _is_reference_heading(content)
             content = f"{'#' * int(block.get('level', 2))} {content.lstrip('#').strip()}"
         elif kind in {"formula", "chemical_equation"} and block.get("format", "").lower() in {"latex", "tex"}:
             if not (content.startswith("$$") or content.startswith(r"\[")):
                 content = f"$$\n{content}\n$$"
         elif kind == "code_block" and not content.startswith("```"):
             content = f"```\n{content}\n```"
-        if previous is not None and parts and _safe_continuation(previous, block):
+        boundaries = _reference_boundaries(content) if references and kind == "text" else []
+        if boundaries:
+            starts, ends = [0, *boundaries], [*boundaries, len(content)]
+            parts.extend(content[start:end].strip() for start, end in zip(starts, ends, strict=True))
+        elif previous is not None and parts and not references and _safe_continuation(previous, block):
             parts[-1] += " " + content
         else:
             parts.append(content)
@@ -194,6 +207,58 @@ def finalize_document(result: ParsedDocument, urls: dict[str, str]) -> None:
         if result.blocks
         else _replace_asset_urls(result.markdown, urls)
     )
+
+
+def restore_reading_flow(blocks: list[dict], diagnostics: list[dict]) -> list[dict]:
+    """按确证层级与续句恢复阅读流，保留块身份、原文和成组浮图。"""
+    ordered = _restore_title_hierarchy(blocks, diagnostics)
+    references = False
+    for block in ordered:
+        if block["type"] == "title":
+            references = _is_reference_heading(str(block.get("content", "")))
+        elif references and block["type"] == "text":
+            boundaries = _reference_boundaries(str(block.get("content", "")))
+            if boundaries:
+                diagnostics.append({
+                    "kind": "reference_boundaries", "block_id": block["id"], "boundaries": boundaries,
+                    "reason": "参考文献区内连续编号、作者样式与年份共同确认段落边界；块及原文保持",
+                })
+    index = 0
+    references = False
+    while index < len(ordered):
+        previous = ordered[index]
+        if previous["type"] == "title":
+            references = _is_reference_heading(str(previous.get("content", "")))
+        if previous["type"] != "text" or references:
+            index += 1
+            continue
+        cursor = index + 1
+        while cursor < len(ordered) and ordered[cursor]["type"] in {"picture", "caption", "page_header", "page_footer"}:
+            cursor += 1
+        between = ordered[index + 1:cursor]
+        if between and cursor < len(ordered) and _safe_continuation(previous, ordered[cursor]) and _confirmed_float_group(between, ordered[cursor]["page"]):
+            original_ids = [block["id"] for block in ordered[index:cursor + 1]]
+            current = ordered.pop(cursor)
+            ordered.insert(index + 1, current)
+            diagnostics.append({
+                "kind": "floating_figure_after_continuation", "block_id": current["id"],
+                "original_block_ids": original_ids,
+                "final_block_ids": [block["id"] for block in ordered[index:cursor + 1]],
+                "reason": "跨页/跨栏位置与未完句共同支持续接；原图图注保持成组，块字符与身份保持",
+            })
+        index += 1
+    references = False
+    for index, block in enumerate(ordered):
+        if block["type"] == "title":
+            references = _is_reference_heading(str(block.get("content", "")))
+        if index and not references and _safe_continuation(ordered[index - 1], block):
+            diagnostics.append({
+                "kind": "paragraph_continuation", "block_id": block["id"],
+                "original_block_ids": [ordered[index - 1]["id"], block["id"]],
+                "final_block_ids": [ordered[index - 1]["id"], block["id"]],
+                "reason": "仅渲染时接续同一未完句；跨页或跨栏几何、栏宽与段首共同校验，块原文保持",
+            })
+    return ordered
 
 
 def _normalize_bbox(value, width, height) -> list[float] | None:
@@ -304,40 +369,106 @@ def _replace_nested_urls(value, urls):
 
 def _safe_continuation(previous: dict, current: dict) -> bool:
     """只连接有版面和句法依据的续句，化学连字符原样保留。"""
-    if previous["type"] != "text" or current["type"] != "text":
+    if previous["type"] != "text" or current["type"] != "text" or _is_article_metadata(previous) or _is_article_metadata(current):
         return False
     before, after = str(previous.get("content", "")).rstrip(), str(current.get("content", "")).lstrip()
-    if not before or not after or before.endswith(("-", "‐", "‑", ".", "。", "!", "?", ":", ";")):
+    # 句末引文是排印附件，不得遮蔽其前方的句末标点。
+    ending = re.sub(r"(?:\$\s*\^\{[^{}]*\}\s*\$|<sup>[^<]*</sup>|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s*$", "", before).rstrip(" \t\"'”’)]}")
+    if not before or not after or ending.endswith(("-", "‐", "‑", ".", "。", "!", "！", "?", "？", ":", "：", ";", "；")):
+        return False
+    if current.get("paragraph_start") is True or re.match(r"^(?:#{1,6}\s|[-+*]\s|\(?\d+(?:\.\d+)*[.)]\s|\[\d+\]\s|!\[|<)", after):
         return False
     if not previous.get("bbox") or not current.get("bbox"):
         return False
+    old_font, new_font = previous.get("font_size"), current.get("font_size")
+    if old_font and new_font and max(old_font, new_font) > min(old_font, new_font) * 1.15:
+        return False
     old, new = previous["bbox"], current["bbox"]
-    same_column = abs(old[0] - new[0]) < 0.12 and abs(old[2] - new[2]) < 0.15
+    old_width, new_width = old[2] - old[0], new[2] - new[0]
+    matched_width = min(old_width, new_width) > 0 and max(old_width, new_width) <= min(old_width, new_width) * 1.35
+    same_column = abs(old[0] - new[0]) < 0.025 and abs(old[2] - new[2]) < 0.035
     page_turn = current["page"] == previous["page"] + 1 and old[3] >= 0.80 and new[1] <= 0.30
     column_turn = current["page"] == previous["page"] and old[0] < 0.40 and new[0] > 0.45 and old[3] >= 0.75 and new[1] <= 0.30
     explicit = current.get("continues_previous") is True
     next_page_first_column = old[0] > 0.45 and new[0] < 0.40
-    return (page_turn and (same_column or next_page_first_column or explicit) or column_turn) and (explicit or after[0].islower())
+    return matched_width and (page_turn and (same_column or next_page_first_column) or column_turn) and (explicit or after[0].islower())
 
 
-def restore_reading_flow(blocks: list[dict], diagnostics: list[dict]) -> list[dict]:
-    """续句跨过页首浮图时先连段落，再保留浮图与图注的相对次序。"""
+def _restore_title_hierarchy(blocks: list[dict], diagnostics: list[dict]) -> list[dict]:
+    """首个标题的字体和位置确证主标题后，将编号章节置于其下。"""
     ordered = list(blocks)
-    index = 0
-    while index < len(ordered):
-        previous = ordered[index]
-        if previous["type"] != "text":
-            index += 1
+    first = next((block for block in ordered if block["type"] == "title"), None)
+    if first is None or first["page"] != 1 or re.match(r"^\s*\d", str(first.get("content", ""))):
+        return ordered
+    body_sizes = [block["font_size"] for block in ordered if block["type"] == "text" and block["page"] == first["page"] and block.get("font_size")]
+    title_size, box = first.get("font_size"), first.get("bbox")
+    if not body_sizes or not title_size or title_size < median(body_sizes) * 1.6 or not box or box[1] > .25:
+        return ordered
+    for index, block in enumerate(ordered):
+        if block["type"] != "title":
             continue
-        cursor = index + 1
-        while cursor < len(ordered) and ordered[cursor]["type"] in {"picture", "caption", "page_header", "page_footer"}:
-            cursor += 1
-        if cursor > index + 1 and cursor < len(ordered) and _safe_continuation(previous, ordered[cursor]):
-            current = ordered.pop(cursor)
-            ordered.insert(index + 1, current)
-            diagnostics.append({"kind": "floating_figure_after_continuation", "block_id": current["id"], "reason": "根据跨页/跨栏位置与未完句恢复阅读次序，原图图注保持成组"})
-        index += 1
+        numbered = re.match(r"^\s*(\d+(?:\.\d+)*)(?:[.)]?\s+)\S", str(block.get("content", "")))
+        level = 1 if block is first else min(6, numbered[1].count(".") + 2) if numbered else None
+        if level is not None:
+            block = {**block, "title_hierarchy_document_title_id": first["id"]}
+            ordered[index] = block
+        if level is not None and block.get("level") != level:
+            ordered[index] = {**block, "level": level}
+            diagnostics.append({
+                "kind": "title_hierarchy", "block_id": block["id"], "before_level": block.get("level"), "after_level": level,
+                "document_title_id": first["id"], "reason": "首页顶部显著字号确证主标题；编号深度确定其下的章节层级",
+            })
     return ordered
+
+
+def _is_article_metadata(block: dict) -> bool:
+    """显式作者出版身份或完整出版标签阻断正文续接，不凭人名猜身份。"""
+    role = str(block.get("role") or block.get("source_type") or "").replace("-", "_").lower()
+    if role in {"author", "authors", "article_metadata", "publication_metadata", "publication_info", "date"}:
+        return True
+    content = str(block.get("content", ""))
+    if re.match(r"^\s*(?:(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:|Published\s+as\s+part\s+of\b|Cite\s+This\s*:|DOI\s*:)", content, re.I):
+        return True
+    month = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?"
+    day, year = r"(?:0?[1-9]|[12]\d|3[01])", r"(?:18|19|20)\d{2}"
+    date = rf"(?:{day}\s+{month}\s+{year}|{month}\s+{day},?\s+{year}|{year}[-/](?:0?[1-9]|1[0-2])[-/]{day})\b"
+    return bool(re.match(rf"^\s*(?:Received|Revised|Accepted|Published)(?:\s+online)?\s+{date}", content, re.I))
+
+
+def _confirmed_float_group(blocks: list[dict], page: int) -> bool:
+    """仅允许目标页上有真实几何的图组越过续句，孤立图注不作证据。"""
+    figures = [block for block in blocks if block["type"] in {"picture", "caption"}]
+    if not figures or any(block["page"] != page or not block.get("bbox") for block in figures):
+        return False
+    for index, block in enumerate(figures):
+        if block["type"] != "caption":
+            continue
+        if not index or figures[index - 1]["type"] != "picture":
+            return False
+        image, caption = figures[index - 1]["bbox"], block["bbox"]
+        overlap = max(0, min(image[2], caption[2]) - max(image[0], caption[0]))
+        if caption[1] < image[3] - .01 or caption[1] - image[3] > .06 or overlap < min(image[2] - image[0], caption[2] - caption[0]) * .5:
+            return False
+    return True
+
+
+def _is_reference_heading(content: str) -> bool:
+    """仅明确的参考文献标题开启条目边界识别。"""
+    return bool(re.fullmatch(r"[\s#■▪●]*\s*(?:\d+[.)]?\s+)?(?:REFERENCES|BIBLIOGRAPHY|参考文献)\s*", content, re.I))
+
+
+def _reference_boundaries(content: str) -> list[int]:
+    """按行首连续编号、作者和年份确证文献分段，保留所有原文字符。"""
+    entries = list(re.finditer(r"(?m)^[ \t]*(?:\((\d+)\)|\[(\d+)\])[ \t]+(?=[A-ZÀ-ÖØ-Þ][\w'’−–-]+,\s*[A-Z])", content))
+    if len(entries) < 2 or content[:entries[0].start()].strip():
+        return []
+    boundaries = []
+    for previous, current in zip(entries, entries[1:]):
+        consecutive = int(current[1] or current[2]) == int(previous[1] or previous[2]) + 1
+        entry = content[previous.end():current.start()].strip()
+        if consecutive and re.search(r"\b(?:18|19|20)\d{2}\b", entry) and entry.endswith((".", "。")):
+            boundaries.append(current.start())
+    return boundaries
 
 
 class _ImageSources(HTMLParser):

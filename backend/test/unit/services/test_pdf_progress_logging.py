@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from test.unit.services.pdf_review_fakes import acknowledge, configure_review_case
+from test.unit.services.pdf_review_fakes import configure_review_case, correct_numeric_difference
 from yuxi.services import pdf_figure_analysis_service as figures
 from yuxi.services import pdf_model_execution as execution
 from yuxi.services import pdf_review_service as review
@@ -54,7 +54,7 @@ async def test_request_logged_before_wait_and_drained_before_finish_or_cancel(mo
         try:
             await release.wait()
             prompt = messages[0].content[0]["text"]
-            content = json.dumps(acknowledge(json.loads(prompt.rsplit("\n", 1)[1]))) if stage == "review" else "PRIVATE MODEL OUTPUT"
+            content = json.dumps(correct_numeric_difference(json.loads(prompt.rsplit("\n", 1)[1]))) if stage == "review" else "PRIVATE MODEL OUTPUT"
             return SimpleNamespace(content=content, usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10})
         finally:
             drained.set()

@@ -111,11 +111,11 @@ def _vision(issue, *, bbox=None):
 
 
 def test_exact_minimal_name_patch_rebuilds_original_block_without_mutating():
-    """Stoeckeli的单字删除按目标offset重建，其余原文逐字保留。"""
+    """Stoeckeli整词登记，删除词内错字后其余原文逐字保留。"""
     block = _block("Dubinin, M.; Stoeckeli, H.")
     issue = prepare_review_issues([block], [_issue(block, "Dubinin, M.; Stoeckli, H.")])[0]
     snapshot = deepcopy(block)
-    assert [(target["old"], target["native_new"]) for target in issue["targets"]] == [("e", "")]
+    assert [(target["old"], target["native_new"]) for target in issue["targets"]] == [("Stoeckeli", "Stoeckli")]
     edits, outcomes = validate_issue_results([block], _payload(_result(issue)), [issue], batch_id="batch_1", visual=False)
     assert len(edits) == 1 and edits[0]["after"] == "Dubinin, M.; Stoeckli, H."
     assert block == snapshot
@@ -357,11 +357,15 @@ def test_visual_reconstruction_cannot_introduce_an_unregistered_asset():
     assert edits == [] and outcomes[0]["validation"] == "protected_content_changed"
 
 
+@pytest.mark.parametrize("native_conflict", [False, True])
 @pytest.mark.parametrize("status,empty", [("corrected", False), ("corrected", True), ("unchanged", False)])
-def test_valid_no_change_receipt_is_checked_without_creating_patch(status, empty):
-    """不同模型的无修改表达只归一状态，原文和所有证据守卫保持。"""
+def test_no_change_receipt_requires_no_reliable_native_conflict(status, empty, native_conflict):
+    """扫描原文可归一无修改；可靠原生冲突必须继续聚焦复核。"""
     block = _block("The sample is SA.")
-    issue = prepare_review_issues([block], [_issue(block, "The sample is 5A.")])[0]
+    raw = _issue(block, "The sample is 5A.")
+    if not native_conflict:
+        raw["evidence"] = []
+    issue = prepare_review_issues([block], [raw])[0]
     _vision(issue, bbox=block["bbox"])
     result = _result(issue, news=[target["old"] for target in issue["targets"]], visual=True)
     result["status"] = status
@@ -369,8 +373,8 @@ def test_valid_no_change_receipt_is_checked_without_creating_patch(status, empty
         result["patches"] = []
     edits, outcomes = validate_issue_results([block], _payload(result), [issue], batch_id="batch_1", visual=True)
     assert edits == [] and block["content"] == "The sample is SA."
-    assert outcomes[0]["status"] == "checked"
-    assert outcomes[0]["validation"] == "normalized_no_change"
+    assert outcomes[0]["status"] == ("unresolved" if native_conflict else "checked")
+    assert outcomes[0]["validation"] == ("native_conflict_requires_focused_review" if native_conflict else "normalized_no_change")
 
 
 def test_text_no_change_receipt_cannot_resolve_native_disagreement():
@@ -409,5 +413,6 @@ def test_request_gives_valid_unchanged_response_shape():
     _vision(issue, bbox=block["bbox"])
     request = make_review_request("batch_1", [issue], [block])
     edits, outcomes = validate_issue_results([block], request["response_example"], [issue], batch_id="batch_1", visual=True)
-    assert request["schema_version"] == 3 and edits == []
-    assert outcomes[0]["status"] == "checked"
+    assert request["schema_version"] == 4 and edits == []
+    assert outcomes[0]["status"] == "unresolved"
+    assert outcomes[0]["validation"] == "native_conflict_requires_focused_review"

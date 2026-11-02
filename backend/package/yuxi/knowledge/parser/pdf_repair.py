@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import math
 import re
 from collections import Counter, defaultdict
 from statistics import median
 
+from yuxi.knowledge.parser.pdf_inline_atoms import parse_inline_atoms, validate_inline_change
 from yuxi.knowledge.parser.pdf_repair_rules import (
     apply_block_edits,
     covers_block_region,
@@ -23,7 +25,7 @@ from yuxi.knowledge.parser.pdf_repair_rules import (
 from yuxi.knowledge.parser.result import ParsedDocument
 
 
-RULE_VERSION = "yuxi-r2-1"
+RULE_VERSION = "yuxi-r2-2"
 
 
 def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_count: int) -> list[dict]:
@@ -107,6 +109,17 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
                     row["validation"] = "accepted"
                     rows.append(row)
                     continue
+        if sources and layout_text(content) != candidate and block["type"] in {"text", "caption", "footnote"}:
+            mixed = protected_spans(content, include_math=True) or re.search(r"[_^{}\\⁰-⁹₀-₟α-ωΑ-Ω]", content + candidate) or critical_signature(content) != critical_signature(candidate)
+            region_proven = unique and covers_block_region(block.get("bbox"), sources) and all(entry["role"] in {"body", "article_metadata", "unknown"} for entry in sources)
+            if mixed and region_proven:
+                fixed, targets = _repair_local_words(content, sources)
+                if fixed != content and apply_block_edits(result.blocks, [{"block_id": block["id"], "before": content, "after": fixed}]):
+                    row = _row(block, "local_word_repair", sources, status="machine_corrected", reason="唯一同区域的原词及左右邻词对齐，局部逐字几何只证明普通词拼写", route="none", severity="medium")
+                    row.update(before=content, after=fixed, source="rule", targets=targets, local_geometry_validation="accepted")
+                    row["candidates"]["ocr"] = content
+                    rows.append(row)
+                    content = fixed
         if sources and layout_text(content) != candidate and strong and proven_representation_equivalent(content, candidate):
             rows.append(_row(block, "representation_equivalent", sources, status="proven_equivalent", reason="唯一同区域原生证据与有限排印语法证明等价，正文逐字保留", route="none", severity="low"))
         elif sources and layout_text(content) != candidate:
@@ -128,7 +141,8 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
             rows.append(_row(block, "math_syntax", sources, reason=lint, route="vision", severity="medium"))
         if block["type"] == "title":
             numbered = re.match(r"^\s*(\d+(?:\.\d+)*)(?:[.)]?\s+)\S", content)
-            expected = min(6, numbered[1].count(".") + 1) if numbered else None
+            title_offset = 2 if block.get("title_hierarchy_document_title_id") else 1
+            expected = min(6, numbered[1].count(".") + title_offset) if numbered else None
             if expected and expected != block.get("level"):
                 body_sizes = [char["font_size"] for entry in evidence if entry["page"] == block["page"] and entry["role"] == "body" and entry not in sources for char in entry.get("chars", []) if isinstance(char.get("font_size"), (int, float))]
                 title_sizes = [char["font_size"] for entry in sources for char in entry.get("chars", []) if isinstance(char.get("font_size"), (int, float))]
@@ -182,7 +196,7 @@ def _repair_proven_structure(result: ParsedDocument, evidence: list[dict]) -> li
     while index < len(result.blocks):
         block = result.blocks[index]
         content = str(block.get("content") or "")
-        if block.get("type") != "text" or protected_spans(content, include_math=True):
+        if block.get("type") != "text":
             index += 1
             continue
         sources = [entry for entry in evidence if entry["page"] == block["page"] and overlap_fraction(entry.get("bbox"), block.get("bbox")) >= .98]
@@ -193,10 +207,13 @@ def _repair_proven_structure(result: ParsedDocument, evidence: list[dict]) -> li
                 break
             date_count += 1
         if 0 < date_count < len(sources) and unique and all(entry["quality"] == "high" for entry in sources) and covers_block_region(block.get("bbox"), sources):
-            first_body = sources[date_count]["content"]
-            boundary = content.find(first_body)
+            metadata_text = layout_text("\n".join(entry["content"] for entry in sources[:date_count]))
+            body_text = layout_text("\n".join(entry["content"] for entry in sources[date_count:]))
+            boundary_match = re.match(r"\s*" + r"\s+".join(re.escape(word) for word in metadata_text.split()) + r"(?P<separator>\s+)", content)
+            # 分隔空白归后块，避免后续普通正文清理删除前块的尾部空格。
+            boundary = boundary_match.start("separator") if boundary_match and layout_text(content[boundary_match.end():]) == body_text else -1
             body_id = f"{block['id']}_body"
-            if boundary > 0 and len(first_body) >= 16 and content.count(first_body) == 1 and all(other["id"] != body_id for other in result.blocks) and layout_text(content[:boundary]) == layout_text("\n".join(entry["content"] for entry in sources[:date_count])) and layout_text(content[boundary:]) == layout_text("\n".join(entry["content"] for entry in sources[date_count:])):
+            if boundary > 0 and not any(start < boundary < end for start, end in protected_spans(content, include_math=True)) and all(other["id"] != body_id for other in result.blocks):
                 metadata = {**block, "type": "footnote", "content": content[:boundary], "bbox": _region_envelope(sources[:date_count])}
                 body = {**block, "id": body_id, "content": content[boundary:], "bbox": _region_envelope(sources[date_count:])}
                 if metadata["content"] + body["content"] == content:
@@ -209,7 +226,7 @@ def _repair_proven_structure(result: ParsedDocument, evidence: list[dict]) -> li
         if index + 1 < len(result.blocks):
             right = result.blocks[index + 1]
             right_text = str(right.get("content") or "")
-            if right.get("type") == "text" and right["page"] == block["page"] and content == content.strip() and right_text == right_text.strip() and not protected_spans(right_text, include_math=True):
+            if right.get("type") == "text" and right["page"] == block["page"] and content == content.strip() and right_text == right_text.strip() and not protected_spans(content, include_math=True) and not protected_spans(right_text, include_math=True):
                 proof = []
                 for entry in evidence:
                     text = entry["content"]
@@ -236,6 +253,81 @@ def _repair_proven_structure(result: ParsedDocument, evidence: list[dict]) -> li
         for row in rows:
             row["final_order"] = [final_orders[block_id] for block_id in row["final_block_ids"]]
     return rows
+
+
+def _repair_local_words(content: str, sources: list[dict]) -> tuple[str, list[dict]]:
+    """只替换独立邻词及字符几何均对齐的普通词，其余原字符不动。"""
+    native = "\n".join(entry["content"] for entry in sources)
+    old_atoms, new_atoms = parse_inline_atoms(content), parse_inline_atoms(native)
+    old_words = [content[atom["start"]:atom["end"]] for atom in old_atoms]
+    new_words = [native[atom["start"]:atom["end"]] for atom in new_atoms]
+    old_protected = protected_spans(content, include_math=True)
+    new_protected = protected_spans(native, include_math=True)
+    targets = []
+    for operation, a, b, c, d in difflib.SequenceMatcher(a=old_words, b=new_words, autojunk=False).get_opcodes():
+        if operation != "replace" or b - a != 1 or d - c != 1 or not a or not c or b == len(old_atoms) or d == len(new_atoms):
+            continue
+        before, after = old_words[a], new_words[c]
+        if not all(re.fullmatch(r"[A-Za-z]{4,}", word) and not critical_signature(word) for word in (before, after)) or not is_local_candidate(before, after):
+            continue
+        if old_words[a - 1] != new_words[c - 1] or old_words[b] != new_words[d]:
+            continue
+        old_group, new_group = old_atoms[a - 1:b + 1], new_atoms[c - 1:d + 1]
+        if any(atom["kind"] != "word" for atom in old_group + new_group):
+            continue
+        old_start, old_end = old_group[0]["start"], old_group[-1]["end"]
+        new_start, new_end = new_group[0]["start"], new_group[-1]["end"]
+        if any(old_start < end and old_end > start for start, end in old_protected) or any(new_start < end and new_end > start for start, end in new_protected):
+            continue
+        if sum(old_words[index:index + 3] == old_words[a - 1:b + 1] for index in range(len(old_words) - 2)) != 1 or sum(new_words[index:index + 3] == new_words[c - 1:d + 1] for index in range(len(new_words) - 2)) != 1:
+            continue
+        left_gap = content[old_group[0]["end"]:old_atoms[a]["start"]]
+        right_gap = content[old_atoms[a]["end"]:old_group[-1]["start"]]
+        if layout_text(left_gap) != layout_text(native[new_group[0]["end"]:new_atoms[c]["start"]]) or layout_text(right_gap) != layout_text(native[new_atoms[c]["end"]:new_group[-1]["start"]]):
+            continue
+        evidence_ids = _local_character_proof(sources, new_start, new_end)
+        if evidence_ids:
+            targets.append({"start": old_atoms[a]["start"], "end": old_atoms[a]["end"], "old": before, "new": after, "native_start": new_atoms[c]["start"], "native_end": new_atoms[c]["end"], "native_evidence_ids": evidence_ids})
+    if not targets or len(targets) > 4:
+        return content, []
+    after = content
+    for target in reversed(targets):
+        after = after[:target["start"]] + target["new"] + after[target["end"]:]
+    return (content, []) if validate_inline_change(content, after) else (after, targets)
+
+
+def _local_character_proof(sources: list[dict], start: int, end: int) -> list[str]:
+    """逐字映射目标及邻词到真实原生字符，按所在原生行验证局部几何。"""
+    offset, evidence_ids = 0, []
+    for entry in sources:
+        text = entry["content"]
+        entry_start = offset
+        left, right = max(start, entry_start), min(end, entry_start + len(text))
+        offset += len(text) + 1
+        if left >= right:
+            continue
+        characters = entry.get("chars", [])
+        raw = "".join(char.get("text", "") for char in characters)
+        if raw.strip() != text:
+            return []
+        trim = len(raw) - len(raw.lstrip())
+        local_start, local_end = left - entry_start + trim, right - entry_start + trim
+        selected, position = [], 0
+        for char in characters:
+            char_end = position + len(char.get("text", ""))
+            if position < local_end and char_end > local_start:
+                if position < local_start or char_end > local_end:
+                    return []
+                selected.append(char)
+            position = char_end
+        visible = [char for char in selected if char.get("text", "").strip()]
+        if not visible or any(overlap_fraction(char.get("bbox"), entry.get("bbox")) < .98 for char in visible):
+            return []
+        local = {"content": "".join(char["text"] for char in selected), "chars": selected, "bbox": _region_envelope(visible)}
+        if _native_quality(local) != "high":
+            return []
+        evidence_ids.append(entry["id"])
+    return evidence_ids
 
 
 def _region_envelope(regions: list[dict]) -> list:

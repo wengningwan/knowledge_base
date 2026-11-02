@@ -8,6 +8,8 @@ import math
 from collections import Counter
 from copy import deepcopy
 
+from yuxi.knowledge.parser.pdf_inline_atoms import expand_target_spans, parse_inline_atoms, validate_inline_change
+
 from yuxi.knowledge.parser.pdf_repair_rules import (
     covers_block_region,
     critical_signature,
@@ -16,6 +18,7 @@ from yuxi.knowledge.parser.pdf_repair_rules import (
     overlap_fraction,
     preserves_protected,
     protected_spans,
+    proven_representation_equivalent,
 )
 from yuxi.knowledge.parser.pdf_review import validate_review_patch
 
@@ -44,7 +47,7 @@ def prepare_review_issues(blocks: list[dict], issues: list[dict]) -> list[dict]:
         native = [entry for entry in issue.get("evidence", []) if entry.get("source") == "native"]
         candidate = "\n".join(str(entry.get("content") or "") for entry in native)
         strong = bool(native) and covers_block_region(block["bbox"], native) and all(entry.get("quality") == "high" and entry.get("page") == block["page"] and overlap_fraction(entry.get("bbox"), block["bbox"]) >= .98 and sum(other["page"] == entry["page"] and overlap_fraction(entry.get("bbox"), other.get("bbox")) >= .85 for other in blocks) == 1 for entry in native)
-        changes = [(a, b, c, d) for op, a, b, c, d in difflib.SequenceMatcher(a=before, b=candidate, autojunk=False).get_opcodes() if op != "equal" and (before[a:b].strip() or candidate[c:d].strip())] if candidate else []
+        changes = _complete_changes(before, candidate) if candidate else []
         # 未可靠对齐的整块保留原文；不从同页其他原生区域推断目标位置。
         if not changes or not strong or len(changes) > 12 or not is_local_candidate(before, candidate):
             changes = [(0, len(before), 0, len(candidate))]
@@ -77,6 +80,12 @@ def prepare_review_issues(blocks: list[dict], issues: list[dict]) -> list[dict]:
                 issue["targets"] = []
                 break
             issue["targets"].append(target)
+        issue["focus_conflicts"] = [
+            {"target_id": target["id"], "old": target["old"], "candidate": target["native_new"]}
+            for target in issue["targets"]
+            if "native_new" in target and target["old"] != target["native_new"]
+            and not proven_representation_equivalent(target["old"], target["native_new"])
+        ]
     return _split_large_targets(prepared)
 
 
@@ -111,10 +120,11 @@ def make_review_request(batch_id: str, issues: list[dict], blocks: list[dict]) -
         requests.append({
             "issue_id": issue["id"], "kind": issue.get("kind"), "targets": wire_targets,
             "block_type": block.get("type"), "evidence": evidence,
+            "focus_conflicts": issue.get("focus_conflicts", []),
         })
     return {
-        "schema_version": 3, "batch_id": batch_id, "image_order": image_order, "issues": requests,
-        "instructions": "每个 issue_id 恰好返回一次，status 只能 corrected/unchanged/unresolved。原图与现有文字一致或只有等价排印差异时返回unchanged、patches=[]，不必为了交差制造修改。response_example仅展示无改动格式，不是预先结论；原图证明确有错误时必须corrected，看不清返回unresolved。corrected的patches覆盖该问题全部target_id，不变目标返回old==new，至少一处实际变化；只允许target_id/old/new，old必须逐字复制target.old，new仅包含该目标替换文字，不能填写整段或其他目标内容。unchanged/unresolved的patches为空。只引用请求给出的evidence_ids，reason简要说明。保留上下标、引用序号、数字单位和化学键，不按常识修改作者原文。输出对象仅含batch_id/results，每个结果仅含issue_id/status/patches/evidence_ids/reason，不输出解释性段落。",
+        "schema_version": 4, "batch_id": batch_id, "image_order": image_order, "issues": requests,
+        "instructions": "每个 issue_id 恰好返回一次，status 只能 corrected/unchanged/unresolved。只逐字读取target所对应原图，focus_conflicts给出需要裁决的具体差异，两种文字都是候选。只检查目标及上下文，不复写无误整段。原图与现有文字一致或只有等价排印差异时返回unchanged、patches=[]。response_example不是预先结论。原图证明确有错误时必须corrected，看不清返回unresolved。corrected的patches覆盖该问题全部target_id，不变目标old==new；仅含target_id/old/new，old逐字复制target.old，new仅含目标替换。unchanged/unresolved的patches为空。引用给出的evidence_ids，reason简短。保留完整公式、上下标及词间空格，作者上标星号使用数学上标，不用裸星号触发强调。保留原文标点、双句点、连字符、可疑化学键和重复句，禁止规范化或按科学常识纠正论文。输出仅batch_id/results，每项仅issue_id/status/patches/evidence_ids/reason。",
         "response_example": {
             "batch_id": batch_id,
             "results": [{"issue_id": issue["issue_id"], "status": "unchanged", "patches": [],
@@ -176,9 +186,15 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
         if error:
             outcomes.append(_outcome(issue, "technical_failed", error))
             continue
+        # 表示相同的候选不值得重排原文，避免美元包装或Unicode转换制造补丁。
+        for target in replacements:
+            if proven_representation_equivalent(target["old"], target["new"]):
+                target["new"] = target["old"]
         if not replacements or all(target["old"] == target["new"] for target in replacements):
             if not visual and any(target.get("native_new") != target["old"] for target in targets):
                 outcomes.append(_outcome(issue, "unresolved", "native_disagreement_requires_vision", item["reason"]))
+            elif issue.get("focus_conflicts"):
+                outcomes.append(_outcome(issue, "unresolved", "native_conflict_requires_focused_review", item["reason"]))
             else:
                 normalized = item["status"] == "corrected" or bool(patches)
                 outcomes.append(_outcome(issue, "checked", "normalized_no_change" if normalized else "accepted", item["reason"]))
@@ -191,17 +207,25 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
             continue
         before = str(block.get("content") or "")
         after = _rebuild(before, replacements)
-        error = _rebuilt_error(block, before, after, visual=visual)
+        error = _rebuilt_error(block, before, after, visual=visual, issue=issue, targets=replacements)
         if error:
             outcomes.append(_outcome(issue, "technical_failed", error))
             continue
         accepted.append((issue, replacements, item))
-        outcomes.append(_outcome(issue, "machine_corrected", "accepted", item["reason"]))
+        outcome = _outcome(issue, "machine_corrected", "accepted", item["reason"])
+        conflicting_ids = {entry["target_id"] for entry in issue.get("focus_conflicts", [])}
+        remaining = [target["id"] for target in replacements if target["id"] in conflicting_ids and target["new"] == target["old"]]
+        if remaining:
+            outcome.update(remaining_conflicts=remaining, reason=outcome["reason"] + "；部分修改通过，其余登记差异仍待核对")
+        outcomes.append(outcome)
     # 同一块可有独立问题：先拒绝重叠，再一次重建，避免多个完整 before 补丁互相覆盖。
     overlapping = set()
     for index, (left, left_targets, _) in enumerate(accepted):
         for right, right_targets, _ in accepted[index + 1:]:
-            if left["block_id"] == right["block_id"] and any(_overlapping(a, b) for a in left_targets for b in right_targets):
+            if left["block_id"] == right["block_id"] and any(
+                _overlapping(a, b) and (a["start"], a["end"], a["new"]) != (b["start"], b["end"], b["new"])
+                for a in left_targets for b in right_targets
+            ):
                 overlapping.update((left["id"], right["id"]))
     groups = {}
     for issue, replacements, item in accepted:
@@ -213,8 +237,11 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
     for block_id, entries in groups.items():
         block = by_id[block_id]
         before = str(block.get("content") or "")
-        after = _rebuild(before, [target for _, targets, _ in entries for target in targets])
-        error = _rebuilt_error(block, before, after, visual=visual)
+        unique_targets = {(target["start"], target["end"]): target for _, targets, _ in entries for target in targets}
+        after = _rebuild(before, list(unique_targets.values()))
+        error = _rebuilt_error(block, before, after, visual=visual,
+                               issue={"evidence": [entry for issue, _, _ in entries for entry in issue.get("evidence", [])]},
+                               targets=list(unique_targets.values()))
         if error:
             for issue, _, _ in entries:
                 next(outcome for outcome in outcomes if outcome["issue_id"] == issue["id"]).update(status="technical_failed", reason=error, validation=error)
@@ -229,6 +256,13 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
     if protocol_errors:
         for outcome in outcomes:
             outcome["protocol_errors"] = protocol_errors
+    # 保存实际收到的建议与校验结局，不能只留下模型reason而丢失被拒new。
+    for outcome in outcomes:
+        item = next((item for item in results if isinstance(item, dict) and item.get("issue_id") == outcome["issue_id"]), None)
+        if item:
+            outcome["model_proposal"] = deepcopy(item)
+        outcome["patch_accepted"] = outcome["status"] == "machine_corrected"
+        outcome["applied"] = False
     return edits, outcomes
 
 
@@ -276,16 +310,73 @@ def _evidence_error(block: dict, targets: list[dict], evidence: list[dict], *, v
     return ""
 
 
-def _rebuilt_error(block: dict, before: str, after: str, *, visual: bool) -> str:
+def _rebuilt_error(block: dict, before: str, after: str, *, visual: bool,
+                   issue: dict, targets: list[dict]) -> str:
     """重建后复用完整块局部性和保护校验，文字路线保留全部科学 token。"""
     if not preserves_protected(before, after):
         return "protected_content_changed"
+    error = validate_inline_change(
+        before, after,
+        script_evidence=_native_baseline_proof(issue, targets),
+        punctuation_evidence=_native_replacement_proof(issue, targets),
+    )
+    if error:
+        return error
     if not visual and critical_signature(before) != critical_signature(after):
         return "scientific_change_requires_vision"
     if not visual and not is_local_candidate(before, after):
         return "native_absence_cannot_delete_words"
     valid, _ = validate_review_patch([block], {"edits": [{"block_id": block["id"], "before": before, "after": after}], "unresolved": []})
     return "" if valid else "full_block_local_validation_failed"
+
+
+def _complete_changes(before: str, candidate: str) -> list[tuple[int, int, int, int]]:
+    """扩展原文跨度后沿同一对齐投影候选，禁止把公式碎片当完整目标。"""
+    opcodes = difflib.SequenceMatcher(a=before, b=candidate, autojunk=False).get_opcodes()
+    spans = expand_target_spans(before, [(a, b) for op, a, b, c, d in opcodes
+                                        if op != "equal" and (before[a:b].strip() or candidate[c:d].strip())])
+    changes = []
+    for start, end in spans:
+        native_start, native_end = len(candidate), 0
+        for op, a, b, c, d in opcodes:
+            if op == "equal":
+                left, right = max(start, a), min(end, b)
+                if left < right:
+                    native_start = min(native_start, c + left - a)
+                    native_end = max(native_end, c + right - a)
+            elif a < end and b > start or a == b and start <= a <= end:
+                native_start, native_end = min(native_start, c), max(native_end, d)
+        if native_start <= native_end:
+            changes.append((start, end, native_start, native_end))
+    return changes
+
+
+def _native_replacement_proof(issue: dict, targets: list[dict]) -> bool:
+    """仅登记的同区域高质量候选能支持原文标点的实际变化。"""
+    changed = [target for target in targets if target["old"] != target["new"]]
+    native = {entry["id"]: entry for entry in issue.get("evidence", []) if entry.get("source") == "native" and entry.get("quality") == "high"}
+    return bool(changed) and all(target.get("native_new") == target["new"] and target.get("native_evidence_ids")
+                                 and all(identity in native for identity in target["native_evidence_ids"])
+                                 for target in changed)
+
+
+def _native_baseline_proof(issue: dict, targets: list[dict]) -> bool:
+    """脚本降级必须由真实原生字符的等字号同基线证明，缺几何时不猜。"""
+    if not _native_replacement_proof(issue, targets):
+        return False
+    evidence_ids = {identity for target in targets if target["old"] != target["new"] for identity in target.get("native_evidence_ids", [])}
+    for entry in issue.get("evidence", []):
+        if entry.get("id") not in evidence_ids:
+            continue
+        chars = [char for char in entry.get("chars", []) if char.get("text", "").strip()]
+        if not chars or any(not isinstance(char.get("font_size"), (int, float))
+                            or not isinstance(char.get("origin_normal"), (int, float)) for char in chars):
+            return False
+        sizes = [char["font_size"] for char in chars]
+        origins = [char["origin_normal"] for char in chars]
+        if min(sizes) <= 0 or max(sizes) / min(sizes) > 1.1 or max(origins) - min(origins) > min(sizes) * .15:
+            return False
+    return bool(evidence_ids)
 
 
 def _rebuild(before: str, targets: list[dict]) -> str:
@@ -354,7 +445,9 @@ def _split_large_targets(issues):
             if len(target["old"]) <= 2000:
                 fragments.append(target)
                 continue
-            protected = protected_spans(before, include_math=True)
+            protected = protected_spans(before, include_math=True) + [
+                (atom["start"], atom["end"]) for atom in parse_inline_atoms(before)
+            ]
             cursor = target["start"]
             while cursor < target["end"]:
                 end = min(cursor + 2000, target["end"])

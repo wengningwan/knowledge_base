@@ -6,6 +6,7 @@ import ctypes
 import io
 import math
 from pathlib import Path
+from statistics import median
 
 
 def read_native_blocks(file_path: str, *, page_info: dict | None = None) -> list[dict]:
@@ -137,6 +138,41 @@ def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None 
         finally:
             document.close()
     return regions
+
+
+def review_crop_region(block: dict, targets: list[dict], native: list[dict], blocks: list[dict]) -> list[float]:
+    """沿真实原生行补齐局部上下文，外扩边缘并在邻栏和图表边界止步。"""
+    regions = [target["source_region"]["bbox"] for target in targets]
+    box = [min(item[0] for item in regions), min(item[1] for item in regions),
+           max(item[2] for item in regions), max(item[3] for item in regions)]
+    lines = [line["bbox"] for line in native if line.get("page") == block["page"] and line.get("bbox")
+             and line["bbox"][1] < box[3] and line["bbox"][3] > box[1]
+             and line["bbox"][0] < box[2] and line["bbox"][2] > box[0]]
+    if lines:
+        lines = [line for line in lines if line[2] - line[0] <= (block["bbox"][2] - block["bbox"][0]) * 1.5 + .04]
+    if lines:
+        box = [min(box[0], min(line[0] for line in lines)), min(box[1], min(line[1] for line in lines)),
+               max(box[2], max(line[2] for line in lines)), max(box[3], max(line[3] for line in lines))]
+        height = median(line[3] - line[1] for line in lines)
+    else:
+        height = min(.025, max(.006, (box[3] - box[1]) / max(1, len(str(block.get("content", ""))) / 70)))
+    crop = [max(0., box[0] - height * 1.5), max(0., box[1] - height * .6),
+            min(1., box[2] + height * 1.5), min(1., box[3] + height * .6)]
+    for other in blocks:
+        boundary = other.get("bbox")
+        if other["id"] == block["id"] or other["page"] != block["page"] or not boundary:
+            continue
+        if boundary[1] < box[3] and boundary[3] > box[1]:
+            if boundary[2] <= box[0]:
+                crop[0] = max(crop[0], (boundary[2] + box[0]) / 2)
+            elif boundary[0] >= box[2]:
+                crop[2] = min(crop[2], (box[2] + boundary[0]) / 2)
+        if boundary[0] < box[2] and boundary[2] > box[0]:
+            if boundary[3] <= box[1]:
+                crop[1] = max(crop[1], (boundary[3] + box[1]) / 2)
+            elif boundary[1] >= box[3]:
+                crop[3] = min(crop[3], (box[3] + boundary[1]) / 2)
+    return crop
 
 
 def render_pdf_region(file_path: str, page: int, bbox: list, scale: float = 3) -> bytes:

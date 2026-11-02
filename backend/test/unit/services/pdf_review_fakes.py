@@ -7,8 +7,8 @@ from test.unit.services.pdf_model_fakes import configure_pdf_execution
 from yuxi.knowledge.parser.result import ParsedDocument
 
 
-def configure_review_case(monkeypatch, tmp_path, *, count=1, reply=None, before="The sample was 12 mg.", source="The sample was 13 mg."):
-    """每页一个科学数字差异，规则必须交给视觉复核。"""
+def configure_review_case(monkeypatch, tmp_path, *, count=1, reply=None, before="The sample was 12 mg.", source="The sample was 13 mg.", native_geometry=True):
+    """每页一个科学数字差异；可显式去掉字符几何以模拟弱原生证据。"""
     redis, _ = configure_pdf_execution(monkeypatch, limit=3)
     path = tmp_path / "paper.pdf"
     path.write_bytes(b"explicit test PDF identity; extraction is a boundary fake")
@@ -21,6 +21,10 @@ def configure_review_case(monkeypatch, tmp_path, *, count=1, reply=None, before=
             {"text": char, "bbox": [.1 + index * advance, .2, .1 + (index + 1) * advance, .4], "baseline": (10., 10., 0.), "font_size": 10., "origin_normal": 10.}
             for index, char in enumerate(text)
         ]})
+
+    if not native_geometry:
+        for entry in natives:
+            entry.pop("chars")
 
     def native(path, *, page_info):
         """提供具字符位置的人工原生候选，不冒充真实 PDF 测量。"""
@@ -49,8 +53,21 @@ def configure_review_case(monkeypatch, tmp_path, *, count=1, reply=None, before=
 
 
 def acknowledge(payload):
-    """人工指定图像中与 OCR 相同，所有问题显式 unchanged。"""
+    """模拟无修改回执；有可靠原生冲突时此泛泛确认不能使问题完成。"""
     return {"batch_id": payload["batch_id"], "results": [
         {"issue_id": issue["issue_id"], "status": "unchanged", "patches": [], "evidence_ids": [entry["id"] for entry in issue["evidence"] if entry["source"] == "visual_region"], "reason": "人工短例原图读作 12 mg，保留原文"}
         for issue in payload["issues"]
     ]}
+
+
+def correct_numeric_difference(payload):
+    """人工原图短例明确为13，其他问题仍返回显式无修改回执。"""
+    answer = acknowledge(payload)
+    for row, issue in zip(answer["results"], payload["issues"], strict=True):
+        if issue["kind"] != "critical_mismatch":
+            continue
+        assert [(target["old"], target.get("native_new")) for target in issue["targets"]] == [("12", "13")]
+        row.update(status="corrected", patches=[{
+            "target_id": issue["targets"][0]["id"], "old": "12", "new": "13",
+        }], reason="人工原图短例明确读作13 mg")
+    return answer
