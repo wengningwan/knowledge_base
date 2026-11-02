@@ -148,6 +148,34 @@ test('真实分块组件保留重复块、换行和全文，并响应展开、�
     assert.equal(byClass(root, 'chunk-action')[0].props['aria-expanded'], false)
     assert.equal(nodes(root, (node) => Boolean(node.props['aria-label'])).length, 0)
     assert.match(byClass(root, 'chunk-source')[0].children[0].text, /原文已变化/)
+
+    const body = '😀第一段正文\n\n$$\nx = 1\n$$\n\n论文：这是正文引用的名称\n章节：这是原文中的说明\n最后一行完整保留'
+    const storedContent = `论文：合成论文\n章节：1. INTRODUCTION\n\n${body}`
+    const paperChunk = { content: storedContent, source_metadata: {
+      chunker_version: 'paper_rules_v1', section_path: ['1. INTRODUCTION']
+    } }
+    props.value = { ...props.value, chunks: [paperChunk] }
+    await nextTick()
+    assert.equal(byClass(root, 'chunk-section').length, 1)
+    assert.equal(byClass(root, 'chunk-section')[0].text, '1. INTRODUCTION')
+    assert.equal(byClass(root, 'chunk-card-content')[0].text, body)
+    byClass(root, 'chunk-action')[0].props.onClick()
+    await nextTick()
+    assert.equal(byClass(root, 'chunk-card-content')[0].text, body)
+    assert.equal(paperChunk.content, storedContent)
+
+    for (const [content, metadata, expected] of [
+      [storedContent, { chunker_version: 'ragflow_like_v1' }, storedContent],
+      [storedContent, { chunker_version: 'paper_rules_v1', section_path: '1. INTRODUCTION' }, storedContent],
+      [storedContent, { chunker_version: 'paper_rules_v1', section_path: ['另一章节'] }, storedContent],
+      [body, { chunker_version: 'paper_rules_v1', section_path: ['1. INTRODUCTION'] }, body],
+      [`论文：合成论文\n章节：正文\n\n${body}`, { chunker_version: 'paper_rules_v1', section_path: [] }, body],
+      [`论文：合成论文\n章节：实验 > 结果\n\n${body}`, { chunker_version: 'paper_rules_v1', section_path: ['实验', '结果'] }, body]
+    ]) {
+      props.value = { ...props.value, chunks: [{ content, source_metadata: metadata }] }
+      await nextTick()
+      assert.equal(byClass(root, 'chunk-card-content')[0].text, expected)
+    }
     app.unmount()
   } finally {
     unlinkSync(compiledPath)

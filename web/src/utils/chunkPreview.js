@@ -14,6 +14,16 @@ export function sortedPreviewChunks(chunks = []) {
   return [...chunks].sort((left, right) => left.chunk_order_index - right.chunk_order_index)
 }
 
+/** 仅在预览中移除 Paper 生成的上下文前缀，保留证据正文和原始块。 */
+export function chunkPreviewContent(chunk) {
+  const content = chunk.content ?? ''
+  const metadata = chunk.source_metadata
+  if (metadata?.chunker_version !== 'paper_rules_v1' || !Array.isArray(metadata.section_path)) return content
+  const prefix = /^论文：[^\n]*\n章节：([^\n]*)\n\n/.exec(content)
+  const section = metadata.section_path.join(' > ') || '正文'
+  return prefix?.[1] === section ? content.slice(prefix[0].length) : content
+}
+
 /** 查找字符所属的一基行号。 */
 function lineAtOffset(source, offset) {
   let left = 0

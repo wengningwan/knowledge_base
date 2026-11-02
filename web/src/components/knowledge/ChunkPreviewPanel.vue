@@ -22,7 +22,7 @@
           :id="`chunk-content-${index}`"
           class="chunk-card-content"
           :class="{ 'is-collapsed': !expanded.has(index) }"
-        >{{ entry.chunk.content }}</div>
+        >{{ entry.content }}</div>
         <div class="chunk-source">
           <span>{{ entry.source.label }}</span>
           <button
@@ -69,7 +69,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import {
-  createChunkSourceDocument, describeChunkSource, chunkSourceWindows, sortedPreviewChunks
+  createChunkSourceDocument, describeChunkSource, chunkSourceWindows, sortedPreviewChunks, chunkPreviewContent
 } from '@/utils/chunkPreview'
 
 const props = defineProps({
@@ -83,7 +83,7 @@ const expanded = ref(new Set())
 const selectedIndex = ref(null)
 const source = computed(() => createChunkSourceDocument(props.sourceContent, props.sourceSha256, props.sourceError))
 const entries = computed(() => sortedPreviewChunks(props.chunks).map((chunk) => ({
-  chunk, source: describeChunkSource(chunk, source.value)
+  chunk, content: chunkPreviewContent(chunk), source: describeChunkSource(chunk, source.value)
 })))
 const selectedEntry = computed(() => selectedIndex.value === null ? null : entries.value[selectedIndex.value])
 const sourceWindows = computed(() => chunkSourceWindows(selectedEntry.value?.source.spans || [], source.value))
