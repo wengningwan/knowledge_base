@@ -18,7 +18,7 @@ export function sortedPreviewChunks(chunks = []) {
 export function chunkPreviewContent(chunk) {
   const content = chunk.content ?? ''
   const metadata = chunk.source_metadata
-  if (metadata?.chunker_version !== 'paper_rules_v1' || !Array.isArray(metadata.section_path)) return content
+  if (!['paper_rules_v1', 'paper_rules_v2'].includes(metadata?.chunker_version) || !Array.isArray(metadata.section_path)) return content
   const prefix = /^论文：[^\n]*\n章节：([^\n]*)\n\n/.exec(content)
   const section = metadata.section_path.join(' > ') || '正文'
   return prefix?.[1] === section ? content.slice(prefix[0].length) : content
@@ -68,7 +68,7 @@ function chunkNotices(metadata) {
 export function describeChunkSource(chunk, source) {
   const metadata = chunk.source_metadata || {}
   const section = Array.isArray(metadata.section_path) ? metadata.section_path.join(' / ') : ''
-  const result = { section, notices: chunkNotices(metadata), spans: [] }
+  const result = { section, notices: chunkNotices(metadata), spans: [], pages: [] }
   const unavailable = (status, label) => ({ ...result, status, label })
   if (!source.available) return unavailable('unavailable', '原文不可用，暂不能核对来源')
 
@@ -98,7 +98,7 @@ export function describeChunkSource(chunk, source) {
     ? String(span.line_start) : `${span.line_start}–${span.line_end}`))]
   const pages = [...new Set(spans.map((span) => span.page).filter((page) => Number.isInteger(page) && page > 0))]
   const label = `原文第 ${ranges.join('、')} 行${pages.length ? ` · PDF 第 ${pages.join('、')} 页` : ''}`
-  return { ...result, status: 'located', label, spans }
+  return { ...result, status: 'located', label, spans, pages }
 }
 
 /** 为每个独立来源保留单独行窗口，不把中间正文当成证据。 */

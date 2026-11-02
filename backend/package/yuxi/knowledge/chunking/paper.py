@@ -9,7 +9,7 @@ from typing import Any
 from yuxi.knowledge.chunking.ragflow_like.nlp import count_tokens
 from yuxi.knowledge.chunking.source import SourceDocument, source_sha256
 
-PAPER_CHUNKER_VERSION = "paper_rules_v1"
+PAPER_CHUNKER_VERSION = "paper_rules_v2"
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 CAPTION = re.compile(
     r"^(?:#{1,6}\s+)?(?:\*\*)?(table|figure|fig\.?|scheme|表|图)\s*(S?\d+(?:[.-]\d+)*)[.:：、]?\s*",
@@ -162,14 +162,16 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
     cursor = 0
     while cursor < len(lines):
         line = lines[cursor].strip()
+        body_start = None
         if not line:
             cursor += 1
             continue
         caption = CAPTION.match(line)
         heading = _heading(line) if not caption else None
         if heading:
-            level, name = heading
-            heading_range = (starts[cursor], starts[cursor] + len(lines[cursor].rstrip("\r\n")))
+            level, name, heading_length = heading
+            line_start = starts[cursor] + len(lines[cursor]) - len(lines[cursor].lstrip())
+            heading_range = (line_start, line_start + heading_length)
             # 解析器可能用 H2 标论文名、H1 标章节；文档题名只确定一次。
             if (
                 cursor == first_content
@@ -204,8 +206,12 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
                 continue
             headings = [entry for entry in headings if entry[0] < level]
             headings.append((level, name, *heading_range))
-            cursor += 1
-            continue
+            remainder = line[heading_length:]
+            if not remainder.strip():
+                cursor += 1
+                continue
+            body_start = heading_range[1] + len(remainder) - len(remainder.lstrip())
+            line = remainder.strip()
 
         first = cursor
         markdown_table = _is_markdown_table(lines, cursor)
@@ -244,25 +250,46 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
                 if _heading(next_line) or _line_kind(next_line) != "text" or _is_markdown_table(lines, cursor):
                     break
                 cursor += 1
-        start = starts[first] + len(lines[first]) - len(lines[first].lstrip())
+        start = body_start if body_start is not None else starts[first] + len(lines[first]) - len(lines[first].lstrip())
         end = starts[cursor - 1] + len(lines[cursor - 1].rstrip())
         if not any(
             re.sub(r"^\d+(?:\.\d+)*[.、]?\s*", "", heading[1]).strip().casefold()
             in {"references", "bibliography", "参考文献"}
             for heading in headings
         ):
-            units.append(Evidence(kind, [(start, end)], tuple(headings), warnings))
+            unit = Evidence(kind, [(start, end)], tuple(headings), warnings)
+            previous = units[-1] if units else None
+            # 仅续接同节、同身份且以英文小写开头的相邻半句，不跨图表或公式重排原文。
+            if previous and previous.kind == kind == "text" and previous.headings == unit.headings:
+                previous_body = re.sub(
+                    r"(?:\$\^\{[\d\s,\[\]–-]+\}\$|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s*$", "", _body(text, previous)
+                ).rstrip()
+                if (
+                    re.match(r"[a-z]", _body(text, unit))
+                    and re.search(r"[A-Za-z0-9$)}]$", previous_body)
+                    and _identifiers(_body(text, previous)) == _identifiers(_body(text, unit))
+                ):
+                    previous.ranges.extend(unit.ranges)
+                    continue
+            units.append(unit)
     return title, title_range, units
 
 
-def _heading(line: str) -> tuple[int, str] | None:
-    """识别 Markdown 标题及解析器保留的显式数字小节。"""
+def _heading(line: str) -> tuple[int, str, int] | None:
+    """识别 Markdown、独立数字小节及同行正文前的小节，返回原文标题长度。"""
     heading = HEADING.match(line)
     if heading:
-        return len(heading[1]), heading[2]
-    numbered = re.fullmatch(r"(\d+(?:\.\d+)+)\.?\s+([^\n]{1,120})", line)
-    if numbered and not numbered[2].endswith(("。", ".", "!", "?")):
-        return numbered[1].count(".") + 1, f"{numbered[1]}. {numbered[2]}"
+        number = re.match(r"^(\d+(?:\.\d+)*)\.\s", heading[2])
+        level = number[1].count(".") + 1 if number else len(heading[1])
+        return level, heading[2], len(line)
+    numbered = re.fullmatch(r"(\d+(?:\.\d+)+)(\.)?\s+([^\n]+)", line)
+    if not numbered or not re.match(r"[A-Z\u4e00-\u9fff]", numbered[3]):
+        return None
+    title = re.match(r"([^.!?。！？\n]{1,120})\.(?:\s+|$)", numbered[3])
+    if title and numbered[2]:
+        return numbered[1].count(".") + 1, f"{numbered[1]}. {title[1]}", numbered.start(3) + title.end(1) + 1
+    if len(numbered[3]) <= 120 and not numbered[3].endswith(("。", ".", "!", "?")):
+        return numbered[1].count(".") + 1, f"{numbered[1]}. {numbered[3]}", len(line)
     return None
 
 

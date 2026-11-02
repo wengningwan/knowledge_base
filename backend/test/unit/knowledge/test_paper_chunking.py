@@ -190,6 +190,68 @@ def test_section_only_document_uses_filename_as_unconfirmed_title():
     assert paper("# 1. INTRODUCTION\n\nBackground.")[0]["content"].startswith("论文：合成论文.md\n")
 
 
+def test_run_in_subsections_keep_heading_and_body_ranges_separate():
+    """同行正文和带末尾句点的小节标题不能混成同一节。"""
+    text = (
+        "# Study\n\n## 2. Experimental\n\n"
+        "2.1. Synthesis of carbon. Sample A was heated at 300 K.\n\n"
+        "2.2. Structure characterization. Raman measurements were performed.\n\n"
+        "2.3. Adsorption tests.\nMeasurements were performed at 273 K."
+    )
+    chunks = paper(text, target=1000)
+    assert len(chunks) == 3
+    for chunk, label, body in zip(
+        chunks,
+        ("2.1. Synthesis of carbon", "2.2. Structure characterization", "2.3. Adsorption tests"),
+        (
+            "Sample A was heated at 300 K.",
+            "Raman measurements were performed.",
+            "Measurements were performed at 273 K.",
+        ),
+    ):
+        assert chunk["source_metadata"]["section_path"] == ["2. Experimental", label]
+        assert chunk["content"].split("\n\n", 1)[1] == body
+        spans = chunk["source_metadata"]["source_spans"]
+        assert any(text[span["start_char"] : span["end_char"]] == body for span in spans)
+        assert any(text[span["start_char"] : span["end_char"]].rstrip(".") == label for span in spans)
+    assert all(chunk["source_metadata"]["chunker_version"] == "paper_rules_v2" for chunk in chunks)
+
+
+def test_adjacent_lowercase_continuation_is_atomic_even_over_target():
+    """跨页的半句话不能仅因小目标长度被拆成两个检索块。"""
+    first = "Raman spectroscopy was employed to assess carbon defects, where the D"
+    second = "peak corresponds to planar defects and the G peak is a lattice vibration."
+    text = f"# Study\n\n## Results\n\n{first}\n\n{second}"
+    chunks = paper(text, target=1)
+    assert len(chunks) == 1
+    assert first in chunks[0]["content"] and second in chunks[0]["content"]
+    spans = chunks[0]["source_metadata"]["source_spans"]
+    assert any(text[span["start_char"] : span["end_char"]] == first for span in spans)
+    assert any(text[span["start_char"] : span["end_char"]] == second for span in spans)
+
+
+@pytest.mark.parametrize("separator", [".\n\n", ".$^{31}$\n\n", "\n\n## Next section\n\n"])
+def test_continuation_does_not_cross_completed_sentence_or_heading(separator):
+    """句点、引用后句点和章节边界均保留独立证据。"""
+    chunks = paper(f"# Study\n\n## Results\n\nFirst paragraph{separator}lowercase new evidence.", target=1)
+    assert len(chunks) == 2
+
+
+def test_continuation_does_not_merge_different_samples_or_uppercase_paragraphs():
+    """明确样品差异和大写起始的新段落不按续句吞并。"""
+    text = "# Study\n\nSample A was heated at 300 K\n\nsample B was heated at 400 K.\n\nNew paragraph."
+    chunks = paper(text, target=1)
+    assert len(chunks) == 3
+
+
+def test_decimal_measurement_is_not_a_numbered_subsection():
+    """以小数温度开头的科学正文不能被当作小节标题。"""
+    body = "2.1 K was the temperature difference between the two samples."
+    chunk = paper(f"# Study\n\n## Results\n\n{body}")[0]
+    assert chunk["source_metadata"]["section_path"] == ["Results"]
+    assert chunk["content"].split("\n\n", 1)[1] == body
+
+
 def test_explicit_equation_number_mismatch_is_not_bound_to_adjacent_formula():
     """显式说明 eq1 的文字不能因为邻近就变成 eq2 的定义。"""
     text = (

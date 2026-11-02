@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { pid } from 'node:process'
+import { setImmediate } from 'node:timers'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { compileScript, parse } from 'vue/compiler-sfc'
@@ -8,7 +9,12 @@ import { createRenderer, h, nextTick, ref } from 'vue'
 
 /** 创建可执行事件与响应更新的组件宿主。 */
 function hostNode(type, text = '') {
-  return { type, text, props: {}, children: [], parent: null }
+  const node = { type, text, props: {}, children: [], parent: null, style: {}, clientWidth: 800 }
+  node.getContext = () => ({})
+  node.scrollIntoView = () => { node.scrolled = true }
+  node.querySelector = (selector) => nodes(node, (child) =>
+    child.props['data-page-number'] === Number(selector.match(/"(\d+)"/)[1]))[0]
+  return node
 }
 const renderer = createRenderer({
   createElement: hostNode,
@@ -37,6 +43,56 @@ const renderer = createRenderer({
     return siblings[siblings.indexOf(node) + 1] || null
   },
   patchProp: (node, key, _previous, value) => { node.props[key] = value }
+})
+
+test('PDF 渲染完成后定位来源页，页码变更会定位，越界会显示明确提示', async () => {
+  const sourcePath = new URL('../../src/components/common/PdfPreview.vue', import.meta.url)
+  const compiledPath = fileURLToPath(new URL(`../../.pdf-page-test-${pid}.mjs`, import.meta.url))
+  const { descriptor } = parse(readFileSync(sourcePath, 'utf8'))
+  const compiled = compileScript(descriptor, { id: 'pdf-page-test', inlineTemplate: true })
+  writeFileSync(compiledPath, compiled.content
+    .replace('@/utils/pdfPreviewErrors', './src/utils/pdfPreviewErrors.js')
+    .replace("import('pdfjs-dist/legacy/build/pdf.mjs')", `Promise.resolve({
+      GlobalWorkerOptions: {}, getDocument: () => ({ destroy() {}, promise: Promise.resolve({
+        numPages: 3, getPage: async () => ({ getViewport: () => ({ width: 600, height: 800 }),
+          render: () => ({ promise: Promise.resolve(), cancel() {} }) })
+      }) })
+    })`)
+    .replace("import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url')", "Promise.resolve({ default: 'worker.js' })"))
+  const previousWindow = globalThis.window
+  globalThis.window = { devicePixelRatio: 1, innerWidth: 800 }
+  let app
+  try {
+    const { default: Preview } = await import(pathToFileURL(compiledPath).href)
+    const defaultRoot = hostNode('root')
+    app = renderer.createApp(() => h(Preview, { url: 'default.pdf' }))
+    app.mount(defaultRoot)
+    await new Promise(setImmediate)
+    assert.equal(byClass(defaultRoot, 'pdf-page-card').length, 3)
+    assert.ok(byClass(defaultRoot, 'pdf-page-card').every((page) => !page.scrolled))
+    assert.equal(nodes(defaultRoot, (node) => node.props.role === 'status').length, 0)
+    app.unmount()
+    const props = ref({ url: 'synthetic.pdf', page: 2 })
+    const root = hostNode('root')
+    app = renderer.createApp(() => h(Preview, props.value))
+    app.mount(root)
+    await new Promise(setImmediate)
+    const pages = byClass(root, 'pdf-page-card')
+    assert.equal(pages.length, 3)
+    assert.deepEqual(pages.map((page) => Boolean(page.scrolled)), [false, true, false])
+    props.value = { ...props.value, page: 3 }
+    await nextTick()
+    await nextTick()
+    assert.equal(pages[2].scrolled, true)
+    props.value = { ...props.value, page: 99 }
+    await nextTick()
+    assert.match(nodes(root, (node) => node.props.role === 'status')[0].text, /PDF 共 3 页，无法定位到第 99 页/)
+  } finally {
+    app?.unmount()
+    if (previousWindow === undefined) delete globalThis.window
+    else globalThis.window = previousWindow
+    unlinkSync(compiledPath)
+  }
 })
 
 test('论文策略显式选择与沿用知识库时均显示组合目标，其余策略保持最大值语义', async () => {
@@ -99,7 +155,7 @@ test('真实分块组件保留重复块、换行和全文，并响应展开、�
         { id: 'first', chunk_order_index: 0, content, source_metadata: {
           source_sha256: 'current', section_path: ['公式'],
           source_spans: [{ line_start: 1, line_end: 1, start_char: 0, end_char: 3 },
-            { line_start: 5, line_end: 5, start_char: 16, end_char: 24 }]
+            { line_start: 5, line_end: 5, start_char: 16, end_char: 24, page: 4 }]
         } }
       ]
     })
@@ -124,6 +180,14 @@ test('真实分块组件保留重复块、换行和全文，并响应展开、�
     assert.equal(expand.props['aria-expanded'], true)
     assert.equal(byClass(root, 'chunk-card-content')[0].props.class.includes('is-collapsed'), false)
     assert.match(byClass(root, 'chunk-card-content')[0].text, /最后一行完整保留$/)
+    assert.equal(nodes(root, (node) => node.props['aria-label'] === '查看 PDF 第 4 页').length, 0)
+    const openedPdfPages = []
+    props.value = { ...props.value, canOpenPdf: true, onOpenPdf: (page) => openedPdfPages.push(page) }
+    await nextTick()
+    const pdfButton = nodes(root, (node) => node.props['aria-label'] === '查看 PDF 第 4 页')[0]
+    assert.ok(pdfButton)
+    pdfButton.props.onClick()
+    assert.deepEqual(openedPdfPages, [4])
     expand.props.onClick()
     await nextTick()
     assert.equal(expand.props['aria-expanded'], false)
@@ -166,6 +230,8 @@ test('真实分块组件保留重复块、换行和全文，并响应展开、�
 
     for (const [content, metadata, expected] of [
       [storedContent, { chunker_version: 'ragflow_like_v1' }, storedContent],
+      [storedContent, { chunker_version: 'paper_rules_v2', section_path: ['1. INTRODUCTION'] }, body],
+      [storedContent, { chunker_version: 'paper_rules_unknown', section_path: ['1. INTRODUCTION'] }, storedContent],
       [storedContent, { chunker_version: 'paper_rules_v1', section_path: '1. INTRODUCTION' }, storedContent],
       [storedContent, { chunker_version: 'paper_rules_v1', section_path: ['另一章节'] }, storedContent],
       [body, { chunker_version: 'paper_rules_v1', section_path: ['1. INTRODUCTION'] }, body],
