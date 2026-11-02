@@ -424,3 +424,50 @@ async def _record(calls: list[object], value: str) -> None:
 
 async def _async_value(value):
     return value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("knowledge_version", [1, 2, 3])
+async def test_supported_knowledge_versions_upgrade_through_v4_before_version_write(monkeypatch, knowledge_version):
+    """启动迁移链不能把旧知识 Schema 直接标为 v4。"""
+    calls = []
+
+    @asynccontextmanager
+    async def session_context():
+        yield _Session()
+
+    manager = SimpleNamespace(
+        initialize=lambda: None,
+        schema_migration_lock=lambda: _async_context(calls, "lock"),
+        create_schema_version_table=lambda: _record(calls, "version_table"),
+        get_schema_versions=lambda: _async_value(
+            {
+                "business": storage_migration.BUSINESS_SCHEMA_VERSION,
+                "knowledge": knowledge_version,
+            }
+        ),
+        upgrade_knowledge_schema_v1_to_v2=lambda: _record(calls, "1->2"),
+        upgrade_knowledge_schema_v2_to_v3=lambda: _record(calls, "2->3"),
+        upgrade_knowledge_schema_v3_to_v4=lambda: _record(calls, "3->4"),
+        record_schema_version=lambda domain, version: _record(calls, f"{domain}:{version}"),
+        get_async_session_context=session_context,
+        close=lambda: _record(calls, "close"),
+    )
+    monkeypatch.setattr(storage_migration, "pg_manager", manager)
+    monkeypatch.setattr(
+        storage_migration, "read_v071_workdir_plan", lambda _db: _async_value(V071WorkdirMigrationPlan(False, (), ()))
+    )
+    monkeypatch.setattr(storage_migration, "_legacy_skill_roots_exist", lambda: False)
+    monkeypatch.setattr(storage_migration, "_legacy_system_config_exists", lambda: False)
+    monkeypatch.setattr(storage_migration, "runtime_storage_requires_quiescence", lambda: False)
+    monkeypatch.setattr(storage_migration, "_converge_database_state", lambda **kwargs: _record(calls, "converge"))
+    monkeypatch.setattr(storage_migration, "migrate_shared_skills", lambda _db: _record(calls, "skills"))
+    monkeypatch.setattr(storage_migration, "mark_v071_skills_migrated", lambda: None)
+    monkeypatch.setattr(storage_migration, "migrate_runtime_storage_identity", lambda: None)
+    await storage_migration.main()
+    expected = (
+        (["1->2"] if knowledge_version == 1 else [])
+        + (["2->3"] if knowledge_version <= 2 else [])
+        + ["3->4", "knowledge:4"]
+    )
+    assert [call for call in calls if "->" in call or call.startswith("knowledge:")] == expected

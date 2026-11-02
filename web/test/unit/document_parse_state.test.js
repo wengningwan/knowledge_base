@@ -126,3 +126,23 @@ test('独立图片只接受当前知识库的鉴权代理地址', () => {
   assert.equal(knowledgeAssetImageMarkdown(source, 'other'), '')
   assert.equal(knowledgeAssetImageMarkdown('https://example.com/a.png', 'kb'), '')
 })
+
+test('来源指纹随当前正文透传，读取失败或关闭后不保留旧指纹', async () => {
+  let projection
+  let fail = false
+  const loader = createDocumentParseLoader({
+    loadContent: async () => ({ content: '当前正文', source_sha256: 'current', content_error: fail ? '读取失败' : '' }),
+    loadAssets: async () => ({}),
+    onChange: (value) => { projection = value }
+  })
+  loader.reset({ kbId: 'kb', fileId: 'one' })
+  await loader.content()
+  assert.equal(projection.content.source_sha256, 'current')
+  loader.reset()
+  assert.equal(projection.content.source_sha256, '')
+  fail = true
+  loader.reset({ kbId: 'kb', fileId: 'two' })
+  await loader.content()
+  assert.equal(projection.content.source_sha256, '')
+  assert.equal(projection.content.content, '')
+})

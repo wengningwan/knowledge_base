@@ -24,7 +24,7 @@ from yuxi.utils.singleton import SingletonMeta
 
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
 BUSINESS_SCHEMA_VERSION = 9
-KNOWLEDGE_SCHEMA_VERSION = 3
+KNOWLEDGE_SCHEMA_VERSION = 4
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
@@ -570,8 +570,16 @@ class PostgresManager(metaclass=SingletonMeta):
         """为同次解析产物和远程任务恢复增加可空字段。"""
         self._check_initialized()
         async with self.async_engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE knowledge_files ADD COLUMN IF NOT EXISTS parse_assets_file VARCHAR(1024)"))
+            await conn.execute(
+                text("ALTER TABLE knowledge_files ADD COLUMN IF NOT EXISTS parse_assets_file VARCHAR(1024)")
+            )
             await conn.execute(text("ALTER TABLE knowledge_files ADD COLUMN IF NOT EXISTS parse_runtime JSONB"))
+
+    async def upgrade_knowledge_schema_v3_to_v4(self) -> None:
+        """为现有分块增加可空来源，旧记录保持未知且重复执行安全。"""
+        self._check_initialized()
+        async with self.async_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS source_metadata JSONB"))
 
     async def drop_tables(self):
         """删除所有表（慎用！）"""
@@ -717,6 +725,7 @@ class PostgresManager(metaclass=SingletonMeta):
                 kb_id VARCHAR(80) NOT NULL REFERENCES knowledge_bases(kb_id) ON DELETE CASCADE,
                 chunk_index INTEGER NOT NULL,
                 content TEXT NOT NULL,
+                source_metadata JSONB,
                 start_char_pos INTEGER,
                 end_char_pos INTEGER,
                 start_token_pos INTEGER,
@@ -733,6 +742,7 @@ class PostgresManager(metaclass=SingletonMeta):
             )
             """,
             "ALTER TABLE IF EXISTS knowledge_chunks ADD COLUMN IF NOT EXISTS extraction_result JSONB",
+            "ALTER TABLE IF EXISTS knowledge_chunks ADD COLUMN IF NOT EXISTS source_metadata JSONB",
             (
                 "ALTER TABLE IF EXISTS knowledge_chunks ADD COLUMN IF NOT EXISTS "
                 "graph_structure_indexed BOOLEAN NOT NULL DEFAULT FALSE"

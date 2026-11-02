@@ -391,7 +391,7 @@ async def test_knowledge_v1_to_v2_adds_file_attempt_owner_idempotently() -> None
             "error_parsing",
             "service_interrupted: 旧执行实例中断，处理结果未知，请重试",
         )
-        assert KNOWLEDGE_SCHEMA_VERSION == 3
+        assert KNOWLEDGE_SCHEMA_VERSION == 4
     finally:
         await _drop_isolated_schema(schema, admin_engine, scoped_engine)
 
@@ -597,18 +597,111 @@ async def test_resource_selection_migration_is_atomic_and_does_not_repeat(fail_v
         await _drop_isolated_schema(schema, admin_engine, engine)
 
 
-
 async def test_knowledge_v2_to_v3_preserves_existing_document_and_adds_nullable_parse_fields():
     """在真实 PG 的旧版表上执行两次升级，检查旧正文与新字段。"""
     schema, admin_engine, scoped_engine, manager = await _create_isolated_manager("pytest_parse_assets")
     try:
         async with scoped_engine.begin() as connection:
-            await connection.execute(text("CREATE TABLE knowledge_files (file_id VARCHAR(64) PRIMARY KEY, markdown_file TEXT)"))
+            await connection.execute(
+                text("CREATE TABLE knowledge_files (file_id VARCHAR(64) PRIMARY KEY, markdown_file TEXT)")
+            )
             await connection.execute(text("INSERT INTO knowledge_files VALUES ('old', 'original.md')"))
         await manager.upgrade_knowledge_schema_v2_to_v3()
         await manager.upgrade_knowledge_schema_v2_to_v3()
         async with scoped_engine.connect() as connection:
-            row = (await connection.execute(text("SELECT markdown_file, parse_assets_file, parse_runtime FROM knowledge_files WHERE file_id = 'old'"))).one()
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT markdown_file, parse_assets_file, parse_runtime "
+                        "FROM knowledge_files WHERE file_id = 'old'"
+                    )
+                )
+            ).one()
         assert tuple(row) == ("original.md", None, None)
+    finally:
+        await _drop_isolated_schema(schema, admin_engine, scoped_engine)
+
+
+async def test_knowledge_v3_to_v4_is_idempotent_and_preserves_unknown_old_sources():
+    """真实旧表重复升级后保留正文，来源不会被猜测或回填。"""
+    schema, admin_engine, scoped_engine, manager = await _create_isolated_manager("pytest_chunk_sources")
+    try:
+        async with scoped_engine.begin() as connection:
+            await connection.execute(
+                text("CREATE TABLE knowledge_chunks (chunk_id TEXT PRIMARY KEY, content TEXT NOT NULL)")
+            )
+            await connection.execute(text("INSERT INTO knowledge_chunks VALUES ('old', 'old body')"))
+        await manager.upgrade_knowledge_schema_v3_to_v4()
+        await manager.upgrade_knowledge_schema_v3_to_v4()
+        async with scoped_engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text("SELECT content, source_metadata FROM knowledge_chunks WHERE chunk_id = 'old'")
+                )
+            ).one()
+        assert tuple(row) == ("old body", None)
+    finally:
+        await _drop_isolated_schema(schema, admin_engine, scoped_engine)
+
+
+async def test_chunk_source_metadata_survives_real_repository_roundtrip(monkeypatch):
+    """新装 Schema 与 repository 在不同事务中回读完整来源 JSON。"""
+    from yuxi.repositories import knowledge_chunk_repository as repository_module
+    from yuxi.repositories.knowledge_chunk_repository import KnowledgeChunkRepository
+
+    schema, admin_engine, scoped_engine, manager = await _create_isolated_manager("pytest_chunk_roundtrip")
+    manager.AsyncSession = async_sessionmaker(bind=scoped_engine, expire_on_commit=False)
+    monkeypatch.setattr(repository_module, "pg_manager", manager)
+    metadata = {
+        "source_sha256": "a" * 64,
+        "chunker_version": "paper_rules_v1",
+        "section_path": ["论文🧪", "结果"],
+        "content_type": "formula",
+        "evidence_ids": ["e1"],
+        "source_spans": [
+            {"line_start": 5, "line_end": 9, "start_char": 30, "end_char": 58},
+            {"line_start": 20, "line_end": 21, "start_char": 80, "end_char": 99, "page": 2},
+        ],
+        "warnings": [],
+    }
+    try:
+        await manager.create_knowledge_tables()
+        async with scoped_engine.begin() as connection:
+            await connection.execute(
+                text("INSERT INTO knowledge_bases (kb_id, name, kb_type) VALUES ('kb', 'test', 'milvus')")
+            )
+            await connection.execute(
+                text("INSERT INTO knowledge_files (file_id, kb_id, filename) VALUES ('f', 'kb', 'paper.md')")
+            )
+        repository = KnowledgeChunkRepository()
+        await repository.batch_upsert(
+            [
+                {
+                    "chunk_id": "f_chunk_0",
+                    "kb_id": "kb",
+                    "file_id": "f",
+                    "chunk_index": 0,
+                    "content": "论文与公式的完整正文",
+                    "source_metadata": metadata,
+                }
+            ]
+        )
+        record = await repository.get_by_chunk_id("f_chunk_0")
+        assert record.content == "论文与公式的完整正文"
+        assert record.source_metadata == metadata
+        await repository.batch_upsert(
+            [
+                {
+                    "chunk_id": "f_chunk_0",
+                    "kb_id": "kb",
+                    "file_id": "f",
+                    "chunk_index": 0,
+                    "content": "new body",
+                    "source_metadata": None,
+                }
+            ]
+        )
+        reread = await repository.get_by_chunk_id("f_chunk_0")
+        assert reread.content == "new body" and reread.source_metadata is None
     finally:
         await _drop_isolated_schema(schema, admin_engine, scoped_engine)

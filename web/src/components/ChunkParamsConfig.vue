@@ -29,8 +29,8 @@
         <a-form-item v-if="showChunkSizeOverlap" name="chunk_token_num">
           <template #label>
             <span class="chunk-preset-label">
-              最大 Token 数
-              <a-tooltip title="每个文本片段的最大 token 数，留空时使用默认值 512">
+              {{ isPaperPreset ? '目标 Token 数' : '最大 Token 数' }}
+              <a-tooltip :title="isPaperPreset ? '完整证据组合的目标 token 数，留空时使用默认值 512；完整公式或表格可能超过目标，会保留全文并提示超长。' : '每个文本片段的最大 token 数，留空时使用默认值 512'">
                 <QuestionCircleOutlined class="chunk-preset-help-icon" />
               </a-tooltip>
             </span>
@@ -153,6 +153,7 @@ const effectivePresetId = computed(
   () => props.tempChunkParams.chunk_preset_id || props.databasePresetId || DEFAULT_CHUNK_PRESET_ID
 )
 const presetDescription = computed(() => getChunkPresetDescription(effectivePresetId.value))
+const isPaperPreset = computed(() => effectivePresetId.value === 'paper')
 
 onMounted(() => {
   loadChunkPresetOptions()

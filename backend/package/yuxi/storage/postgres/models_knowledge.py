@@ -100,6 +100,7 @@ class KnowledgeChunk(Base):
     kb_id = Column(String(80), ForeignKey("knowledge_bases.kb_id", ondelete="CASCADE"), nullable=False)
     chunk_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
+    source_metadata = Column(JSON_VALUE)
     start_char_pos = Column(Integer)
     end_char_pos = Column(Integer)
     start_token_pos = Column(Integer)

@@ -32,6 +32,10 @@ CHUNK_PRESETS: dict[str, dict[str, str]] = {
         "label": "Separator",
         "description": "严格分隔：命中分隔符即切分，仅超长片段内部继续按长度切分。",
     },
+    "paper": {
+        "label": "Paper",
+        "description": "论文证据：完整保留公式定义、图注与表格，携带章节和可回查来源；长度为组合目标。",
+    },
 }
 
 CHUNK_PRESET_IDS = set(CHUNK_PRESETS)

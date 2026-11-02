@@ -79,5 +79,6 @@
 
 - [创建并使用知识库](./knowledge-base.md)：先把文档处理到 `indexed`。
 - [文档处理与 OCR](../advanced/document-processing.md)：调整解析和分块参数。
+- [分块方案同题对照](../advanced/chunking-comparison.md)：用固定原文证据比较切分策略。
 - [智能体评估](../agents/agent-evaluation.md)：评估完整智能体任务。
 - [知识库机制详解](../mechanisms/knowledge-base.md)：了解评估与文档状态、存储和权限的关系。

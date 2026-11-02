@@ -49,7 +49,7 @@
           </a-dropdown>
 
           <!-- 自定义关闭按钮 -->
-          <button class="custom-close-btn" @click="visible = false">
+          <button class="custom-close-btn" aria-label="关闭文件详情" @click="visible = false">
             <X :size="16" />
           </button>
         </div>
@@ -119,17 +119,15 @@
         <div v-if="contentState.loading" class="loading-container">
           <a-spin tip="正在加载分块内容..." />
         </div>
-        <div v-else class="chunk-grid">
-          <div v-for="chunk in mappedChunks" :key="chunk.id" class="chunk-card">
-            <div class="chunk-card-header">
-              <span class="chunk-order">#{{ chunk.chunk_order_index }}</span>
-            </div>
-            <div class="chunk-card-content">
-              {{ chunk.content.replace(/\n+/g, ' ') }}
-            </div>
-          </div>
-        </div>
-        <div v-if="!contentState.loading && mappedChunks.length === 0" class="empty-content">
+        <ChunkPreviewPanel
+          v-else
+          :key="`${kbId}:${fileId}`"
+          :chunks="contentState.lines"
+          :source-content="contentState.content"
+          :source-sha256="contentState.source_sha256"
+          :source-error="contentState.error"
+        />
+        <div v-if="!contentState.loading && chunkCount === 0" class="empty-content">
           <p>{{ contentState.error || '暂无分块信息' }}</p>
         </div>
       </div>
@@ -146,7 +144,6 @@ import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { documentApi } from '@/apis/knowledge_api'
 import { getWorkspaceKnowledgeFileContent } from '@/apis/workspace_api'
-import { mergeChunks } from '@/utils/chunkUtils'
 import { getPreviewTypeByPath, normalizePreviewResponse } from '@/utils/file_preview'
 import { parseDownloadFilename } from '@/utils/file_utils'
 import { inlineKnowledgeImages } from '@/utils/markdown_export'
@@ -160,6 +157,7 @@ import {
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import FigureAnalysisPanel from '@/components/knowledge/FigureAnalysisPanel.vue'
 import DocumentReviewPanel from '@/components/knowledge/DocumentReviewPanel.vue'
+import ChunkPreviewPanel from '@/components/knowledge/ChunkPreviewPanel.vue'
 import {
   createDocumentParseLoader, emptyDocumentContent, emptyDocumentAssets, documentMarkdown
 } from '@/utils/document_parse_state'
@@ -440,12 +438,10 @@ watch(
 )
 
 // 统计信息
-const mergeResult = computed(() => mergeChunks(contentState.value.lines || []))
-const mappedChunks = computed(() => mergeResult.value.chunks)
 const mergedContent = computed(() => documentMarkdown(contentState.value))
 const charCount = computed(() => mergedContent.value.length)
 const chunkCount = computed(
-  () => mappedChunks.value.length || contentState.value.lines?.length || 0
+  () => contentState.value.lines?.length || 0
 )
 const viewInfoText = computed(() => {
   if (viewMode.value === 'figures') return assetsState.value.loading ? '' : `${assetsState.value.figures.length} 张图片`
@@ -670,48 +666,6 @@ onBeforeUnmount(resetLocalState)
   width: 100%;
 }
 
-/* Chunks 面板样式 */
-.chunk-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
-}
-
-.chunk-card {
-  background: var(--gray-0);
-  border: 1px solid var(--gray-200);
-  border-radius: 8px;
-  padding: 12px;
-  transition: all 0.2s ease;
-}
-
-.chunk-card:hover {
-  border-color: var(--main-color);
-  box-shadow: 0 2px 8px rgba(1, 97, 121, 0.1);
-}
-
-.chunk-card-header {
-  display: flex;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.chunk-order {
-  font-weight: 600;
-  color: var(--main-color);
-  font-size: 12px;
-}
-
-.chunk-card-content {
-  font-size: 12px;
-  color: var(--gray-600);
-  line-height: 1.5;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-}
 </style>
 
 <style lang="less">
@@ -773,6 +727,12 @@ onBeforeUnmount(resetLocalState)
   flex: 0 0 auto;
   margin-left: auto;
   min-width: 0;
+}
+
+@media (max-width: 600px) {
+  .modal-title-wrapper { flex-wrap: wrap; }
+  .file-title { flex-basis: 100%; }
+  .header-controls { flex-wrap: wrap; }
 }
 
 /* 下载按钮样式 */

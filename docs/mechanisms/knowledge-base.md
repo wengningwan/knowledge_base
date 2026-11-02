@@ -77,6 +77,10 @@ stateDiagram-v2
 
 Milvus 索引会把 chunk 写入 PostgreSQL 和 Milvus。它不是跨存储事务：任一侧失败时会尝试补偿并把文件置为 `error_indexing`，排查时需要同时查看两侧。
 
+chunk 的 `source_metadata` 随正文保存在 PostgreSQL，记录解析正文指纹、切分版本、章节和显式原文范围。论文策略直接生成多个来源范围，检索正文带入相关公式定义、图表说明和唯一匹配的实验条件；精确匹配的通用策略块也可以拥有来源。旧块字段为空，重新索引后生成。PDF 页码仅来自同次解析、唯一逐字对应的版面块。
+
+查询命中后按知识库、文件、chunk 标识、顺序和正文核对 PostgreSQL 当前事实，再回填来源。已删除或与 PG 正文不一致的向量命中不返回，避免旧索引文字获得新来源。内容响应另带当前 Markdown 指纹，预览只对版本一致的来源开放定位；无可靠来源时完整正文仍可查看。
+
 ## Durable Task 和恢复
 
 上传原文件是同步对象存储操作；批量添加、解析、索引和图谱构建把 `task_type`、Handler 版本和可序列化 payload 保存到 PostgreSQL。提交后 API 只发布 `task_id`，ARQ worker 从 registry 加载领域 Handler。

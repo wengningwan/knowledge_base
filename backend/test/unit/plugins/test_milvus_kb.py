@@ -374,7 +374,7 @@ async def test_index_file_persists_chunk_stats(monkeypatch):
 
     kb._get_or_create_milvus_collection = get_collection
     kb._read_markdown_from_minio = read_markdown
-    kb._split_text_into_chunks = lambda text, file_id, filename, params: chunks
+    kb._split_text_into_chunks = lambda text, file_id, filename, params, **kwargs: chunks
     kb._get_embedding_function = lambda embedding_model_spec: embedding_function
     kb.delete_file_chunks_only = delete_file_chunks_only
     kb._embed_and_store_chunks = embed_and_store_chunks
@@ -402,6 +402,52 @@ async def test_index_file_persists_chunk_stats(monkeypatch):
     assert file_repo.records["file-1"].chunk_count == result["chunk_count"]
     assert file_repo.conditional_update_calls[0][3]["status"] == FileStatus.INDEXING
     assert file_repo.conditional_update_calls[-1][3]["status"] == FileStatus.INDEXED
+
+
+@pytest.mark.parametrize("failure", ["capacity", "kb", "file", "attempt", "directory", "schema"])
+async def test_index_rejects_invalid_evidence_before_deleting_previous_chunks(monkeypatch, failure):
+    """容量或同次解析身份不符时，旧分块仍可回查且文件显式报错。"""
+    prefix = "http://minio/kb-parsed/db/parsed/file-1/attempt-1"
+    record = make_file_record(
+        markdown_file=f"{prefix}/document.md",
+        parse_assets_file=f"{prefix}/assets.json",
+    )
+    assets = {"schema_version": 1, "kb_id": "db", "file_id": "file-1", "attempt_id": "attempt-1", "blocks": []}
+    if failure in {"kb", "file", "attempt"}:
+        assets[f"{failure}_id"] = "other"
+    elif failure == "schema":
+        assets["schema_version"] = 99
+    elif failure == "directory":
+        record.markdown_file = "http://minio/kb-parsed/db/parsed/file-1/attempt-0/document.md"
+    file_repo = FakeKnowledgeFileRepository({"file-1": record})
+    patch_file_repository(monkeypatch, file_repo)
+    kb = MilvusKB.__new__(MilvusKB)
+    kb._get_or_create_milvus_collection = AsyncMock(return_value=FakeCollection())
+    kb._get_embedding_function = lambda _spec: AsyncMock()
+    kb._read_markdown_from_minio = AsyncMock(return_value="# Study\n\n$$\nx=1\n$$")
+    kb._read_minio_bytes = AsyncMock(return_value=json.dumps(assets).encode())
+    kb.delete_file_chunks_only = AsyncMock()
+    kb._embed_and_store_chunks = AsyncMock()
+    if failure == "capacity":
+        kb._split_text_into_chunks = lambda *args, **kwargs: [make_chunk(0, "中" * 22000)]
+
+    async def options(_self):
+        """提供当前系统设置，不调用真实模型。"""
+        return {"embed_model": EMBEDDING_MODEL_SPEC}
+
+    monkeypatch.setattr(type(milvus_module.system_options), "get", options)
+    with pytest.raises(ValueError, match="UTF-8 字节" if failure == "capacity" else "同次解析"):
+        await kb.index_file(
+            "db",
+            "file-1",
+            params={"chunk_preset_id": "paper"},
+            embedding_model_spec=EMBEDDING_MODEL_SPEC,
+            additional_params={},
+        )
+    kb.delete_file_chunks_only.assert_not_awaited()
+    kb._embed_and_store_chunks.assert_not_awaited()
+    kb._get_or_create_milvus_collection.assert_not_awaited()
+    assert record.status == FileStatus.ERROR_INDEXING
 
 
 @pytest.mark.parametrize(
@@ -1075,10 +1121,29 @@ async def test_hydrate_chunk_sources_filters_orphaned_file_chunks(monkeypatch, c
         }
     )
     patch_file_repository(monkeypatch, file_repo)
+    chunk_repo = types.SimpleNamespace(
+        list_by_chunk_ids=AsyncMock(
+            return_value=[
+                types.SimpleNamespace(
+                    chunk_id="live-0",
+                    file_id="file-live",
+                    kb_id="db",
+                    chunk_index=0,
+                    content="live content",
+                    source_metadata=None,
+                )
+            ]
+        )
+    )
+    monkeypatch.setattr(milvus_module, "KnowledgeChunkRepository", lambda: chunk_repo)
     kb = MilvusKB.__new__(MilvusKB)
 
     chunks = [
-        {"metadata": {"file_id": "file-live", "chunk_index": 0}, "content": "live content", "score": 0.9},
+        {
+            "metadata": {"file_id": "file-live", "chunk_id": "live-0", "chunk_index": 0},
+            "content": "live content",
+            "score": 0.9,
+        },
         {"metadata": {"file_id": "file-deleted"}, "content": "orphan content", "score": 0.8},
     ]
 
@@ -1100,11 +1165,29 @@ async def test_hydrate_chunk_sources_returns_all_chunks_when_no_orphans(monkeypa
         }
     )
     patch_file_repository(monkeypatch, file_repo)
+    records = [
+        types.SimpleNamespace(
+            chunk_id=f"chunk-{name}",
+            file_id=f"file-{name}",
+            kb_id="db",
+            chunk_index=0,
+            content=name,
+            source_metadata=None,
+        )
+        for name in ("a", "b")
+    ]
+    monkeypatch.setattr(
+        milvus_module,
+        "KnowledgeChunkRepository",
+        lambda: types.SimpleNamespace(
+            list_by_chunk_ids=AsyncMock(return_value=records),
+        ),
+    )
     kb = MilvusKB.__new__(MilvusKB)
 
     chunks = [
-        {"metadata": {"file_id": "file-a"}, "content": "a", "score": 0.9},
-        {"metadata": {"file_id": "file-b"}, "content": "b", "score": 0.8},
+        {"metadata": {"file_id": "file-a", "chunk_id": "chunk-a", "chunk_index": 0}, "content": "a", "score": 0.9},
+        {"metadata": {"file_id": "file-b", "chunk_id": "chunk-b", "chunk_index": 0}, "content": "b", "score": 0.8},
     ]
 
     result = await kb._hydrate_chunk_sources("db", chunks)
@@ -1122,6 +1205,24 @@ async def test_query_filters_orphaned_chunks_from_search_results(monkeypatch):
         }
     )
     patch_file_repository(monkeypatch, file_repo)
+    monkeypatch.setattr(
+        milvus_module,
+        "KnowledgeChunkRepository",
+        lambda: types.SimpleNamespace(
+            list_by_chunk_ids=AsyncMock(
+                return_value=[
+                    types.SimpleNamespace(
+                        chunk_id="chunk-1",
+                        file_id="file-live",
+                        kb_id="db",
+                        chunk_index=0,
+                        content="live content",
+                        source_metadata=None,
+                    )
+                ]
+            ),
+        ),
+    )
 
     class OrphanCollection(FakeCollection):
         """模拟 Milvus 中残留已删除文件的向量。"""

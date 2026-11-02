@@ -1,5 +1,5 @@
 export const emptyDocumentContent = () => ({
-  loading: false, loaded: false, lines: [], content: '', error: '', attempt_id: null
+  loading: false, loaded: false, lines: [], content: '', source_sha256: '', error: '', attempt_id: null
 })
 export const emptyDocumentAssets = () => ({
   loading: false, loaded: false, figures: [], reviews: [], diagnostics: [], metadata: {},
@@ -61,6 +61,7 @@ export function createDocumentParseLoader({ loadContent, loadAssets, onChange })
           content = {
             ...emptyDocumentContent(), loaded: true, lines: data?.lines || [],
             content: data?.content_error ? '' : String(data?.content || ''),
+            source_sha256: data?.content_error ? '' : String(data?.source_sha256 || ''),
             error: data?.content_error || '', attempt_id: data?.attempt_id || null
           }
         } else {

@@ -91,6 +91,7 @@ export default defineConfig({
           { text: 'Agent 并发容量', link: '/advanced/agent-concurrency-capacity' },
           { text: '沙盒配置与运维', link: '/advanced/sandbox-operations' },
           { text: '文档解析与 OCR', link: '/advanced/document-processing' },
+          { text: '分块方案同题对照', link: '/advanced/chunking-comparison' },
           { text: 'OXR 解析验收', link: '/advanced/oxr-validation-checklist' },
           {
             text: '知识库管理',

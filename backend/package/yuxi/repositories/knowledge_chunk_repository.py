@@ -19,6 +19,7 @@ class KnowledgeChunkRepository:
         "kb_id",
         "chunk_index",
         "content",
+        "source_metadata",
         "start_char_pos",
         "end_char_pos",
         "start_token_pos",

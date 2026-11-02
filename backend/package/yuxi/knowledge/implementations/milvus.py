@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import time
 import traceback
@@ -25,6 +26,7 @@ from yuxi.config.options import system_options
 from yuxi.knowledge.base import FileStatus, KnowledgeBase
 from yuxi.knowledge.chunking.ragflow_like.dispatcher import chunk_markdown
 from yuxi.knowledge.chunking.ragflow_like.nlp import count_tokens
+from yuxi.knowledge.chunking.source import source_sha256
 from yuxi.knowledge.read_models import KnowledgeBaseConfig
 from yuxi.knowledge.utils.kb_utils import resolve_processing_params
 from yuxi.models.providers.cache import model_cache
@@ -39,6 +41,7 @@ CONTENT_SPARSE_FIELD = "content_sparse"
 CONTENT_ANALYZER_PARAMS = {"type": "chinese"}
 VECTOR_METRIC_TYPE = "COSINE"
 MILVUS_CHUNK_EMBED_BATCH_SIZE = 200
+MILVUS_CONTENT_MAX_BYTES = 65535
 MILVUS_QUERY_OFFLOAD_LIMIT = 8
 # Milvus 为派生索引：PG 先行落库（权威源），Milvus upsert 失败有限次重试，
 # 重试耗尽则抛错由上层标记文件状态；不回滚 PG（避免单边数据）。
@@ -294,8 +297,9 @@ class MilvusKB(KnowledgeBase):
     kb_type = "milvus"
     name = "Milvus"
     description = "基于 Milvus 的生产级向量知识库，适合高性能部署"
+    require_existing_index = False
 
-    def __init__(self, work_dir: str, **kwargs):
+    def __init__(self, work_dir: str, *, require_existing_index: bool = False, **kwargs):
         """
         初始化 Milvus 知识库
 
@@ -304,6 +308,7 @@ class MilvusKB(KnowledgeBase):
             **kwargs: 其他配置参数
         """
         super().__init__(work_dir)
+        self.require_existing_index = require_existing_index
 
         if not MILVUS_AVAILABLE:
             raise ImportError("pymilvus is not installed. Please install it with: pip install pymilvus")
@@ -329,6 +334,13 @@ class MilvusKB(KnowledgeBase):
     def _init_connection(self):
         """初始化 Milvus 连接"""
         try:
+            if self.require_existing_index:
+                # 对照进程只连接明确选定的已有库，不进入创建或静默切库路径。
+                connections.connect(
+                    alias=self.connection_alias, uri=self.milvus_uri,
+                    token=self.milvus_token, db_name=self.milvus_db,
+                )
+                return
             # 连接到 Milvus
             connections.connect(alias=self.connection_alias, uri=self.milvus_uri, token=self.milvus_token)
 
@@ -410,7 +422,7 @@ class MilvusKB(KnowledgeBase):
             FieldSchema(
                 name="content",
                 dtype=DataType.VARCHAR,
-                max_length=65535,
+                max_length=MILVUS_CONTENT_MAX_BYTES,
                 enable_analyzer=True,
                 analyzer_params=CONTENT_ANALYZER_PARAMS,
             ),
@@ -519,9 +531,11 @@ class MilvusKB(KnowledgeBase):
 
         return await asyncio.to_thread(load_existing_collection)
 
-    def _split_text_into_chunks(self, text: str, file_id: str, filename: str, params: dict) -> list[dict]:
+    def _split_text_into_chunks(
+        self, text: str, file_id: str, filename: str, params: dict, *, parse_assets: dict | None = None,
+    ) -> list[dict]:
         """将文本分割成块"""
-        return chunk_markdown(text, file_id, filename, params)
+        return chunk_markdown(text, file_id, filename, params, parse_assets=parse_assets)
 
     def _calculate_chunk_stats(self, chunks: list[dict]) -> dict[str, int]:
         return {
@@ -537,6 +551,7 @@ class MilvusKB(KnowledgeBase):
                 "kb_id": kb_id,
                 "chunk_index": chunk["chunk_index"],
                 "content": chunk["content"],
+                "source_metadata": chunk.get("source_metadata"),
                 "start_char_pos": chunk.get("start_char_pos"),
                 "end_char_pos": chunk.get("end_char_pos"),
                 "start_token_pos": chunk.get("start_token_pos"),
@@ -559,6 +574,8 @@ class MilvusKB(KnowledgeBase):
     ) -> None:
         if not chunks:
             return
+
+        self._validate_chunk_capacity(chunks)
 
         entities = [
             [chunk["id"] for chunk in chunks],
@@ -592,6 +609,16 @@ class MilvusKB(KnowledgeBase):
 
         assert last_error is not None
         raise last_error
+
+    def _validate_chunk_capacity(self, chunks: list[dict]) -> None:
+        """在写入和删除旧索引之前拒绝超过向量字段容量的完整证据。"""
+        for chunk in chunks:
+            size = len(chunk["content"].encode("utf-8"))
+            if size > MILVUS_CONTENT_MAX_BYTES:
+                raise ValueError(
+                    f"分块 {chunk['chunk_id']} 的完整正文为 {size} UTF-8 字节，超过 Milvus "
+                    f"content 字段容量 {MILVUS_CONTENT_MAX_BYTES}；请调整原文证据单元后重新索引"
+                )
 
     async def _embed_and_store_chunks(
         self,
@@ -636,27 +663,33 @@ class MilvusKB(KnowledgeBase):
             logger.info(f"File {file_id} not found in Milvus, skipping delete operation")
 
     async def _hydrate_chunk_sources(self, kb_id: str, chunks: list[dict]) -> list[dict]:
-        """补充 chunk 来源文件名和总分片数，并过滤已从 PG 删除的孤儿 chunk。
-
-        Milvus 中可能残留已删除文件的向量（如删除流程中途失败），
-        检索侧依据 PG 中 file_id 是否存在进行过滤，防止已删除内容被返回。
-        """
+        """只给身份与正文均符合 PG 当前事实的命中附加来源。"""
         file_ids = sorted(
             {str(file_id) for chunk in chunks if (file_id := (chunk.get("metadata") or {}).get("file_id"))}
         )
         if not file_ids:
-            return chunks
+            return []
 
         sources = await KnowledgeFileRepository().get_chunk_sources_by_file_ids(kb_id=kb_id, file_ids=file_ids)
+        records = await KnowledgeChunkRepository().list_by_chunk_ids([
+            str(chunk_id) for chunk in chunks if (chunk_id := (chunk.get("metadata") or {}).get("chunk_id"))
+        ])
+        by_id = {record.chunk_id: record for record in records}
         live_chunks: list[dict] = []
         for chunk in chunks:
             metadata = chunk.get("metadata")
             if not isinstance(metadata, dict):
                 continue
             file_id = str(metadata.get("file_id") or "")
-            if file_id not in sources:
+            record = by_id.get(metadata.get("chunk_id"))
+            if (
+                file_id not in sources or record is None or record.kb_id != kb_id
+                or record.file_id != file_id or record.content != chunk.get("content")
+                or record.chunk_index != metadata.get("chunk_index")
+            ):
                 continue
             metadata.update(sources[file_id])
+            metadata["source_metadata"] = record.source_metadata
             live_chunks.append(chunk)
         return live_chunks
 
@@ -714,13 +747,6 @@ class MilvusKB(KnowledgeBase):
         Returns:
             Updated file metadata
         """
-        # Get/Create collection
-        collection = await self._get_or_create_milvus_collection(kb_id, embedding_model_spec)
-        if not collection:
-            raise ValueError(f"Failed to get Milvus collection for {kb_id}")
-
-        embedding_function = self._get_embedding_function(embedding_model_spec)
-
         file_meta = await self._load_file_meta(kb_id, file_id)
         allowed_statuses = {
             FileStatus.PARSED,
@@ -794,9 +820,24 @@ class MilvusKB(KnowledgeBase):
             # Read markdown
             markdown_content = await self._read_markdown_from_minio(file_meta["markdown_file"])
             filename = file_meta.get("filename")
+            parse_assets = None
+            pointer = file_meta.get("parse_assets_file")
+            if pointer:
+                parse_assets = json.loads((await self._read_minio_bytes(pointer)).decode("utf-8"))
+                attempt_id = pointer.rsplit("/", 2)[-2]
+                if (
+                    not isinstance(parse_assets, dict) or parse_assets.get("schema_version") != 1
+                    or parse_assets.get("kb_id") != kb_id or parse_assets.get("file_id") != file_id
+                    or parse_assets.get("attempt_id") != attempt_id
+                    or pointer.rsplit("/", 1)[0] != file_meta["markdown_file"].rsplit("/", 1)[0]
+                ):
+                    raise ValueError("解析附属数据与当前 Markdown 不属于同次解析，请重新解析")
 
             # Split
-            chunks = self._split_text_into_chunks(markdown_content, file_id, filename, params)
+            chunks = self._split_text_into_chunks(
+                markdown_content, file_id, filename, params, parse_assets=parse_assets,
+            )
+            self._validate_chunk_capacity(chunks)
             logger.info(
                 f"Split {filename} into {len(chunks)} chunks with params: "
                 f"chunk_preset_id={params.get('chunk_preset_id')}, "
@@ -804,6 +845,12 @@ class MilvusKB(KnowledgeBase):
             )
 
             chunk_stats = self._calculate_chunk_stats(chunks)
+
+            # 集合管理可能重建旧集合，必须等来源和完整证据容量校验通过。
+            collection = await self._get_or_create_milvus_collection(kb_id, embedding_model_spec)
+            if not collection:
+                raise ValueError(f"Failed to get Milvus collection for {kb_id}")
+            embedding_function = self._get_embedding_function(embedding_model_spec)
 
             # Clean up existing chunks if any (for re-indexing)
             await self.delete_file_chunks_only(kb_id, file_id)
@@ -894,7 +941,7 @@ class MilvusKB(KnowledgeBase):
     ) -> list[dict]:
         """异步查询知识库"""
         embedding_model_spec = config.embedding_model_spec
-        collection = await self._get_or_create_milvus_collection(kb_id, embedding_model_spec)
+        collection = await self._load_query_collection(kb_id, embedding_model_spec)
         if not collection:
             raise ValueError(f"Database {kb_id} not found")
 
@@ -1084,6 +1131,28 @@ class MilvusKB(KnowledgeBase):
             logger.error(f"Milvus query error: {e}, {traceback.format_exc()}")
             raise
 
+    async def _load_query_collection(self, kb_id: str, embedding_model_spec: str | None) -> Collection:
+        """对照只加载已有兼容索引，普通查询保持既有集合管理行为。"""
+        if not self.require_existing_index:
+            return await self._get_or_create_milvus_collection(kb_id, embedding_model_spec)
+        collection = await self._get_existing_milvus_collection(kb_id)
+        if collection is None:
+            raise ValueError(f"对照知识库 {kb_id} 的 Milvus 索引不存在，请先完成入库")
+        info = model_cache.get_model_info(embedding_model_spec)
+        if info is None or info.model_type != "embedding":
+            raise ValueError("对照知识库的 Embedding 模型未就绪")
+        embedding = next((field for field in collection.schema.fields if field.name == "embedding"), None)
+        expected_description = f"Knowledge base collection for {kb_id} using {info.model_id}"
+        if (
+            collection.description != expected_description or embedding is None
+            or embedding.dtype != DataType.FLOAT_VECTOR
+            or embedding.params.get("dim") != (info.dimension or 1024)
+            or not self._collection_supports_bm25(collection)
+        ):
+            raise ValueError(f"对照知识库 {kb_id} 的模型或索引结构不兼容，请核对现有索引")
+        await asyncio.to_thread(collection.load)
+        return collection
+
     async def _retrieve_graph_chunks(
         self,
         query_text: str,
@@ -1188,6 +1257,7 @@ class MilvusKB(KnowledgeBase):
             "chunk_id": chunk.chunk_id,
             "file_id": chunk.file_id,
             "chunk_index": chunk.chunk_index,
+            "source_metadata": chunk.source_metadata,
         }
         result = {"content": chunk.content, "metadata": metadata, "score": float(score or 0.0)}
         if score_field:
@@ -1274,6 +1344,7 @@ class MilvusKB(KnowledgeBase):
         pointer = file_meta.get("parse_assets_file")
         content_info = {
             "lines": [], "content": "", "content_error": None,
+            "source_sha256": None,
             "attempt_id": pointer.rsplit("/", 2)[-2] if pointer else None,
         }
         try:
@@ -1282,6 +1353,7 @@ class MilvusKB(KnowledgeBase):
                 {
                     "id": chunk.chunk_id,
                     "content": chunk.content,
+                    "source_metadata": chunk.source_metadata,
                     "chunk_order_index": chunk.chunk_index,
                     "start_char_pos": chunk.start_char_pos,
                     "end_char_pos": chunk.end_char_pos,
@@ -1305,6 +1377,7 @@ class MilvusKB(KnowledgeBase):
             try:
                 content = await self._read_markdown_from_minio(file_meta["markdown_file"])
                 content_info["content"] = content
+                content_info["source_sha256"] = source_sha256(content)
             except Exception as e:
                 logger.error(f"Failed to read markdown file for {file_id}: {e}")
                 content_info["content_error"] = "论文正文读取失败，请重试"
