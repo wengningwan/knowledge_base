@@ -38,18 +38,18 @@ test('缺失 after 不视为删除，未应用的文字候选和真正空正文�
   const candidate = reviewComparison({ before: 'OCR', candidates: { native: '文字层' } })
   assert.equal(candidate.after, '文字层')
   assert.equal(candidate.kind, 'candidate')
-  assert.match(candidate.label, /未应用/)
+  assert.equal(candidate.label, 'PDF提取文字')
   const removed = reviewComparison({ status: 'machine_corrected', before: '删除内容', after: '', candidates: { native: '不得回退' } })
   assert.equal(removed.after, '')
   assert.equal(removed.kind, 'snapshot')
-  assert.equal(removed.label, '当前块正文快照')
+  assert.equal(removed.label, '处理后文字')
 })
 
 test('共享块快照不推断本条已应用，失败片段优先展示未应用候选', () => {
   const record = { before: '甲旧，乙旧', after: '甲新，乙旧', status: 'technical_failed', applied: false }
   const snapshot = reviewComparison(record)
   assert.equal(snapshot.kind, 'snapshot')
-  assert.equal(snapshot.label, '当前块正文快照')
+  assert.equal(snapshot.label, '处理后文字')
   assert.equal(snapshot.applied, undefined)
   const candidate = reviewComparison({ ...record, candidates: { native: '甲旧，乙新' } })
   assert.equal(candidate.kind, 'candidate')

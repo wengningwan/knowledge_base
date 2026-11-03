@@ -4,6 +4,8 @@
 类型：bug-fix
 Owner：backend/package/yuxi/knowledge/parser/pdf_review_contract.py、backend/package/yuxi/services/knowledge_task_service.py
 
+自动入库排除范围由[校对疑点阻止自动入库与可读结果](2026-11-03-review-auto-index-and-readable-results.md)扩展为 needs_review 与 incomplete。
+
 任务状态部分取代[PDF完整复核与共享模型并发](2026-10-30-pdf-complete-review.md)。
 
 ## 问题

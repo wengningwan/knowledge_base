@@ -42,6 +42,42 @@ async def test_incomplete_review_skips_auto_index_but_other_file_still_indexes(m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_status", ["needs_review", "incomplete"])
+@pytest.mark.parametrize("auto_index", [True, False])
+async def test_manual_or_unfinished_review_never_auto_indexes(monkeypatch, blocked_status, auto_index):
+    """按每份文件的实际终态过滤，开关关闭时也不声称暂停了入库。"""
+    context = task_context({"kb_id": "kb", "operator_id": 1,
+                            "items": ["a.pdf", "b.pdf"], "params": {"auto_index": auto_index}})
+    files = {
+        "a": {"file_id": "a", "status": "parsed", "review_status": blocked_status, "markdown_file": "a.md"},
+        "b": {"file_id": "b", "status": "parsed", "review_status": "completed"},
+    }
+    indexed = set()
+
+    async def index_file(kb_id, file_id, **kwargs):
+        """记录实际发生的索引状态，不能只依赖 mock 调用次数。"""
+        indexed.add(file_id)
+        files[file_id] = {**files[file_id], "status": "indexed"}
+        return files[file_id]
+
+    backend = SimpleNamespace(
+        add_file_record=AsyncMock(side_effect=[{"file_id": "a"}, {"file_id": "b"}]),
+        parse_file=AsyncMock(side_effect=[files["a"], files["b"]]),
+        update_file_params=AsyncMock(), index_file=index_file,
+    )
+    monkeypatch.setattr(service, "knowledge_base", backend)
+    monkeypatch.setattr(service, "params_for_uploaded_document", lambda item, params: params)
+    summary = await service.run_knowledge_ingest(context)
+    assert indexed == ({"b"} if auto_index else set())
+    assert files["a"]["status"] == "parsed" and files["a"]["markdown_file"] == "a.md"
+    assert summary["auto_index_skipped"] == int(auto_index)
+    assert summary["review_needs_review"] == int(blocked_status == "needs_review")
+    assert summary["review_incomplete"] == int(blocked_status == "incomplete")
+    assert ("暂不进行自动入库操作" in context.set_progress.await_args.args[1]) is auto_index
+    assert all(call.kwargs["auto_index_enabled"] is auto_index for call in backend.parse_file.await_args_list)
+
+
+@pytest.mark.asyncio
 async def test_explicit_parse_exposes_incomplete_in_task_summary(monkeypatch):
     """文件主解析成功也必须让任务明确表达复核未完成。"""
     context = task_context({"kb_id": "kb", "operator_id": 1, "file_ids": ["a"]})

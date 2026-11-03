@@ -36,7 +36,7 @@ function nodes(root, predicate) {
 const byClass = (root, name) => nodes(root, (node) => String(node.props.class || '').split(' ').includes(name))
 const textOf = (root) => root.text + root.children.filter((node) => node.type !== 'comment').map(textOf).join('')
 
-test('真实校对组件筛选、分页、分片、差异、原图与版本切换及往返保持', async () => {
+test('真实校对组件筛选、分页、分片、差异、原图与版本切换及往返保持，无 PDF 跳转入口', async () => {
   const source = new URL('../../src/components/knowledge/DocumentReviewPanel.vue', import.meta.url)
   const path = fileURLToPath(new URL(`../../.review-runtime-${pid}.mjs`, import.meta.url))
   const { descriptor } = parse(readFileSync(source, 'utf8'))
@@ -60,12 +60,13 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
         targets: [{ id: 'b', old: '乙旧', context_before: '甲旧，' }] },
       { id: 'deleted', status: 'machine_corrected', before: '移除内容', after: '' }
     ]
-    const state = ref({ reviews, metadata: { review_status: 'needs_review' }, diagnostics: [], attempt_id: 'v1' })
+    const state = ref({ reviews, metadata: { review_status: 'needs_review', auto_index_enabled: true },
+      diagnostics: [{ reason: '诊断内容不应显示' }], attempt_id: 'v1' })
     const visible = ref(true)
-    const events = []
     const root = hostNode('root')
     app = renderer.createApp(() => h(KeepAlive, null, {
-      default: () => visible.value ? h(Panel, { state: state.value, kbId: 'kb', canOpenPdf: true, onOpenPdf: (page) => events.push(page) }) : null
+      // 携带旧版能力输入，恢复旧按钮时“无入口”断言必须失败。
+      default: () => visible.value ? h(Panel, { state: state.value, kbId: 'kb', canOpenPdf: true }) : null
     }))
     for (const name of ['a-alert', 'a-tag', 'a-spin', 'a-empty']) {
       app.component(name, { props: ['message', 'description', 'tip'], setup: (props, { slots }) => () => h(name, null, [props.message, props.description, props.tip, slots.default?.()]) })
@@ -77,14 +78,16 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
     assert.equal(byClass(root, 'review-item').length, 8)
     assert.match(textOf(byClass(root, 'review-filters')[0]), /待人工核对 10/)
     assert.equal(byClass(root, 'review-detail').length, 1)
-    assert.match(textOf(byClass(root, 'review-detail')[0]), /文字层内容仅供对照，尚未应用/)
-    assert.deepEqual(nodes(root, (node) => node.type === 'del').map(textOf), ['旧'])
-    assert.deepEqual(nodes(root, (node) => node.type === 'ins').map(textOf), ['新'])
+    assert.match(textOf(byClass(root, 'review-detail')[0]), /OCR识别文字/)
+    assert.match(textOf(byClass(root, 'review-detail')[0]), /PDF提取文字/)
+    assert.match(textOf(root), /暂不进行自动入库操作/)
+    assert.deepEqual(byClass(root, 'review-difference').map(textOf), ['旧', '新'])
+    assert.equal(nodes(root, (node) => ['del', 'ins'].includes(node.type)).length, 0)
+    assert.doesNotMatch(textOf(root), /候选文本与校对依据|解析诊断|诊断内容不应显示/)
     for (let i = 0; i < 8; i++) await click(button('下一项'))
     assert.match(textOf(byClass(root, 'review-navigation')[0]), /第 9 \/ 10 项/)
     assert.match(textOf(byClass(root, 'review-pagination')[0]), /2 \/ 2 页/)
-    await click(button('查看 PDF'))
-    assert.deepEqual(events, [9])
+    assert.equal(Boolean(button('查看 PDF')), false, '校对面板不得生成 PDF 跳转按钮')
     visible.value = false
     await nextTick()
     visible.value = true
@@ -92,9 +95,9 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
     assert.match(textOf(byClass(root, 'review-navigation')[0]), /第 9 \/ 10 项/)
     await click(button('复核未完成'))
     assert.equal(byClass(root, 'review-item').length, 1)
-    assert.match(textOf(byClass(root, 'review-detail')[0]), /整块快照可能包含同块其他问题的修改/)
+    assert.match(textOf(byClass(root, 'review-detail')[0]), /可能包含其他问题的修改/)
     assert.match(textOf(byClass(root, 'review-target')[0]), /本片段核对范围甲旧，乙旧/)
-    assert.equal(textOf(nodes(root, (node) => node.type === 'mark')[0]), '乙旧')
+    assert.equal(textOf(nodes(byClass(root, 'review-target')[0], (node) => node.type === 'mark')[0]), '乙旧')
     assert.match(textOf(byClass(root, 'review-detail-tags')[0]), /复核未完成/)
     assert.equal(nodes(root, (node) => node.type === 'image-preview').length, 1)
     await click(button('放大'))
@@ -102,8 +105,8 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
     const select = nodes(root, (node) => node.type === 'select')[0]
     select.props['onUpdate:modelValue'](0)
     await nextTick()
-    assert.match(textOf(byClass(root, 'review-detail')[0]), /当前块正文快照/)
-    assert.equal(textOf(nodes(root, (node) => node.type === 'mark')[0]), '甲旧')
+    assert.match(textOf(byClass(root, 'review-detail')[0]), /处理后文字/)
+    assert.equal(textOf(nodes(byClass(root, 'review-target')[0], (node) => node.type === 'mark')[0]), '甲旧')
     assert.equal(nodes(root, (node) => node.type === 'dialog').length, 0)
     state.value = { ...state.value, reviews: [{ id: 'new', status: 'machine_corrected', before: '已删除', after: '' }], attempt_id: 'v2' }
     await nextTick()
@@ -112,6 +115,19 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
     assert.match(textOf(root), /当前没有待人工核对的问题/)
     await click(button('查看全部记录'))
     assert.equal(byClass(root, 'review-item').length, 1)
+    for (const [metadata, blocked] of [
+      [{ review_status: 'needs_review', auto_index_enabled: true }, true],
+      [{ review_status: 'incomplete', auto_index_enabled: true }, true],
+      [{ review_status: 'needs_review', auto_index_enabled: false }, false],
+      [{ review_status: 'incomplete', auto_index_enabled: false }, false],
+      [{ review_status: 'needs_review' }, false],
+      [{ review_status: 'completed', auto_index_enabled: true }, false]
+    ]) {
+      state.value = { reviews: [], diagnostics: [], metadata }
+      await nextTick()
+      assert.equal(textOf(root).includes('暂不进行自动入库操作'), blocked)
+      assert.doesNotMatch(textOf(root), /自动入库已跳过/)
+    }
     for (const [extra, expected] of [[{ loading: true }, '正在加载校对结果'], [{ error: '读取失败' }, '读取失败'], [{ legacy_without_assets: true }, '重新解析'], [{ reviews: [] }, '本次解析没有校对记录']]) {
       state.value = { reviews: [], metadata: {}, diagnostics: [], ...extra }
       await nextTick()

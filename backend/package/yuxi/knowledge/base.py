@@ -247,6 +247,7 @@ class KnowledgeBase(ABC):
         self, kb_id: str, file_id: str, operator_id: str | None = None, *,
         additional_params: dict[str, Any], processing_task_id: str | None = None,
         processing_owner: str | None = None, task_context=None, reparse: bool = False,
+        auto_index_enabled: bool = False,
     ) -> dict:
         """生成同次解析的正文和附属产物，持有owner的任务才能发布。"""
         import uuid
@@ -308,6 +309,7 @@ class KnowledgeBase(ABC):
             if task_context is not None and figure_stage.get("status") == "pending":
                 figure_job_id = uuid.uuid4().hex
                 figure_stage["task_id"] = figure_job_id
+            result.metadata["auto_index_enabled"] = auto_index_enabled
             markdown_url, assets_url = await save_parse_bundle(kb_id, file_id, attempt_id, result, control)
             figure_task = None
             if figure_job_id:
@@ -417,6 +419,11 @@ class KnowledgeBase(ABC):
         from yuxi.services.knowledge_figure_analysis_service import project_figure_task_status
 
         await project_figure_task_status(data, kb_id=kb_id, file_id=file_id)
+        from yuxi.knowledge.parser.pdf_review_messages import readable_review_reason
+
+        for review in data.get("reviews", []):
+            if review.get("reason"):
+                review["reason"] = readable_review_reason(review["reason"])
         return {**data, "legacy_without_assets": False}
 
     async def _save_markdown_to_minio(self, kb_id: str, file_id: str, content: str) -> str:

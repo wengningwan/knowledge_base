@@ -133,8 +133,6 @@
           :key="`review-${file.file_id}-${assetsState.attempt_id || ''}`"
           :state="assetsState"
           :kb-id="kbId"
-          :can-open-pdf="hasSourcePreview && sourcePreviewCandidateType === 'pdf'"
-          @open-pdf="openSourcePdfPage"
         />
       </KeepAlive>
     </div>

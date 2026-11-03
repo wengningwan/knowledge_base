@@ -40,6 +40,7 @@ async def run_knowledge_ingest(context: TaskContext) -> dict:
     params = dict(payload.get("params") or {})
     operator_id = payload["operator_id"]
     auto_index = bool(params.get("auto_index", False))
+    blocked_review_statuses = {"needs_review", "incomplete"}
     indexing_params = {
         key: params[key]
         for key in ("chunk_preset_id", "chunk_parser_config")
@@ -98,10 +99,12 @@ async def run_knowledge_ingest(context: TaskContext) -> dict:
                     record["file_id"],
                     operator_id=operator_id,
                     task_context=context,
+                    auto_index_enabled=auto_index,
                     **processing_owner,
                 )
                 record["file_meta"] = file_meta
-                if not auto_index or file_meta.get("status") != "parsed" or file_meta.get("review_status") == "incomplete":
+                review_blocked = file_meta.get("review_status") in blocked_review_statuses
+                if not auto_index or file_meta.get("status") != "parsed" or review_blocked:
                     processed_items[record["index"]] = file_meta
             except Exception as exc:
                 logger.error("解析文件失败 %s (file_id=%s): %s", record["item"], record["file_id"], exc)
@@ -115,7 +118,11 @@ async def run_knowledge_ingest(context: TaskContext) -> dict:
                 }
 
         if auto_index:
-            parsed_files = [record for record in added_files if record["file_meta"].get("status") == "parsed" and record["file_meta"].get("review_status") != "incomplete"]
+            parsed_files = [
+                record for record in added_files
+                if record["file_meta"].get("status") == "parsed"
+                and record["file_meta"].get("review_status") not in blocked_review_statuses
+            ]
             for index, record in enumerate(parsed_files, 1):
                 await context.raise_if_cancelled()
                 await context.set_progress(
@@ -162,21 +169,26 @@ async def run_knowledge_ingest(context: TaskContext) -> dict:
     ]
     failed_count = sum(_is_failed_item(item) for item in final_items)
     review_incomplete = sum(item.get("review_status") == "incomplete" for item in final_items)
+    review_needs_review = sum(item.get("review_status") == "needs_review" for item in final_items)
     summary = {
         "kb_id": kb_id,
         "item_type": "文件",
         "submitted": total,
         "failed": failed_count,
         "review_incomplete": review_incomplete,
-        "auto_index_skipped": review_incomplete if auto_index else 0,
+        "review_needs_review": review_needs_review,
+        "auto_index_skipped": review_incomplete + review_needs_review if auto_index else 0,
         "items": final_items,
     }
     await context.set_result(summary)
     message = f"文件处理完成，失败 {failed_count} 个" if failed_count else "文件处理完成"
-    if review_incomplete:
-        message += f"；正文已生成，复核未完成 {review_incomplete} 个，请查看校对结果"
+    if review_incomplete or review_needs_review:
+        message += (
+            f"；正文已生成，待人工核对 {review_needs_review} 个，"
+            f"复核未完成 {review_incomplete} 个，请查看校对结果"
+        )
         if auto_index:
-            message += "；这些文件已跳过自动入库"
+            message += "；这些文件暂不进行自动入库操作"
     await context.set_progress(100.0, message)
     if failed_count:
         raise RuntimeError(f"文件处理完成，失败 {failed_count} 个")

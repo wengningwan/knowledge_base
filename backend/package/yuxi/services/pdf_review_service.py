@@ -13,6 +13,7 @@ from collections import Counter
 from yuxi.knowledge.parser.pdf_repair import RULE_VERSION, run_rule_repair
 from yuxi.knowledge.parser.pdf_repair_rules import apply_block_edits
 from yuxi.knowledge.parser.pdf_review_contract import make_review_request, prepare_review_issues, validate_issue_results
+from yuxi.knowledge.parser.pdf_review_messages import readable_review_reason
 from yuxi.knowledge.parser.pdf_structure import render_document
 from yuxi.services.pdf_model_execution import PdfModelExecutor, content_digest, run_pdf_workers
 from yuxi.utils.logging_config import logger
@@ -124,12 +125,19 @@ async def review_pdf_document(result, file_path: str, params: dict, control=None
         for row in eligible:
             row.update(status="not_checked", reason="未选择正文校对模型，保留规则结果")
     repair.update(execution=executor.stats(), model_requests=executor.calls)
+    for row in rows:
+        row["reason"] = readable_review_reason(row.get("reason", ""))
     repair["target_counts"] = dict(Counter(row.get("status") for row in rows if row.get("classification") != "excluded"))
     repair["counts"] = _issue_counts(rows)
     result.metadata["reviewed_regions"] = sum(row.get("source") == "model" and row.get("status") in {"checked", "machine_corrected"} and not row.get("remaining_conflicts") for row in rows)
     technical = any(row.get("status") in {"technical_failed", "pending", "running"} or row.get("protocol_errors") for row in rows)
     unresolved = any(row.get("classification") != "excluded" and (row.get("status") in {"unresolved", "not_checked"} or row.get("remaining_conflicts")) for row in rows)
-    result.metadata["review_status"] = "incomplete" if technical else "not_requested" if not model_spec else "needs_review" if unresolved else "completed"
+    if technical:
+        result.metadata["review_status"] = "incomplete"
+    elif unresolved:
+        result.metadata["review_status"] = "needs_review"
+    else:
+        result.metadata["review_status"] = "completed" if model_spec else "not_requested"
     result.markdown = render_document(result.blocks)
     repair["final_markdown_hash"] = hashlib.sha256(result.markdown.encode()).hexdigest()
     logger.info(f"{prefix} 正文检查结束 status={result.metadata['review_status']} elapsed_s={time.monotonic() - started:.1f} execution={json.dumps(executor.stats(), sort_keys=True)}")

@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from statistics import median
 
 from yuxi.knowledge.parser.pdf_inline_atoms import parse_inline_atoms, validate_inline_change
+from yuxi.knowledge.parser.pdf_review_messages import readable_review_reason
 from yuxi.knowledge.parser.pdf_repair_rules import (
     apply_block_edits,
     covers_block_region,
@@ -186,6 +187,8 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
         "excluded_publication_elements": sum(row["classification"] == "excluded" for row in rows),
         "model_requests": 0,
     }
+    for row in rows:
+        row["reason"] = readable_review_reason(row["reason"])
     return rows
 
 

@@ -34,7 +34,9 @@ async def parsed_document_records(knowledge_database):
         "file_id": file_id,
         "attempt_id": attempt_id,
         "figures": [{"page": 1, "caption": "Original caption", "analysis": "MODEL_ANALYSIS_ONLY"}],
-        "reviews": [{"block_id": "b1", "before": "5A", "after": "5 A", "critical": True}],
+        "reviews": [{"block_id": "b1", "before": "5A", "after": "5 A", "critical": True,
+                     "reason": "原生区域未覆盖；缺少唯一正文插入锚点，未猜写新块"}],
+        "metadata": {"auto_index_enabled": True, "review_status": "needs_review"},
         "diagnostics": [{"kind": "needs_review", "reason": "REVIEW_DIAGNOSTIC_ONLY"}],
     }
     client = get_minio_client()
@@ -101,7 +103,15 @@ async def test_parse_assets_returns_published_sidecar(test_client, admin_headers
     )
 
     assert response.status_code == 200, response.text
-    assert response.json() == {**doc["assets"], "legacy_without_assets": False}
+    result = response.json()
+    assert result["metadata"] == {"auto_index_enabled": True, "review_status": "needs_review"}
+    assert result["reviews"][0]["reason"] == (
+        "疑似遗漏了一段正文，但系统无法确定补入位置，暂未自动补全，请对照原文检查。"
+    )
+    expected_review = {**doc["assets"]["reviews"][0], "reason": result["reviews"][0]["reason"]}
+    assert result == {**doc["assets"], "reviews": [expected_review], "legacy_without_assets": False}
+    original = json.loads(await doc["minio"].adownload_file(doc["bucket"], doc["object_names"][1]))
+    assert original == doc["assets"]
 
 
 async def test_parse_assets_legacy_record_requests_reparse(test_client, admin_headers, parsed_document_records):

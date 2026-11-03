@@ -527,7 +527,10 @@ async def test_cancellation_marks_file_retryable(monkeypatch, operation, expecte
 
 
 @pytest.mark.parametrize("retry_failed_reparse", [False, True], ids=["first-parse", "retry-failed-reparse"])
-async def test_parse_publishes_one_bundle_and_retry_clears_previous_indexes(monkeypatch, retry_failed_reparse):
+@pytest.mark.parametrize("auto_index_enabled", [False, True])
+async def test_parse_publishes_one_bundle_and_retry_clears_previous_indexes(
+    monkeypatch, retry_failed_reparse, auto_index_enabled,
+):
     """首次解析可取得 owner；失败重解析的普通重试仍清理上一版索引。"""
     old_markdown = "minio://parsed/db/parsed/file-1/old/document.md"
     old_assets = "minio://parsed/db/parsed/file-1/old/assets.json"
@@ -543,6 +546,7 @@ async def test_parse_publishes_one_bundle_and_retry_clears_previous_indexes(monk
     objects = {}
     parser_calls = []
     cleanup_calls = []
+    monkeypatch.setattr("yuxi.services.knowledge_parse_service.KnowledgeFileRepository", lambda: repo)
 
     async def upload(bucket_name, object_name, data):
         """保留实际 bundle 字节以验证正文和 sidecar 的内容及归属。"""
@@ -556,10 +560,15 @@ async def test_parse_publishes_one_bundle_and_retry_clears_previous_indexes(monk
             if key[0] == bucket_name and key[1].startswith(prefix):
                 del objects[key]
 
+    async def download(bucket_name, object_name):
+        """回读已上传字节，验证展示投影不改写原产物。"""
+        return objects[(bucket_name, object_name)]
+
     client = types.SimpleNamespace(
         KB_BUCKETS={"parsed": "parsed", "images": "kb-images"},
         ensure_bucket_exists=lambda bucket: None,
         aupload_file=upload,
+        adownload_file=download,
         adelete_objects_by_prefix=delete_prefix,
     )
     monkeypatch.setattr("yuxi.storage.minio.get_minio_client", lambda: client)
@@ -577,6 +586,7 @@ async def test_parse_publishes_one_bundle_and_retry_clears_previous_indexes(monk
             markdown="# Original paper\n\nThe measured value is 5 A.",
             figures=[{"analysis": "模型生成说明"}],
             diagnostics=[{"reason": "需人工核对"}],
+            reviews=[{"reason": "原生区域未覆盖；缺少唯一正文插入锚点，未猜写新块"}],
         )
 
     monkeypatch.setattr("yuxi.services.ocr_service.parse_document_result", parse_document_result)
@@ -598,7 +608,9 @@ async def test_parse_publishes_one_bundle_and_retry_clears_previous_indexes(monk
         assert (record.chunk_count, record.token_count) == (2, 10)
         assert cleanup_calls == []
 
-    result = await kb.parse_file("db", "file-1", operator_id="user-1", additional_params={})
+    result = await kb.parse_file(
+        "db", "file-1", operator_id="user-1", additional_params={}, auto_index_enabled=auto_index_enabled,
+    )
 
     attempt_id = parser_calls[-1]
     prefix = f"db/parsed/file-1/{attempt_id}"
@@ -610,6 +622,13 @@ async def test_parse_publishes_one_bundle_and_retry_clears_previous_indexes(monk
         "# Original paper\n\nThe measured value is 5 A."
     )
     sidecar = json.loads(objects[("parsed", f"{prefix}/assets.json")])
+    assert sidecar["metadata"]["auto_index_enabled"] is auto_index_enabled
+    projected = await kb.get_file_parse_assets("db", "file-1")
+    assert projected["metadata"]["auto_index_enabled"] is auto_index_enabled
+    assert projected["reviews"][0]["reason"] == (
+        "疑似遗漏了一段正文，但系统无法确定补入位置，暂未自动补全，请对照原文检查。"
+    )
+    assert json.loads(objects[("parsed", f"{prefix}/assets.json")]) == sidecar
     assert (sidecar["kb_id"], sidecar["file_id"], sidecar["attempt_id"]) == ("db", "file-1", attempt_id)
     assert sidecar["figures"][0]["analysis"] == "模型生成说明"
     assert cleanup_calls == (["file-1"] if retry_failed_reparse else [])

@@ -21,6 +21,7 @@ from yuxi.knowledge.parser.pdf_repair_rules import (
     proven_representation_equivalent,
 )
 from yuxi.knowledge.parser.pdf_review import validate_review_patch
+from yuxi.knowledge.parser.pdf_review_messages import readable_review_reason
 
 
 def prepare_review_issues(blocks: list[dict], issues: list[dict]) -> list[dict]:
@@ -86,7 +87,10 @@ def prepare_review_issues(blocks: list[dict], issues: list[dict]) -> list[dict]:
             if "native_new" in target and target["old"] != target["native_new"]
             and not proven_representation_equivalent(target["old"], target["native_new"])
         ]
-    return _split_large_targets(prepared)
+    prepared = _split_large_targets(prepared)
+    for issue in prepared:
+        issue["reason"] = readable_review_reason(issue.get("reason", ""))
+    return prepared
 
 
 def make_review_request(batch_id: str, issues: list[dict], blocks: list[dict]) -> dict:
@@ -216,7 +220,9 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
         conflicting_ids = {entry["target_id"] for entry in issue.get("focus_conflicts", [])}
         remaining = [target["id"] for target in replacements if target["id"] in conflicting_ids and target["new"] == target["old"]]
         if remaining:
-            outcome.update(remaining_conflicts=remaining, reason=outcome["reason"] + "；部分修改通过，其余登记差异仍待核对")
+            outcome.update(
+                remaining_conflicts=remaining, reason=outcome["reason"] + "；已修改其中一部分，其余差异仍需核对",
+            )
         outcomes.append(outcome)
     # 同一块可有独立问题：先拒绝重叠，再一次重建，避免多个完整 before 补丁互相覆盖。
     overlapping = set()
@@ -230,7 +236,11 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
     groups = {}
     for issue, replacements, item in accepted:
         if issue["id"] in overlapping:
-            next(outcome for outcome in outcomes if outcome["issue_id"] == issue["id"]).update(status="technical_failed", reason="overlapping_targets", validation="overlapping_targets")
+            outcome = next(outcome for outcome in outcomes if outcome["issue_id"] == issue["id"])
+            outcome.update(
+                status="technical_failed", reason=readable_review_reason("overlapping_targets"),
+                validation="overlapping_targets",
+            )
             continue
         groups.setdefault(issue["block_id"], []).append((issue, replacements, item))
     edits = []
@@ -244,7 +254,8 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
                                targets=list(unique_targets.values()))
         if error:
             for issue, _, _ in entries:
-                next(outcome for outcome in outcomes if outcome["issue_id"] == issue["id"]).update(status="technical_failed", reason=error, validation=error)
+                outcome = next(outcome for outcome in outcomes if outcome["issue_id"] == issue["id"])
+                outcome.update(status="technical_failed", reason=readable_review_reason(error), validation=error)
             continue
         issue_ids = [issue["id"] for issue, _, _ in entries]
         edits.append({
@@ -268,7 +279,10 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
 
 def _outcome(issue: dict, status: str, validation: str, reason: str = "") -> dict:
     """生成恰好对应一个登记问题的终态。"""
-    return {"issue_id": issue["id"], "block_id": issue.get("block_id"), "status": status, "reason": reason[:1000] or validation, "validation": validation}
+    return {
+        "issue_id": issue["id"], "block_id": issue.get("block_id"), "status": status,
+        "reason": readable_review_reason(reason[:1000] or validation), "validation": validation,
+    }
 
 
 def _snapshot_error(issue: dict, block: dict | None, targets: list[dict]) -> str:

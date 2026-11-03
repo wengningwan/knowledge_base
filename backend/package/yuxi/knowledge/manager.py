@@ -593,6 +593,7 @@ class KnowledgeBaseManager:
         processing_owner: str | None = None,
         task_context=None,
         reparse: bool = False,
+        auto_index_enabled: bool = False,
     ) -> dict:
         """Parse file to Markdown"""
         config = await self.get_kb_config(kb_id)
@@ -608,6 +609,7 @@ class KnowledgeBaseManager:
                 processing_owner=processing_owner,
                 task_context=task_context,
                 reparse=reparse,
+                auto_index_enabled=auto_index_enabled,
             ),
         )
 

@@ -5,6 +5,7 @@
     <a-empty v-else-if="state.legacy_without_assets" description="此文件尚无独立解析产物，请重新解析生成图片解析和校对结果。" />
     <template v-else>
       <a-alert :type="['needs_review', 'incomplete'].includes(state.metadata.review_status) ? 'warning' : 'info'" :message="reviewSummary" show-icon />
+      <p v-if="autoIndexDeferred" class="review-notice" role="status">暂不进行自动入库操作</p>
       <div v-if="groups.length" class="review-filters" role="group" aria-label="筛选校对问题">
         <button
           v-for="option in filters" :key="option.value" type="button"
@@ -52,9 +53,6 @@
                 <a-tag v-if="active.critical" color="warning">关键修改</a-tag>
               </div>
             </div>
-            <button v-if="canOpenPdf && validPage(active.page)" type="button" class="review-action" @click="emit('open-pdf', active.page)">
-              <FileSearch :size="16" /> 查看 PDF 第 {{ active.page }} 页
-            </button>
           </header>
           <label v-if="selected.records.length > 1" class="review-part-selector">
             检查片段
@@ -82,40 +80,28 @@
             <section class="review-text" aria-label="文字对照">
               <h4>文字对照</h4>
               <p v-if="comparison.after === null" class="review-hint">未生成修改，保留已识别正文。</p>
-              <p v-else-if="comparison.kind === 'candidate'" class="review-hint">以下文字层内容仅供对照，尚未应用到正文。</p>
-              <p v-else class="review-hint">整块快照可能包含同块其他问题的修改，请结合当前问题及核对范围判断。</p>
-              <p v-if="comparison.kind === 'snapshot' && !hasChanges" class="review-hint">块快照之间没有文字变化。</p>
+              <p v-else-if="comparison.kind === 'snapshot'" class="review-hint">这里展示整段文字处理前后的内容，可能包含其他问题的修改，请结合当前核对范围判断。</p>
+              <p v-if="comparison.kind === 'snapshot' && !hasChanges" class="review-hint">处理前后的文字没有变化。</p>
               <p v-if="diff.coarse" class="review-hint">变化范围较大，已整体标出；可展开完整上下文逐字核对。</p>
               <div class="review-text-block">
-                <span class="review-text-label">{{ comparison.kind === 'snapshot' ? '处理前块快照' : '已识别文字' }}</span>
-                <p class="review-diff"><template v-for="(part, index) in beforeParts" :key="index"><del v-if="part.type === 'delete'">{{ part.text }}</del><span v-else>{{ part.text }}</span></template><span v-if="!comparison.before" class="review-hint">未识别到文字</span></p>
+                <span class="review-text-label">{{ comparison.kind === 'snapshot' ? '处理前文字' : 'OCR识别文字' }}</span>
+                <p class="review-diff"><template v-for="(part, index) in beforeParts" :key="index"><mark v-if="part.type === 'delete'" class="review-difference">{{ part.text }}</mark><span v-else>{{ part.text }}</span></template><span v-if="!comparison.before" class="review-hint">未识别到文字</span></p>
               </div>
               <div v-if="comparison.after !== null" class="review-text-block">
                 <span class="review-text-label">{{ comparison.label }}</span>
-                <p class="review-diff"><template v-for="(part, index) in afterParts" :key="index"><ins v-if="part.type === 'insert'">{{ part.text }}</ins><span v-else>{{ part.text }}</span></template><span v-if="comparison.after === ''" class="review-hint">内容已移除</span></p>
+                <p class="review-diff"><template v-for="(part, index) in afterParts" :key="index"><mark v-if="part.type === 'insert'" class="review-difference">{{ part.text }}</mark><span v-else>{{ part.text }}</span></template><span v-if="comparison.after === ''" class="review-hint">内容已移除</span></p>
               </div>
               <details class="review-disclosure">
                 <summary>完整上下文</summary>
-                <span class="review-text-label">处理前块快照</span>
+                <span class="review-text-label">处理前文字</span>
                 <pre>{{ active.before ?? active.candidates?.ocr ?? '未识别到文字' }}</pre>
                 <template v-if="typeof active.after === 'string'">
-                  <span class="review-text-label">当前块正文快照</span>
+                  <span class="review-text-label">处理后文字</span>
                   <pre>{{ active.after === '' ? '内容已移除' : active.after }}</pre>
                 </template>
               </details>
             </section>
           </div>
-          <details class="review-disclosure review-evidence">
-            <summary>候选文本与校对依据</summary>
-            <dl>
-              <template v-if="active.candidates?.ocr"><dt>OCR 候选</dt><dd><pre>{{ active.candidates.ocr }}</pre></dd></template>
-              <template v-if="active.candidates?.native"><dt>文字层候选</dt><dd><pre>{{ active.candidates.native }}</pre></dd></template>
-              <dt>检查来源</dt><dd>{{ active.source === 'model' ? '模型复核' : active.source === 'rule' ? '规则修复' : '系统检测' }}</dd>
-              <template v-if="active.model"><dt>校对模型</dt><dd>{{ active.model }}</dd></template>
-              <template v-if="active.validation"><dt>诊断代码</dt><dd>{{ active.validation }}</dd></template>
-              <template v-if="active.protocol_errors?.length"><dt>回执异常</dt><dd>{{ active.protocol_errors.join('、') }}</dd></template>
-            </dl>
-          </details>
           <footer class="review-navigation">
             <span role="status" aria-live="polite">当前分类第 {{ selectedIndex + 1 }} / {{ filtered.length }} 项</span>
             <div>
@@ -125,10 +111,6 @@
           </footer>
         </article>
       </div>
-      <details v-if="state.diagnostics.length" class="review-disclosure review-diagnostics">
-        <summary>解析诊断（{{ state.diagnostics.length }}）</summary>
-        <p v-for="(item, index) in state.diagnostics" :key="index"><span v-if="item.page">第 {{ item.page }} 页 · </span>{{ item.reason || item.kind }}</p>
-      </details>
       <a-modal v-if="imageExpanded" :open="true" title="原文裁图" width="900px" :footer="null" @cancel="imageExpanded = false">
         <MarkdownPreview :content="sourceImage" compact />
       </a-modal>
@@ -138,7 +120,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { ChevronLeft, ChevronRight, FileSearch, ZoomIn } from '@lucide/vue'
+import { ChevronLeft, ChevronRight, ZoomIn } from '@lucide/vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import { knowledgeAssetImageMarkdown } from '@/utils/document_parse_state'
 import {
@@ -148,10 +130,8 @@ import {
 
 const props = defineProps({
   state: { type: Object, required: true },
-  kbId: { type: [String, Number], required: true },
-  canOpenPdf: { type: Boolean, default: false }
+  kbId: { type: [String, Number], required: true }
 })
-const emit = defineEmits(['open-pdf'])
 const filter = ref('attention')
 const selectedKey = ref(null)
 const partIndex = ref(0)
@@ -159,6 +139,9 @@ const listPage = ref(1)
 const imageExpanded = ref(false)
 const pageSize = 8
 const groups = computed(() => groupDocumentReviews(props.state.reviews))
+const autoIndexDeferred = computed(() => props.state.metadata.auto_index_enabled === true &&
+  (['needs_review', 'incomplete'].includes(props.state.metadata.review_status) ||
+    groups.value.some((group) => group.attention || group.incomplete)))
 const filters = computed(() => [
   { value: 'attention', label: '待人工核对' }, { value: 'incomplete', label: '复核未完成' },
   { value: 'modified', label: '系统已修改' }, { value: 'all', label: '全部记录' }
@@ -181,7 +164,7 @@ const pageLabel = (page) => validPage(page) ? `第 ${page} 页` : '页码未知'
 const reviewSummary = computed(() => ({
   not_requested: '未启用模型校对，以下为系统检测和规则处理记录。',
   needs_review: '部分内容仍需人工核对，请逐项对照原文。',
-  incomplete: '正文已生成，部分模型复核未完成；自动入库已跳过。',
+  incomplete: '正文已生成，部分自动复核尚未完成，请对照原文检查。',
   completed: '本次登记疑点已由系统处理，仍可结合原 PDF 复核。'
 })[props.state.metadata.review_status] || '以下为系统校对记录，可结合原文逐项复核。')
 
@@ -263,23 +246,16 @@ select { background: var(--gray-0); color: var(--color-text); border: 1px solid 
 .review-hint { line-height: 1.7; }
 .review-text-block { background: var(--gray-25); border-radius: 6px; padding: 12px; }
 .review-target { padding: 12px; background: var(--gray-25); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; }
-.review-target mark { color: var(--color-text); background: var(--color-warning-50); text-decoration: underline; text-underline-offset: 3px; }
+.review-target mark, .review-difference { color: var(--color-text); background: var(--color-warning-100); text-decoration: none; }
 .review-text-label { display: block; margin-bottom: 8px; }
 .review-diff, pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.8; margin: 0; }
-.review-diff del { color: var(--color-error-700); background: var(--color-error-50); text-decoration: line-through; }
-.review-diff ins { color: var(--color-success-700); background: var(--color-success-50); text-decoration: underline; text-underline-offset: 3px; }
 .review-disclosure { font-size: 13px; min-width: 0; }
 .review-disclosure summary { cursor: pointer; color: var(--main-color); padding: 4px 0; }
 .review-disclosure[open] summary { margin-bottom: 12px; }
 .review-disclosure pre + .review-text-label { margin-top: 12px; }
-.review-evidence, .review-diagnostics { border-top: 1px solid var(--gray-150); padding-top: 12px; }
-dl { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 10px; margin: 0; }
-dt { color: var(--color-text-secondary); }
-dd { margin: 0; overflow-wrap: anywhere; }
 .review-navigation { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--gray-150); }
 .review-navigation > div { display: flex; gap: 12px; }
 .review-empty { padding: 32px 16px; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center; }
-.review-diagnostics p { color: var(--color-text-secondary); margin-top: 8px; overflow-wrap: anywhere; }
 @container (max-width: 900px) { .review-comparison { grid-template-columns: minmax(0, 1fr); } }
 @container (max-width: 600px) {
   .review-workspace { grid-template-columns: minmax(0, 1fr); }
@@ -287,7 +263,6 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .review-list { max-height: 200px; overflow-y: auto; }
   .review-detail { padding: 16px; }
   .review-filter { padding: 8px; }
-  dl { grid-template-columns: minmax(0, 1fr); gap: 6px; }
 }
 @media (pointer: coarse) { .review-action, .review-filter, select, summary { min-height: 40px; } }
 </style>

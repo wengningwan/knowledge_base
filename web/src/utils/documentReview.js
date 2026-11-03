@@ -58,9 +58,9 @@ export function reviewComparison(record) {
   const before = record.before ?? record.candidates?.ocr ?? ''
   const corrected = record.status === 'machine_corrected' && record.applied !== false
   if (!corrected && record.candidates?.native && record.candidates.native !== before) {
-    return { before, after: record.candidates.native, label: '文字层候选（未应用）', kind: 'candidate' }
+    return { before, after: record.candidates.native, label: 'PDF提取文字', kind: 'candidate' }
   }
-  if (typeof record.after === 'string') return { before, after: record.after, label: '当前块正文快照', kind: 'snapshot' }
+  if (typeof record.after === 'string') return { before, after: record.after, label: '处理后文字', kind: 'snapshot' }
   return { before, after: null, label: '', kind: 'none' }
 }
 

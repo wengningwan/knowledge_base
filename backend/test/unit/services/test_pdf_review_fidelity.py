@@ -7,6 +7,16 @@ from yuxi.services.pdf_review_service import review_pdf_document
 
 
 @pytest.mark.asyncio
+async def test_missing_model_does_not_hide_manual_review(monkeypatch, tmp_path):
+    """没有选择模型时仍有疑点的文档必须阻止自动入库。"""
+    result, path, requests, _ = configure_review_case(monkeypatch, tmp_path)
+    await review_pdf_document(result, path, {})
+    assert result.metadata["review_status"] == "needs_review"
+    assert any(row["status"] in {"not_checked", "unresolved"} for row in result.reviews)
+    assert requests == []
+
+
+@pytest.mark.asyncio
 async def test_actual_crop_and_rejected_proposal_remain_in_sidecar(monkeypatch, tmp_path):
     """拒绝原文降级时保留完整建议与实际裁图，而不是只保存reason。"""
     def reply(payload):
