@@ -1,7 +1,7 @@
 <template>
   <a-modal
     v-model:open="visible"
-    width="800px"
+    :width="viewMode === 'review' ? '1200px' : '800px'"
     :footer="null"
     :closable="false"
     wrap-class-name="file-detail"
@@ -108,13 +108,6 @@
         :state="assetsState"
         :kb-id="kbId"
       />
-      <DocumentReviewPanel
-        v-else-if="viewMode === 'review'"
-        :key="`review-${file.file_id}-${assetsState.attempt_id || ''}`"
-        :state="assetsState"
-        :kb-id="kbId"
-      />
-
       <!-- Chunks 模式：使用 Grid 布局 -->
       <div v-else-if="viewMode === 'chunks'" class="chunks-panel">
         <div v-if="contentState.loading" class="loading-container">
@@ -134,6 +127,16 @@
           <p>{{ contentState.error || '暂无分块信息' }}</p>
         </div>
       </div>
+      <KeepAlive :max="1">
+        <DocumentReviewPanel
+          v-if="viewMode === 'review'"
+          :key="`review-${file.file_id}-${assetsState.attempt_id || ''}`"
+          :state="assetsState"
+          :kb-id="kbId"
+          :can-open-pdf="hasSourcePreview && sourcePreviewCandidateType === 'pdf'"
+          @open-pdf="openSourcePdfPage"
+        />
+      </KeepAlive>
     </div>
 
     <div v-else-if="file" class="empty-content">
@@ -150,6 +153,7 @@ import { getWorkspaceKnowledgeFileContent } from '@/apis/workspace_api'
 import { getPreviewTypeByPath, normalizePreviewResponse } from '@/utils/file_preview'
 import { parseDownloadFilename } from '@/utils/file_utils'
 import { inlineKnowledgeImages } from '@/utils/markdown_export'
+import { groupDocumentReviews } from '@/utils/documentReview'
 import {
   canPreviewChunks,
   canPreviewOriginal,
@@ -450,7 +454,7 @@ const chunkCount = computed(
 )
 const viewInfoText = computed(() => {
   if (viewMode.value === 'figures') return assetsState.value.loading ? '' : `${assetsState.value.figures.length} 张图片`
-  if (viewMode.value === 'review') return assetsState.value.loading ? '' : `${assetsState.value.reviews.length} 条记录`
+  if (viewMode.value === 'review') return assetsState.value.loading ? '' : `${groupDocumentReviews(assetsState.value.reviews).length} 个问题`
   if (viewMode.value === 'chunks') {
     if (contentState.value.loading) return ''
     return `${chunkCount.value} 个片段`

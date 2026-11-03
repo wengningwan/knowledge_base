@@ -1,74 +1,293 @@
 <template>
-  <section class="parse-assets-panel" aria-label="校对结果">
+  <section class="document-review-panel" aria-label="校对结果">
     <a-spin v-if="state.loading" tip="正在加载校对结果..." />
     <a-alert v-else-if="state.error" type="error" :message="state.error" show-icon />
     <a-empty v-else-if="state.legacy_without_assets" description="此文件尚无独立解析产物，请重新解析生成图片解析和校对结果。" />
     <template v-else>
       <a-alert :type="['needs_review', 'incomplete'].includes(state.metadata.review_status) ? 'warning' : 'info'" :message="reviewSummary" show-icon />
-      <p class="panel-description">校对记录独立展示；关键修改以醒目标记提示，诊断信息不写入论文正文。</p>
-      <a-empty v-if="!state.reviews.length" description="本次解析没有校对记录。" />
-      <article v-for="(review, index) in state.reviews" :key="`${review.id || review.block_id || 'review'}-${index}`" class="asset-card" :class="{ critical: review.critical }">
-        <header>
-          <strong>{{ statusLabel(review.status) }}</strong>
-          <a-tag v-if="review.source === 'rule'">规则修复</a-tag>
-          <a-tag v-else-if="review.source === 'model'">模型复核</a-tag>
-          <a-tag v-if="review.classification === 'excluded'">出版元素</a-tag>
-          <a-tag v-if="review.critical" color="warning">关键修改</a-tag>
-          <span v-if="review.page">第 {{ review.page }} 页</span>
-        </header>
-        <MarkdownPreview v-if="imageMarkdown(review.source_image)" :content="imageMarkdown(review.source_image)" compact />
-        <dl>
-          <dt>校对前</dt><dd><pre>{{ review.before || '（空）' }}</pre></dd>
-          <dt>校对后</dt><dd><pre>{{ review.after || '（空）' }}</pre></dd>
-          <template v-if="review.reason"><dt>原因</dt><dd>{{ review.reason }}</dd></template>
-          <template v-if="review.candidates?.ocr"><dt>OCR 候选</dt><dd><pre>{{ review.candidates.ocr }}</pre></dd></template>
-          <template v-if="review.candidates?.native"><dt>文字层候选</dt><dd><pre>{{ review.candidates.native }}</pre></dd></template>
-        </dl>
-        <small v-if="review.model">校对模型：{{ review.model }}</small>
-      </article>
-      <div v-if="state.diagnostics.length" class="diagnostics">
-        <strong>解析诊断</strong>
-        <p v-for="(item, index) in state.diagnostics" :key="index">
-          <span v-if="item.page">第 {{ item.page }} 页 · </span>{{ item.reason || item.kind }}
-        </p>
+      <div v-if="groups.length" class="review-filters" role="group" aria-label="筛选校对问题">
+        <button
+          v-for="option in filters" :key="option.value" type="button"
+          class="review-filter" :aria-pressed="filter === option.value" @click="changeFilter(option.value)"
+        >{{ option.label }} <span>{{ option.count }}</span></button>
       </div>
+      <a-empty v-if="!groups.length" description="本次解析没有校对记录。" />
+      <div v-else-if="!filtered.length" class="review-empty">
+        <p>{{ filter === 'attention' ? '当前没有待人工核对的问题。' : '当前分类没有校对记录。' }}</p>
+        <button type="button" class="review-action" @click="changeFilter('all')">查看全部记录</button>
+      </div>
+      <div v-else class="review-workspace">
+        <aside class="review-sidebar" aria-label="校对问题列表">
+          <p class="review-list-heading">问题列表 <span>按原问题计数</span></p>
+          <div class="review-list">
+            <button
+              v-for="group in pageGroups" :key="group.key" type="button" class="review-item"
+              :aria-current="selected?.key === group.key ? 'true' : undefined" @click="selectGroup(group.key)"
+            >
+              <span class="review-item-heading">
+                <span>{{ reviewKindLabel(group.primary.kind) }}</span>
+                <span class="review-page">{{ pageLabel(group.primary.page) }}</span>
+              </span>
+              <span class="review-item-status" :class="{ 'needs-attention': group.attention || group.incomplete }">{{ reviewStatusLabel(group.primary) }}</span>
+              <span class="review-excerpt">{{ group.primary.reason || group.primary.before || '查看原文与校对依据' }}</span>
+              <span v-if="group.critical || group.records.length > 1" class="review-item-meta">
+                <span v-if="group.critical">关键修改</span>
+                <span v-if="group.records.length > 1">{{ group.records.length }} 个检查片段</span>
+              </span>
+            </button>
+          </div>
+          <div v-if="pageCount > 1" class="review-pagination">
+            <button type="button" class="review-action" :disabled="listPage === 1" aria-label="上一页问题" @click="listPage--"><ChevronLeft :size="16" /></button>
+            <span>{{ listPage }} / {{ pageCount }} 页</span>
+            <button type="button" class="review-action" :disabled="listPage === pageCount" aria-label="下一页问题" @click="listPage++"><ChevronRight :size="16" /></button>
+          </div>
+        </aside>
+        <article v-if="active" :key="`${selected.key}-${partIndex}`" class="review-detail" aria-label="当前校对问题">
+          <header class="review-detail-header">
+            <div>
+              <h3>{{ reviewKindLabel(active.kind) }} <span class="review-page">{{ pageLabel(active.page) }}</span></h3>
+              <div class="review-detail-tags">
+                <a-tag :color="selected.attention || selected.incomplete ? 'warning' : undefined">{{ reviewStatusLabel(active) }}</a-tag>
+                <a-tag v-if="active.classification === 'excluded'">出版元素</a-tag>
+                <a-tag v-if="active.critical" color="warning">关键修改</a-tag>
+              </div>
+            </div>
+            <button v-if="canOpenPdf && validPage(active.page)" type="button" class="review-action" @click="emit('open-pdf', active.page)">
+              <FileSearch :size="16" /> 查看 PDF 第 {{ active.page }} 页
+            </button>
+          </header>
+          <label v-if="selected.records.length > 1" class="review-part-selector">
+            检查片段
+            <select v-model.number="partIndex" aria-label="选择检查片段">
+              <option v-for="(record, index) in selected.records" :key="record.id || index" :value="index">
+                {{ index + 1 }} / {{ selected.records.length }} · {{ reviewStatusLabel(record) }}
+              </option>
+            </select>
+          </label>
+          <p v-if="selected.incomplete" class="review-notice">此问题存在未完成的复核；这不代表正文一定有错，请结合原文检查。</p>
+          <p v-if="active.reason" class="review-reason">{{ active.reason }}</p>
+          <section v-if="active.parent_issue_id && active.targets?.length" class="review-target" aria-label="本片段核对范围">
+            <h4>本片段核对范围</h4>
+            <p v-for="target in active.targets" :key="target.id" class="review-diff"><span class="review-hint">{{ target.context_before }}</span><mark>{{ target.old || '（插入位置）' }}</mark><span class="review-hint">{{ target.context_after }}</span></p>
+          </section>
+          <div class="review-comparison">
+            <section class="review-source" aria-label="原文裁图">
+              <div class="review-section-heading">
+                <h4>原文裁图</h4>
+                <button v-if="sourceImage" type="button" class="review-action" @click="imageExpanded = true"><ZoomIn :size="16" /> 放大</button>
+              </div>
+              <MarkdownPreview v-if="sourceImage" :content="sourceImage" compact />
+              <p v-else class="review-source-empty">此记录没有可用裁图，请查看源 PDF。<span v-if="!validPage(active.page)">此记录未提供页码。</span></p>
+            </section>
+            <section class="review-text" aria-label="文字对照">
+              <h4>文字对照</h4>
+              <p v-if="comparison.after === null" class="review-hint">未生成修改，保留已识别正文。</p>
+              <p v-else-if="comparison.kind === 'candidate'" class="review-hint">以下文字层内容仅供对照，尚未应用到正文。</p>
+              <p v-else class="review-hint">整块快照可能包含同块其他问题的修改，请结合当前问题及核对范围判断。</p>
+              <p v-if="comparison.kind === 'snapshot' && !hasChanges" class="review-hint">块快照之间没有文字变化。</p>
+              <p v-if="diff.coarse" class="review-hint">变化范围较大，已整体标出；可展开完整上下文逐字核对。</p>
+              <div class="review-text-block">
+                <span class="review-text-label">{{ comparison.kind === 'snapshot' ? '处理前块快照' : '已识别文字' }}</span>
+                <p class="review-diff"><template v-for="(part, index) in beforeParts" :key="index"><del v-if="part.type === 'delete'">{{ part.text }}</del><span v-else>{{ part.text }}</span></template><span v-if="!comparison.before" class="review-hint">未识别到文字</span></p>
+              </div>
+              <div v-if="comparison.after !== null" class="review-text-block">
+                <span class="review-text-label">{{ comparison.label }}</span>
+                <p class="review-diff"><template v-for="(part, index) in afterParts" :key="index"><ins v-if="part.type === 'insert'">{{ part.text }}</ins><span v-else>{{ part.text }}</span></template><span v-if="comparison.after === ''" class="review-hint">内容已移除</span></p>
+              </div>
+              <details class="review-disclosure">
+                <summary>完整上下文</summary>
+                <span class="review-text-label">处理前块快照</span>
+                <pre>{{ active.before ?? active.candidates?.ocr ?? '未识别到文字' }}</pre>
+                <template v-if="typeof active.after === 'string'">
+                  <span class="review-text-label">当前块正文快照</span>
+                  <pre>{{ active.after === '' ? '内容已移除' : active.after }}</pre>
+                </template>
+              </details>
+            </section>
+          </div>
+          <details class="review-disclosure review-evidence">
+            <summary>候选文本与校对依据</summary>
+            <dl>
+              <template v-if="active.candidates?.ocr"><dt>OCR 候选</dt><dd><pre>{{ active.candidates.ocr }}</pre></dd></template>
+              <template v-if="active.candidates?.native"><dt>文字层候选</dt><dd><pre>{{ active.candidates.native }}</pre></dd></template>
+              <dt>检查来源</dt><dd>{{ active.source === 'model' ? '模型复核' : active.source === 'rule' ? '规则修复' : '系统检测' }}</dd>
+              <template v-if="active.model"><dt>校对模型</dt><dd>{{ active.model }}</dd></template>
+              <template v-if="active.validation"><dt>诊断代码</dt><dd>{{ active.validation }}</dd></template>
+              <template v-if="active.protocol_errors?.length"><dt>回执异常</dt><dd>{{ active.protocol_errors.join('、') }}</dd></template>
+            </dl>
+          </details>
+          <footer class="review-navigation">
+            <span role="status" aria-live="polite">当前分类第 {{ selectedIndex + 1 }} / {{ filtered.length }} 项</span>
+            <div>
+              <button type="button" class="review-action" :disabled="selectedIndex === 0" @click="move(-1)"><ChevronLeft :size="16" /> 上一项</button>
+              <button type="button" class="review-action" :disabled="selectedIndex === filtered.length - 1" @click="move(1)">下一项 <ChevronRight :size="16" /></button>
+            </div>
+          </footer>
+        </article>
+      </div>
+      <details v-if="state.diagnostics.length" class="review-disclosure review-diagnostics">
+        <summary>解析诊断（{{ state.diagnostics.length }}）</summary>
+        <p v-for="(item, index) in state.diagnostics" :key="index"><span v-if="item.page">第 {{ item.page }} 页 · </span>{{ item.reason || item.kind }}</p>
+      </details>
+      <a-modal v-if="imageExpanded" :open="true" title="原文裁图" width="900px" :footer="null" @cancel="imageExpanded = false">
+        <MarkdownPreview :content="sourceImage" compact />
+      </a-modal>
     </template>
   </section>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { ChevronLeft, ChevronRight, FileSearch, ZoomIn } from '@lucide/vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import { knowledgeAssetImageMarkdown } from '@/utils/document_parse_state'
+import {
+  groupDocumentReviews, reviewStatusLabel, reviewKindLabel, reviewComparison,
+  diffReviewText, compactReviewSegments
+} from '@/utils/documentReview'
 
 const props = defineProps({
   state: { type: Object, required: true },
-  kbId: { type: [String, Number], required: true }
+  kbId: { type: [String, Number], required: true },
+  canOpenPdf: { type: Boolean, default: false }
 })
-const imageMarkdown = (source) => knowledgeAssetImageMarkdown(source, props.kbId, '原文裁图')
+const emit = defineEmits(['open-pdf'])
+const filter = ref('attention')
+const selectedKey = ref(null)
+const partIndex = ref(0)
+const listPage = ref(1)
+const imageExpanded = ref(false)
+const pageSize = 8
+const groups = computed(() => groupDocumentReviews(props.state.reviews))
+const filters = computed(() => [
+  { value: 'attention', label: '待人工核对' }, { value: 'incomplete', label: '复核未完成' },
+  { value: 'modified', label: '系统已修改' }, { value: 'all', label: '全部记录' }
+].map((option) => ({ ...option, count: groups.value.filter((group) => option.value === 'all' || group[option.value]).length })))
+const filtered = computed(() => groups.value.filter((group) => filter.value === 'all' || group[filter.value]))
+const pageCount = computed(() => Math.ceil(filtered.value.length / pageSize))
+const pageGroups = computed(() => filtered.value.slice((listPage.value - 1) * pageSize, listPage.value * pageSize))
+const selectedIndex = computed(() => Math.max(0, filtered.value.findIndex((group) => group.key === selectedKey.value)))
+const selected = computed(() => filtered.value[selectedIndex.value])
+const active = computed(() => selected.value?.records[partIndex.value])
+const sourceImage = computed(() => knowledgeAssetImageMarkdown(active.value?.source_image, props.kbId, '原文裁图'))
+const comparison = computed(() => active.value ? reviewComparison(active.value) : { before: '', after: null })
+const diff = computed(() => diffReviewText(comparison.value.before, comparison.value.after ?? comparison.value.before))
+const compactParts = computed(() => compactReviewSegments(diff.value.parts))
+const beforeParts = computed(() => compactParts.value.filter((part) => part.type !== 'insert'))
+const afterParts = computed(() => compactParts.value.filter((part) => part.type !== 'delete'))
+const hasChanges = computed(() => diff.value.parts.some((part) => part.type !== 'equal'))
+const validPage = (page) => Number.isInteger(page) && page > 0
+const pageLabel = (page) => validPage(page) ? `第 ${page} 页` : '页码未知'
 const reviewSummary = computed(() => ({
-  not_requested: '未选择正文校对模型，未启用模型校对。',
-  needs_review: '部分内容仍需人工核对，请结合原文裁图检查。',
-  incomplete: '正文已生成，但模型复核存在失败或缺失回执，尚未完成校对；自动入库已跳过。',
-  completed: '本次登记疑点已处理，仍可结合原PDF复核。'
-})[props.state.metadata.review_status] || '暂无检查状态。')
-const statusLabel = (status) => ({
-  machine_corrected: '已修复', checked: '已核对', unresolved: '仍需核对', not_checked: '未核对', technical_failed: '复核未完成', proven_equivalent: '已证明等价'
-})[status] || status
+  not_requested: '未启用模型校对，以下为系统检测和规则处理记录。',
+  needs_review: '部分内容仍需人工核对，请逐项对照原文。',
+  incomplete: '正文已生成，部分模型复核未完成；自动入库已跳过。',
+  completed: '本次登记疑点已由系统处理，仍可结合原 PDF 复核。'
+})[props.state.metadata.review_status] || '以下为系统校对记录，可结合原文逐项复核。')
+
+/** 切换分类时从该分类的首个问题开始核对。 */
+function changeFilter(value) {
+  filter.value = value
+  listPage.value = 1
+  selectGroup(filtered.value[0]?.key)
+}
+
+/** 原问题默认定位最未完成的片段，正常片段仍可查看。 */
+function selectGroup(key) {
+  selectedKey.value = key
+  const group = filtered.value.find((entry) => entry.key === key)
+  partIndex.value = group ? group.records.indexOf(group.primary) : 0
+  imageExpanded.value = false
+}
+
+/** 连续核对跨列表分页时同步定位当前问题。 */
+function move(offset) {
+  const index = selectedIndex.value + offset
+  if (index < 0 || index >= filtered.value.length) return
+  selectGroup(filtered.value[index].key)
+  listPage.value = Math.floor(index / pageSize) + 1
+}
+
+watch([() => props.state.attempt_id, () => props.state.reviews], () => {
+  const initial = groups.value.some((group) => group.attention) ? 'attention'
+    : groups.value.some((group) => group.incomplete) ? 'incomplete' : 'all'
+  changeFilter(initial)
+}, { immediate: true })
+watch(partIndex, () => { imageExpanded.value = false })
 </script>
 
-<style scoped>
-.parse-assets-panel { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
-.panel-description, small, .diagnostics { color: var(--color-text-secondary); font-size: 12px; }
-.panel-description, .diagnostics p { margin: 0; }
-.asset-card { border: 1px solid var(--gray-150); border-radius: 8px; padding: 16px; background: var(--gray-0); }
-.asset-card.critical { border-color: var(--color-warning-700); }
-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-header span { color: var(--color-text-secondary); font-size: 12px; }
-dl { margin: 12px 0; display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 8px; }
+<style scoped lang="less">
+.document-review-panel { padding: 16px; display: flex; flex-direction: column; gap: 16px; container-type: inline-size; }
+.review-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+button, select { font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; color: var(--color-text-tertiary); }
+button:focus-visible, summary:focus-visible, select:focus-visible { outline: 2px solid var(--main-color); outline-offset: 2px; }
+.review-filter { padding: 8px 12px; border: 1px solid var(--gray-150); border-radius: 6px; background: var(--gray-0); color: var(--color-text-secondary); display: inline-flex; gap: 8px; align-items: center; }
+.review-filter:hover { border-color: var(--main-color); }
+.review-filter[aria-pressed="true"] { color: var(--main-color); background: var(--main-50); border-color: var(--main-color); }
+.review-filter span { font-variant-numeric: tabular-nums; }
+.review-workspace { display: grid; grid-template-columns: 224px minmax(0, 1fr); border: 1px solid var(--gray-150); border-radius: 8px; background: var(--gray-0); }
+.review-sidebar { min-width: 0; border-right: 1px solid var(--gray-150); }
+.review-list-heading { padding: 14px 12px; margin: 0; font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+.review-list-heading span, .review-page, .review-item-meta, .review-hint, .review-text-label, .review-pagination, .review-navigation, .review-source-empty { color: var(--color-text-secondary); font-size: 12px; font-weight: 400; }
+.review-list { display: flex; flex-direction: column; }
+.review-item { min-width: 0; width: 100%; padding: 12px; display: flex; flex-direction: column; gap: 6px; text-align: left; border: 0; border-top: 1px solid var(--gray-150); background: transparent; color: var(--color-text); }
+.review-item:hover { background: var(--gray-25); }
+.review-item[aria-current="true"] { background: var(--main-30); box-shadow: inset 3px 0 var(--main-color); }
+.review-item-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 600; }
+.review-page { flex-shrink: 0; }
+.review-item-status { font-size: 12px; color: var(--color-text-secondary); }
+.needs-attention { color: var(--color-warning-700); }
+.review-excerpt { font-size: 12px; line-height: 1.6; color: var(--color-text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.review-item-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+.review-pagination { padding: 8px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--gray-150); }
+.review-detail { padding: 20px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.review-detail-header, .review-section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+h3, h4, p { margin: 0; }
+h3 { font-size: 16px; font-weight: 600; display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+h4 { font-size: 13px; font-weight: 600; }
+.review-detail-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.review-detail-tags :deep(.ant-tag) { margin: 0; }
+.review-action { display: inline-flex; gap: 4px; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: transparent; color: var(--main-color); font-size: 12px; padding: 4px; }
+.review-action:hover:not(:disabled) { background: var(--main-50); }
+.review-part-selector { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+select { background: var(--gray-0); color: var(--color-text); border: 1px solid var(--gray-200); border-radius: 4px; padding: 6px 8px; max-width: 100%; }
+.review-notice { font-size: 13px; background: var(--color-warning-50); color: var(--color-warning-700); padding: 10px 12px; border-radius: 4px; }
+.review-reason { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.review-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+.review-source, .review-text { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.review-source { align-self: start; }
+.review-source :deep(img) { max-height: 360px; width: 100%; object-fit: contain; }
+.review-source-empty { padding: 24px 12px; line-height: 1.8; background: var(--gray-25); border-radius: 6px; }
+.review-hint { line-height: 1.7; }
+.review-text-block { background: var(--gray-25); border-radius: 6px; padding: 12px; }
+.review-target { padding: 12px; background: var(--gray-25); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; }
+.review-target mark { color: var(--color-text); background: var(--color-warning-50); text-decoration: underline; text-underline-offset: 3px; }
+.review-text-label { display: block; margin-bottom: 8px; }
+.review-diff, pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.8; margin: 0; }
+.review-diff del { color: var(--color-error-700); background: var(--color-error-50); text-decoration: line-through; }
+.review-diff ins { color: var(--color-success-700); background: var(--color-success-50); text-decoration: underline; text-underline-offset: 3px; }
+.review-disclosure { font-size: 13px; min-width: 0; }
+.review-disclosure summary { cursor: pointer; color: var(--main-color); padding: 4px 0; }
+.review-disclosure[open] summary { margin-bottom: 12px; }
+.review-disclosure pre + .review-text-label { margin-top: 12px; }
+.review-evidence, .review-diagnostics { border-top: 1px solid var(--gray-150); padding-top: 12px; }
+dl { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 10px; margin: 0; }
 dt { color: var(--color-text-secondary); }
 dd { margin: 0; overflow-wrap: anywhere; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 0; }
-.diagnostics { display: flex; flex-direction: column; gap: 8px; }
-@media (max-width: 480px) { dl { grid-template-columns: 1fr; } }
+.review-navigation { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--gray-150); }
+.review-navigation > div { display: flex; gap: 12px; }
+.review-empty { padding: 32px 16px; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.review-diagnostics p { color: var(--color-text-secondary); margin-top: 8px; overflow-wrap: anywhere; }
+@container (max-width: 900px) { .review-comparison { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 600px) {
+  .review-workspace { grid-template-columns: minmax(0, 1fr); }
+  .review-sidebar { border-right: 0; border-bottom: 1px solid var(--gray-150); }
+  .review-list { max-height: 200px; overflow-y: auto; }
+  .review-detail { padding: 16px; }
+  .review-filter { padding: 8px; }
+  dl { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+}
+@media (pointer: coarse) { .review-action, .review-filter, select, summary { min-height: 40px; } }
 </style>
