@@ -77,6 +77,31 @@ class KnowledgeFileRepository:
         await session.flush()
         return True
 
+    async def publish_review(
+        self, *, kb_id, file_id, previous_markdown, previous_assets, markdown_file,
+        assets_file, allowed_statuses, content_changed, operator_id,
+    ) -> bool:
+        """同事务比较当前快照与状态并发布人工校对正文和回执。"""
+        async with pg_manager.get_async_session_context() as session:
+            record = await session.scalar(select(KnowledgeFile).where(
+                KnowledgeFile.kb_id == kb_id, KnowledgeFile.file_id == file_id,
+                KnowledgeFile.markdown_file == previous_markdown,
+                KnowledgeFile.parse_assets_file == previous_assets,
+                KnowledgeFile.status.in_(allowed_statuses),
+            ).with_for_update())
+            if record is None:
+                return False
+            record.markdown_file = markdown_file
+            record.parse_assets_file = assets_file
+            record.updated_by = operator_id
+            record.updated_at = utc_now()
+            if content_changed:
+                record.status = "parsed"
+                record.chunk_count = record.token_count = 0
+                record.error_message = None
+            await session.flush()
+            return True
+
     async def update_parse_in_session(
         self, session, *, kb_id, file_id, task_id, owner, data
     ) -> KnowledgeFile | None:

@@ -9,7 +9,7 @@
       <div v-if="groups.length" class="review-filters" role="group" aria-label="筛选校对问题">
         <button
           v-for="option in filters" :key="option.value" type="button"
-          class="review-filter" :aria-pressed="filter === option.value" @click="changeFilter(option.value)"
+          class="review-filter" :disabled="saving" :aria-pressed="filter === option.value" @click="changeFilter(option.value)"
         >{{ option.label }} <span>{{ option.count }}</span></button>
       </div>
       <a-empty v-if="!groups.length" description="本次解析没有校对记录。" />
@@ -23,7 +23,7 @@
           <div class="review-list">
             <button
               v-for="group in pageGroups" :key="group.key" type="button" class="review-item"
-              :aria-current="selected?.key === group.key ? 'true' : undefined" @click="selectGroup(group.key)"
+              :disabled="saving" :aria-current="selected?.key === group.key ? 'true' : undefined" @click="selectGroup(group.key)"
             >
               <span class="review-item-heading">
                 <span>{{ reviewKindLabel(group.primary.kind) }}</span>
@@ -56,7 +56,7 @@
           </header>
           <label v-if="selected.records.length > 1" class="review-part-selector">
             检查片段
-            <select v-model.number="partIndex" aria-label="选择检查片段">
+            <select v-model.number="partIndex" :disabled="saving" aria-label="选择检查片段">
               <option v-for="(record, index) in selected.records" :key="record.id || index" :value="index">
                 {{ index + 1 }} / {{ selected.records.length }} · {{ reviewStatusLabel(record) }}
               </option>
@@ -102,11 +102,37 @@
               </details>
             </section>
           </div>
+          <section v-if="saveReview && sourceSha256 && state.attempt_id" class="review-editor" aria-label="人工校对并同步正文">
+            <div class="review-section-heading">
+              <h4>{{ activeBlock ? '校对后正文（完整段落）' : '补入遗漏正文' }}</h4>
+              <button v-if="active.candidates?.native" type="button" class="review-action" :disabled="saving" @click="draft = active.candidates.native">采用 PDF 提取文字</button>
+            </div>
+            <p class="review-hint">{{ activeBlock ? '请核对完整段落。确认后，该段相关问题均标记为人工已确认，原机器记录保留供参考。' : '此问题未定位到原段落。需要补充正文时，请明确选择补入位置；原文无误则保留正文并确认。' }}</p>
+            <label v-if="!activeBlock" class="review-part-selector">
+              补入位置
+              <select v-model="anchorBlockId" :disabled="saving" aria-label="选择补入位置">
+                <option value="">请选择补入位置</option>
+                <option value="__start__">文档开头</option>
+                <option v-for="block in state.blocks || []" :key="block.id" :value="block.id">在此段落之后：{{ String(block.content || '空段落').slice(0, 70) }}</option>
+              </select>
+            </label>
+            <label class="review-editor-label" for="review-corrected-content">{{ activeBlock ? '确认后将写入 Markdown 的段落文字' : '需要补入的正文' }}</label>
+            <textarea id="review-corrected-content" v-model="draft" :disabled="saving" rows="8" maxlength="200000" />
+            <p v-if="draftConflict" class="review-save-error" role="alert">该段正文已更新，草稿已保留。请核对最新正文后重新编辑。<button type="button" class="review-action" @click="discardDraft">放弃草稿，载入当前段落</button></p>
+            <p v-if="hasIndexes" class="review-hint">修改正文会清理旧分块和索引，保存后需重新入库。</p>
+            <p v-if="saveError" class="review-save-error" role="alert">{{ saveError }}</p>
+            <div class="review-editor-actions">
+              <button type="button" class="review-save" :disabled="saving || draftConflict || (!activeBlock && (!draft.trim() || !anchorBlockId))" @click="confirmReview(activeBlock ? 'replace' : 'insert_after')">{{ saving ? '正在同步…' : activeBlock ? '确认整段并同步到 MD' : '确认补入并同步到 MD' }}</button>
+              <button type="button" class="review-action" :disabled="saving" @click="confirmReview('keep')">保留正文并确认</button>
+              <span v-if="draft !== (activeBlock?.content || '')" class="review-hint">有未保存的修改</span>
+            </div>
+          </section>
+          <p v-else-if="saveReview && !sourceSha256" class="review-notice">正文尚未加载成功，暂时无法保存校对，请重新打开文档后重试。</p>
           <footer class="review-navigation">
             <span role="status" aria-live="polite">当前分类第 {{ selectedIndex + 1 }} / {{ filtered.length }} 项</span>
             <div>
-              <button type="button" class="review-action" :disabled="selectedIndex === 0" @click="move(-1)"><ChevronLeft :size="16" /> 上一项</button>
-              <button type="button" class="review-action" :disabled="selectedIndex === filtered.length - 1" @click="move(1)">下一项 <ChevronRight :size="16" /></button>
+              <button type="button" class="review-action" :disabled="saving || selectedIndex === 0" @click="move(-1)"><ChevronLeft :size="16" /> 上一项</button>
+              <button type="button" class="review-action" :disabled="saving || selectedIndex === filtered.length - 1" @click="move(1)">下一项 <ChevronRight :size="16" /></button>
             </div>
           </footer>
         </article>
@@ -130,8 +156,16 @@ import {
 
 const props = defineProps({
   state: { type: Object, required: true },
-  kbId: { type: [String, Number], required: true }
+  kbId: { type: [String, Number], required: true },
+  sourceSha256: { type: String, default: '' },
+  hasIndexes: { type: Boolean, default: false },
+  saveReview: { type: Function, default: null }
 })
+const saving = ref(false)
+const saveError = ref('')
+const drafts = ref({})
+const draftBases = ref({})
+const anchors = ref({})
 const filter = ref('attention')
 const selectedKey = ref(null)
 const partIndex = ref(0)
@@ -144,7 +178,8 @@ const autoIndexDeferred = computed(() => props.state.metadata.auto_index_enabled
     groups.value.some((group) => group.attention || group.incomplete)))
 const filters = computed(() => [
   { value: 'attention', label: '待人工核对' }, { value: 'incomplete', label: '复核未完成' },
-  { value: 'modified', label: '系统已修改' }, { value: 'all', label: '全部记录' }
+  { value: 'modified', label: '系统已修改' }, { value: 'confirmed', label: '人工已确认' },
+  { value: 'all', label: '全部记录' }
 ].map((option) => ({ ...option, count: groups.value.filter((group) => option.value === 'all' || group[option.value]).length })))
 const filtered = computed(() => groups.value.filter((group) => filter.value === 'all' || group[filter.value]))
 const pageCount = computed(() => Math.ceil(filtered.value.length / pageSize))
@@ -152,6 +187,24 @@ const pageGroups = computed(() => filtered.value.slice((listPage.value - 1) * pa
 const selectedIndex = computed(() => Math.max(0, filtered.value.findIndex((group) => group.key === selectedKey.value)))
 const selected = computed(() => filtered.value[selectedIndex.value])
 const active = computed(() => selected.value?.records[partIndex.value])
+const activeBlock = computed(() => {
+  const id = active.value?.human_review?.block_id || active.value?.block_id
+  return id == null ? null : props.state.blocks?.find((block) => block.id === id && !['page_header', 'page_footer'].includes(block.type))
+})
+const draftKey = computed(() => `${props.state.attempt_id}:${props.state.reviews.indexOf(active.value)}`)
+const draft = computed({
+  get: () => drafts.value[draftKey.value] ?? activeBlock.value?.content ?? '',
+  set: (value) => {
+    if (!Object.hasOwn(drafts.value, draftKey.value)) draftBases.value[draftKey.value] = activeBlock.value?.content || ''
+    drafts.value[draftKey.value] = value
+  }
+})
+const draftConflict = computed(() => Object.hasOwn(drafts.value, draftKey.value) &&
+  draftBases.value[draftKey.value] !== (activeBlock.value?.content || '') && draft.value !== activeBlock.value?.content)
+const anchorBlockId = computed({
+  get: () => anchors.value[draftKey.value] || '',
+  set: (value) => { anchors.value[draftKey.value] = value }
+})
 const sourceImage = computed(() => knowledgeAssetImageMarkdown(active.value?.source_image, props.kbId, '原文裁图'))
 const comparison = computed(() => active.value ? reviewComparison(active.value) : { before: '', after: null })
 const diff = computed(() => diffReviewText(comparison.value.before, comparison.value.after ?? comparison.value.before))
@@ -165,7 +218,7 @@ const reviewSummary = computed(() => ({
   not_requested: '未启用模型校对，以下为系统检测和规则处理记录。',
   needs_review: '部分内容仍需人工核对，请逐项对照原文。',
   incomplete: '正文已生成，部分自动复核尚未完成，请对照原文检查。',
-  completed: '本次登记疑点已由系统处理，仍可结合原 PDF 复核。'
+  completed: '本次登记疑点已完成核对，仍可结合原 PDF 复核。'
 })[props.state.metadata.review_status] || '以下为系统校对记录，可结合原文逐项复核。')
 
 /** 切换分类时从该分类的首个问题开始核对。 */
@@ -191,12 +244,51 @@ function move(offset) {
   listPage.value = Math.floor(index / pageSize) + 1
 }
 
+/** 只提交人工确认的完整段落；失败时原草稿可继续修改重试。 */
+async function confirmReview(action) {
+  if (saving.value || !props.saveReview || (action !== 'keep' && draftConflict.value)) return
+  saving.value = true
+  saveError.value = ''
+  const index = props.state.reviews.indexOf(active.value)
+  const blockId = activeBlock.value?.id
+  const savedKeys = props.state.reviews.flatMap((row, rowIndex) => {
+    const id = row.human_review?.block_id || row.block_id
+    return rowIndex === index || (blockId && id === blockId) ? [`${props.state.attempt_id}:${rowIndex}`] : []
+  })
+  try {
+    await props.saveReview({
+      attempt_id: props.state.attempt_id,
+      review_revision: props.state.metadata.human_review_revision || null,
+      source_sha256: props.sourceSha256,
+      review_index: index,
+      action, content: action === 'keep' ? '' : draft.value,
+      anchor_block_id: action === 'insert_after' ? anchorBlockId.value : null
+    })
+    for (const key of savedKeys) {
+      delete drafts.value[key]
+      delete draftBases.value[key]
+      delete anchors.value[key]
+    }
+  } catch {
+    saveError.value = '保存失败'
+  } finally {
+    saving.value = false
+  }
+}
+
+/** 用户明确放弃旧草稿后才重新载入当前段落。 */
+function discardDraft() {
+  delete drafts.value[draftKey.value]
+  delete draftBases.value[draftKey.value]
+}
+
 watch([() => props.state.attempt_id, () => props.state.reviews], () => {
   const initial = groups.value.some((group) => group.attention) ? 'attention'
     : groups.value.some((group) => group.incomplete) ? 'incomplete' : 'all'
   changeFilter(initial)
 }, { immediate: true })
 watch(partIndex, () => { imageExpanded.value = false })
+watch(draftKey, () => { saveError.value = '' })
 </script>
 
 <style scoped lang="less">
@@ -251,6 +343,14 @@ select { background: var(--gray-0); color: var(--color-text); border: 1px solid 
 .review-diff, pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.8; margin: 0; }
 .review-disclosure { font-size: 13px; min-width: 0; }
 .review-disclosure summary { cursor: pointer; color: var(--main-color); padding: 4px 0; }
+.review-editor { display: flex; flex-direction: column; gap: 12px; padding-top: 16px; border-top: 1px solid var(--gray-150); }
+.review-editor-label { font-size: 13px; }
+.review-editor textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 160px; padding: 12px; border: 1px solid var(--gray-200); border-radius: 6px; background: var(--gray-0); color: var(--color-text); font: inherit; font-size: 13px; line-height: 1.8; }
+.review-editor textarea:focus-visible { outline: 2px solid var(--main-color); outline-offset: 2px; }
+.review-editor-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.review-save { padding: 8px 12px; border: 1px solid var(--main-color); border-radius: 6px; background: var(--main-color); color: var(--gray-0); font: inherit; font-size: 13px; }
+.review-save:disabled { background: var(--gray-100); border-color: var(--gray-150); color: var(--color-text-tertiary); }
+.review-save-error { color: var(--color-error-700); font-size: 13px; }
 .review-disclosure[open] summary { margin-bottom: 12px; }
 .review-disclosure pre + .review-text-label { margin-top: 12px; }
 .review-navigation { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--gray-150); }

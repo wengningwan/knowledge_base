@@ -133,6 +133,9 @@
           :key="`review-${file.file_id}-${assetsState.attempt_id || ''}`"
           :state="assetsState"
           :kb-id="kbId"
+          :source-sha256="contentState.source_sha256"
+          :has-indexes="['indexed', 'done', 'error_indexing'].includes(file.status) || chunkCount > 0"
+          :save-review="canManage ? saveReview : null"
         />
       </KeepAlive>
     </div>
@@ -182,10 +185,11 @@ const props = defineProps({
   fileId: {
     type: [String, Number],
     default: ''
-  }
+  },
+  canManage: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['update:open', 'closed'])
+const emit = defineEmits(['update:open', 'closed', 'review-saved'])
 
 const visible = computed({
   get: () => props.open,
@@ -208,6 +212,27 @@ const parseLoader = createDocumentParseLoader({
     assetsState.value = assets
   }
 })
+
+/** 保存完成后从后端重读正文和回执，旧文档响应不更新当前窗口。 */
+const saveReview = async (changes) => {
+  const kbId = String(props.kbId)
+  const fileId = String(props.fileId)
+  const sequence = basicRequestSeq
+  const result = await documentApi.confirmDocumentReview(kbId, fileId, changes)
+  if (!props.open || sequence !== basicRequestSeq || kbId !== String(props.kbId) || fileId !== String(props.fileId)) return
+  emit('review-saved')
+  message.success(result.index_invalidated ? '已同步到 Markdown，旧索引已清理，请重新入库。' : '已确认并同步到 Markdown。')
+  // 指针已发布，先废弃旧正文，不能因后续信息读取失败继续提供旧版下载。
+  await parseLoader.refresh()
+  if (!props.open || sequence !== basicRequestSeq) return
+  try {
+    const data = await documentApi.getDocumentBasicInfo(kbId, fileId)
+    ensureApiSuccess(data, '加载文件状态失败')
+    if (sequence === basicRequestSeq && props.open) file.value = normalizeFileMeta(data?.meta || data)
+  } catch {
+    if (sequence === basicRequestSeq && result.content_changed) file.value = { ...file.value, status: 'parsed', chunk_count: 0 }
+  }
+}
 const sourcePreview = ref({
   loading: false,
   url: '',

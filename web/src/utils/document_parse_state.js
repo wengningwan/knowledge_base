@@ -71,7 +71,7 @@ export function createDocumentParseLoader({ loadContent, loadAssets, onChange })
         if (!isCurrent()) return
         const errorMessage = error.message || '加载解析结果失败'
         if (isContent) content = { ...emptyDocumentContent(), error: errorMessage }
-        else assets = { ...emptyDocumentAssets(), error: errorMessage }
+        else assets = { ...assets, loading: false, loaded: false, error: errorMessage }
       } finally {
         if (isCurrent()) {
           if (isContent) contentPending = null
@@ -109,6 +109,19 @@ export function createDocumentParseLoader({ loadContent, loadAssets, onChange })
   }
   return {
     reset,
+    async refresh() {
+      if (!context) return
+      generation += 1
+      contentSequence += 1
+      assetSequence += 1
+      contentPending = assetsPending = reconciling = null
+      // 失效旧正文及下载，但保留同 attempt 的组件身份和其他段落草稿。
+      content = emptyDocumentContent()
+      assets = { ...assets, loading: true, loaded: false, error: '' }
+      publish()
+      await Promise.all([request('content'), request('assets')])
+      await reconcile()
+    },
     async content() { await request('content'); await reconcile() },
     async assets() {
       await Promise.all([request('content'), request('assets')])

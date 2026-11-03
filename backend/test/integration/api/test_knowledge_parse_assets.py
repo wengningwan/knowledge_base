@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import uuid
@@ -26,15 +27,20 @@ async def parsed_document_records(knowledge_database):
     legacy_id = f"legacy_{suffix}"
     attempt_id = uuid.uuid4().hex
     prefix = f"{kb_id}/parsed/{file_id}/{attempt_id}"
-    markdown = "# Original paper\n\nThe measured value is 5 A.\n"
+    markdown = "# Original paper\n\nThe measured value is 5 A."
     indexed_text = "Stale indexed summary. Model explanation must not become the original paper."
     assets = {
         "schema_version": 1,
         "kb_id": kb_id,
         "file_id": file_id,
         "attempt_id": attempt_id,
+        "blocks": [
+            {"id": "title", "type": "title", "content": "Original paper", "level": 1, "page": 1},
+            {"id": "b1", "type": "text", "content": "The measured value is 5 A.", "page": 1},
+        ],
         "figures": [{"page": 1, "caption": "Original caption", "analysis": "MODEL_ANALYSIS_ONLY"}],
-        "reviews": [{"block_id": "b1", "before": "5A", "after": "5 A", "critical": True,
+        "reviews": [{"id": "r1", "block_id": "b1", "status": "unresolved", "before": "5A", "after": "5 A",
+                     "critical": True,
                      "reason": "原生区域未覆盖；缺少唯一正文插入锚点，未猜写新块"}],
         "metadata": {"auto_index_enabled": True, "review_status": "needs_review"},
         "diagnostics": [{"kind": "needs_review", "reason": "REVIEW_DIAGNOSTIC_ONLY"}],
@@ -90,6 +96,7 @@ async def parsed_document_records(knowledge_database):
             try:
                 for name in object_names:
                     await client.adelete_file(bucket, name)
+                await client.adelete_objects_by_prefix(bucket, f"{prefix}/")
             finally:
                 await engine.dispose()
 
@@ -251,3 +258,60 @@ async def test_document_products_reject_standard_user(
     assert isinstance(response.json()["detail"], str)
     assert "MODEL_ANALYSIS_ONLY" not in response.text
     assert doc["markdown"] not in response.text
+
+
+async def test_human_confirmation_publishes_md_and_receipt_then_rejects_stale_save(
+    test_client, admin_headers, parsed_document_records,
+):
+    """真实 HTTP 后回读 PG、MinIO 与正文 API，旧请求不得覆盖人工新版。"""
+    from yuxi.knowledge.utils.kb_utils import parse_minio_url
+
+    doc = parsed_document_records
+    endpoint = f"/api/knowledge/databases/{doc['kb_id']}/documents/{doc['file_id']}"
+    changes = {
+        "attempt_id": doc["attempt_id"], "review_revision": None,
+        "source_sha256": hashlib.sha256(doc["markdown"].encode()).hexdigest(),
+        "review_index": 0, "action": "replace", "content": "The measured value is 5.0 A.",
+    }
+    response = await test_client.post(endpoint + "/review-confirmations", headers=admin_headers, json=changes)
+    assert response.status_code == 200, response.text
+    async with doc["engine"].connect() as connection:
+        row = (await connection.execute(text(
+            "SELECT markdown_file, parse_assets_file, status, chunk_count, "
+            "(SELECT COUNT(*) FROM knowledge_chunks WHERE file_id = :file) AS chunks "
+            "FROM knowledge_files WHERE file_id = :file AND kb_id = :kb"
+        ), {"file": doc["file_id"], "kb": doc["kb_id"]})).mappings().one()
+    assert row["status"] == "parsed" and row["chunk_count"] == row["chunks"] == 0
+    md = (await doc["minio"].adownload_file(*parse_minio_url(row["markdown_file"]))).decode()
+    assets = json.loads(await doc["minio"].adownload_file(*parse_minio_url(row["parse_assets_file"])))
+    assert md == "# Original paper\n\nThe measured value is 5.0 A."
+    assert "human_review" in assets["reviews"][0]
+    assert assets["metadata"]["review_status"] == "completed"
+    assert assets["metadata"]["human_review_revision"] == response.json()["review_revision"]
+    assert assets["figures"] == doc["assets"]["figures"]
+    reread = await test_client.get(endpoint + "/content", headers=admin_headers)
+    assert reread.json()["content"] == md
+    assert reread.json()["source_sha256"] == hashlib.sha256(md.encode()).hexdigest()
+    rejected = await test_client.post(endpoint + "/review-confirmations", headers=admin_headers, json=changes)
+    assert rejected.status_code == 409, rejected.text
+    async with doc["engine"].connect() as connection:
+        current = (await connection.execute(text(
+            "SELECT markdown_file, parse_assets_file FROM knowledge_files WHERE file_id = :file"
+        ), {"file": doc["file_id"]})).one()
+    assert tuple(current) == (row["markdown_file"], row["parse_assets_file"])
+    assert (await doc["minio"].adownload_file(doc["bucket"], doc["object_names"][0])).decode() == doc["markdown"]
+
+
+async def test_human_confirmation_rejects_standard_user(test_client, standard_user, parsed_document_records):
+    """真实权限依赖拒绝普通用户的正文副作用。"""
+    doc = parsed_document_records
+    response = await test_client.post(
+        f"/api/knowledge/databases/{doc['kb_id']}/documents/{doc['file_id']}/review-confirmations",
+        headers=standard_user["headers"], json={
+            "attempt_id": doc["attempt_id"], "source_sha256": hashlib.sha256(doc["markdown"].encode()).hexdigest(),
+            "review_index": 0, "action": "keep",
+        },
+    )
+    assert response.status_code == 403, response.text
+    original = json.loads(await doc["minio"].adownload_file(doc["bucket"], doc["object_names"][1]))
+    assert original == doc["assets"]

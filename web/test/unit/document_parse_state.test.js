@@ -8,6 +8,41 @@ const deferred = () => {
   return { promise, resolve }
 }
 
+test('人工保存后刷新保留同 attempt 身份，立即停止旧正文下载，失败也不销毁其他草稿宿主', async () => {
+  let version = 1
+  let failed = false
+  let projection
+  let freshContent
+  const history = []
+  const loader = createDocumentParseLoader({
+    loadContent: () => version === 1 ? { content: '旧正文', source_sha256: 'old', attempt_id: 'same' } : freshContent.promise,
+    loadAssets: async () => {
+      if (failed) throw new Error('暂时无法读取')
+      return { attempt_id: 'same', metadata: { human_review_revision: version }, reviews: [{ id: 'row' }] }
+    },
+    onChange: (value) => { projection = value; history.push(value) }
+  })
+  loader.reset({ kbId: 'kb', fileId: 'file' })
+  await loader.assets()
+  version = 2
+  freshContent = deferred()
+  history.length = 0
+  const refresh = loader.refresh()
+  assert.equal(documentMarkdown(projection.content), '')
+  assert.equal(projection.content.source_sha256, '')
+  assert.equal(projection.assets.attempt_id, 'same')
+  freshContent.resolve({ content: '新正文', source_sha256: 'new', attempt_id: 'same' })
+  await refresh
+  assert.equal(documentMarkdown(projection.content), '新正文')
+  assert.equal(projection.assets.metadata.human_review_revision, 2)
+  assert.ok(history.every((entry) => entry.assets.attempt_id === 'same'))
+  failed = true
+  await loader.refresh()
+  assert.match(projection.assets.error, /暂时无法读取/)
+  assert.equal(projection.assets.attempt_id, 'same')
+  assert.ok(history.every((entry) => entry.assets.attempt_id === 'same'))
+})
+
 test('图片标签惰性读取产物，切换标签复用同版结果', async () => {
   let reads = 0
   let projection

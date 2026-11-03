@@ -4,6 +4,7 @@ import os
 import textwrap
 import time
 import traceback
+from typing import Literal
 from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
@@ -89,6 +90,18 @@ class ParseDocumentsRequest(BaseModel):
     file_ids: list[str] = Field(default_factory=list)
     params: dict | None = None
     reparse: bool = False
+
+
+class ConfirmDocumentReviewRequest(BaseModel):
+    """携带当前快照及人工明确选择的正文操作。"""
+
+    attempt_id: str = Field(pattern=r"^[A-Za-z0-9_-]+$", max_length=128)
+    review_revision: str | None = Field(default=None, max_length=128)
+    source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    review_index: int = Field(ge=0)
+    action: Literal["keep", "replace", "insert_after"]
+    content: str = Field(default="", max_length=200_000)
+    anchor_block_id: str | None = Field(default=None, max_length=200)
 
 
 class PendingParseDocumentsRequest(BaseModel):
@@ -1031,6 +1044,27 @@ async def get_document_parse_assets(
         return await knowledge_base.get_file_parse_assets(kb_id, doc_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@knowledge.post("/databases/{kb_id}/documents/{doc_id}/review-confirmations")
+async def confirm_document_review(
+    kb_id: str, doc_id: str, body: ConfirmDocumentReviewRequest,
+    current_user: User = Depends(require_knowledge_base_manage),
+):
+    """在管理权限边界保存人工校对，不直接操作持久化。"""
+    from yuxi.services.knowledge_review_service import ReviewConflictError, ReviewNotFoundError
+
+    await _ensure_database_supports_documents(kb_id, "人工校对")
+    try:
+        return await knowledge_base.confirm_file_review(
+            kb_id, doc_id, operator_id=str(current_user.uid), **body.model_dump(),
+        )
+    except ReviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ReviewConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @knowledge.get("/databases/{kb_id}/documents/{doc_id}/content")

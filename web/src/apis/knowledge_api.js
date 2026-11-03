@@ -239,6 +239,11 @@ export const documentApi = {
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/parse-assets`)
   },
 
+  /** 确认人工核对结果并同步当前 Markdown。 */
+  confirmDocumentReview: async (kbId, docId, changes) => {
+    return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/review-confirmations`, changes)
+  },
+
   /** 获取解析正文、读取错误和分块，正文不由分块拼接替代。 */
   getDocumentContent: async (kbId, docId) => {
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/content`)

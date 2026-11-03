@@ -230,6 +230,8 @@
       v-model:open="store.state.fileDetailModalVisible"
       :kb-id="kbId"
       :file-id="store.fileDetailFileId"
+      :can-manage="canManageDatabase"
+      @review-saved="refreshReviewedDocument"
       @closed="store.closeFileDetail"
     />
 
@@ -486,6 +488,14 @@ const {
 const kbId = computed(() => store.kbId)
 const database = computed(() => store.database)
 const canManageDatabase = computed(() => database.value?.can_manage === true)
+
+/** 人工正文保存后更新列表状态和知识库统计。 */
+const refreshReviewedDocument = async () => {
+  await Promise.all([
+    store.getDatabaseInfo(undefined, true, true),
+    store.loadDocumentFiles({ isBackground: true })
+  ])
+}
 const isCurrentDatabaseLoaded = computed(() => database.value?.kb_id === kbId.value)
 const kbType = computed(() =>
   isCurrentDatabaseLoaded.value ? database.value.kb_type?.toLowerCase() || 'milvus' : ''
