@@ -24,10 +24,13 @@ test('重解析标记属于请求顶层且旧调用默认关闭，产物使用�
     await documentApi.parseDocuments('kb', ['one'], params)
     await documentApi.parseDocuments('kb', ['one'], params, true)
     await documentApi.getDocumentParseAssets('kb', 'one')
+    const confirmation = { attempt_id: 'attempt', review_index: 0, source_sha256: 'a'.repeat(64), action: 'keep' }
+    await documentApi.confirmDocumentReview('kb', 'one', confirmation)
     assert.deepEqual(requests, [
       { url: '/api/knowledge/databases/kb/documents/parse', body: { file_ids: ['one'], params, reparse: false } },
       { url: '/api/knowledge/databases/kb/documents/parse', body: { file_ids: ['one'], params, reparse: true } },
-      { url: '/api/knowledge/databases/kb/documents/one/parse-assets', body: undefined }
+      { url: '/api/knowledge/databases/kb/documents/one/parse-assets', body: undefined },
+      { url: '/api/knowledge/databases/kb/documents/one/review-confirmations', body: confirmation }
     ])
     assert.ok(headers.every((value) => value.Authorization === 'Bearer test-token'))
     assert.equal(Object.hasOwn(params, 'reparse'), false)

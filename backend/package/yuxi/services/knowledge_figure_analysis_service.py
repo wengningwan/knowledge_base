@@ -63,7 +63,8 @@ class FigureTaskControl:
         """取消、删除、重解析发布或失去 lease 后禁止继续发布。"""
         await self.context.raise_if_cancelled()
         record = await KnowledgeFileRepository().get_by_file_id(self.file_id)
-        if record is None or record.kb_id != self.kb_id or record.markdown_file != self.payload["markdown_file"]:
+        if (record is None or record.kb_id != self.kb_id or not record.parse_assets_file
+                or record.parse_assets_file.rsplit("/", 2)[-2] != self.payload["attempt_id"]):
             raise asyncio.CancelledError("文档已删除或已发布另一正文版本")
 
 
@@ -106,18 +107,25 @@ async def run_knowledge_figure_analysis(context):
     await analyze_document_figures(result, {"image_analysis_model": payload["model_spec"], "_background_figures": True}, control)
     await control.check_cancelled()
     await context.set_progress(90, "发布同版本图片说明")
-    # 基于刚才校验的快照仅改图片和其状态；CAS 同时检查正文和旧附属指针。
-    sidecar["figures"] = result.figures
-    sidecar.setdefault("metadata", {})["figure_analysis"] = result.metadata["figure_analysis"]
     revision = uuid.uuid4().hex
-    sidecar["metadata"]["figure_analysis"]["analysis_revision"] = revision
+    result.metadata["figure_analysis"]["analysis_revision"] = revision
     name = f"{control.kb_id}/parsed/{control.file_id}/{payload['attempt_id']}/assets.figures.{context.task_id}.{revision}.json"
     published = False
     matched = False
     upload = None
     try:
-        upload = await complete_storage_mutation(client.aupload_file(client.KB_BUCKETS["parsed"], name, json.dumps(sidecar, ensure_ascii=False, allow_nan=False).encode()))
         async with repo.lock_file_operation(control.kb_id, control.file_id, control):
+            # 人工校对可在同 attempt 更新正文；仅把图片字段合并进锁内的最新快照。
+            current = await repo.get_by_file_id(control.file_id)
+            pointer = current.parse_assets_file
+            sidecar = await _read_sidecar(client, pointer, payload)
+            if sidecar.get("metadata", {}).get("figure_analysis", {}).get("task_id") != context.task_id:
+                raise ValueError("附属快照未登记当前图片任务")
+            sidecar["figures"] = result.figures
+            sidecar.setdefault("metadata", {})["figure_analysis"] = result.metadata["figure_analysis"]
+            upload = await complete_storage_mutation(client.aupload_file(
+                client.KB_BUCKETS["parsed"], name, json.dumps(sidecar, ensure_ascii=False, allow_nan=False).encode(),
+            ))
             async def publish(session, task):
                 """Task 行锁先于文件行锁，取消与 CAS 在同一事务裁决。"""
                 nonlocal matched
@@ -125,7 +133,7 @@ async def run_knowledge_figure_analysis(context):
                     raise asyncio.CancelledError("图片任务已取消")
                 matched = await repo.publish_parse_assets_in_session(
                     session, kb_id=control.kb_id, file_id=control.file_id,
-                    markdown_file=payload["markdown_file"], previous_assets_file=pointer, assets_file=upload.url,
+                    markdown_file=current.markdown_file, previous_assets_file=pointer, assets_file=upload.url,
                 )
             await context.run_owned_transaction(publish)
             published = matched

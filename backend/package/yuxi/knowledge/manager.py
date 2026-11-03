@@ -1025,6 +1025,15 @@ class KnowledgeBaseManager:
         executor = await self.get_kb_executor(kb_id)
         return await executor.get_file_parse_assets(kb_id, file_id)
 
+    async def confirm_file_review(self, kb_id: str, file_id: str, *, operator_id: str, **changes) -> dict:
+        """使用真实文档执行器保存人工校对并刷新统计。"""
+        from yuxi.services.knowledge_review_service import confirm_document_review
+
+        executor = await self.get_kb_executor(kb_id)
+        return await self._run_with_stats_refresh(kb_id, confirm_document_review(
+            executor, kb_id, file_id, operator_id=operator_id, **changes,
+        ))
+
     async def get_file_content(self, kb_id: str, file_id: str) -> dict:
         """获取文件内容信息（chunks和lines）"""
         kb_instance = await self.get_kb_executor(kb_id)

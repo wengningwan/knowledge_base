@@ -168,10 +168,14 @@ async def test_model_figure_explanation_is_sidecar_only_even_after_final_render(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("committed", [False, True])
 @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
-async def test_commit_ack_failure_cleans_only_unreferenced_uploaded_sidecar(monkeypatch, committed, failure):
+@pytest.mark.parametrize("human_changed", [False, True])
+async def test_commit_ack_failure_cleans_only_unreferenced_uploaded_sidecar(
+    monkeypatch, committed, failure, human_changed,
+):
     """提交成功后 close/取消抛错也保留已引用侧录，未提交对象才可删除。"""
     payload = {"kb_id": "kb", "file_id": "file", "attempt_id": "attempt", "markdown_file": "document.md", "assets_file": "old.json", "model_spec": "test:model"}
-    record = SimpleNamespace(kb_id="kb", markdown_file="document.md", parse_assets_file="old.json")
+    old_pointer = "kb/parsed/file/attempt/old.json"
+    record = SimpleNamespace(kb_id="kb", markdown_file="document.md", parse_assets_file=old_pointer)
     sidecar = {"schema_version": 1, "kb_id": "kb", "file_id": "file", "attempt_id": "attempt", "blocks": [{"id": "b1", "content": "source"}], "reviews": [{"id": "r1"}], "figures": [], "metadata": {"figure_analysis": {"task_id": "figure-task", "status": "pending"}}}
     deleted, uploaded = [], []
 
@@ -207,6 +211,11 @@ async def test_commit_ack_failure_cleans_only_unreferenced_uploaded_sidecar(monk
 
     async def analyze(result, params, control):
         result.metadata["figure_analysis"]["status"] = "completed"
+        if human_changed:
+            record.markdown_file = "document.review.md"
+            sidecar["blocks"][0]["content"] = "Human corrected source"
+            sidecar["reviews"][0]["human_review"] = {"confirmed_by": "human"}
+            sidecar["metadata"]["human_review_revision"] = "manual-revision"
 
     async def noop(*args):
         return None
@@ -224,10 +233,32 @@ async def test_commit_ack_failure_cleans_only_unreferenced_uploaded_sidecar(monk
     with pytest.raises(failure):
         await tasks.run_knowledge_figure_analysis(context)
     assert len(uploaded) == 1
-    assert record.markdown_file == "document.md"
-    assert record.parse_assets_file == ("uploaded.json" if committed else "old.json")
+    assert record.markdown_file == ("document.review.md" if human_changed else "document.md")
+    assert record.parse_assets_file == ("uploaded.json" if committed else old_pointer)
     assert deleted == ([] if committed else [(uploaded[0][0], uploaded[0][1])])
     assert uploaded[0][1].startswith("kb/parsed/file/attempt/assets.figures.figure-task.")
     saved = json.loads(uploaded[0][2])
-    assert saved["blocks"] == [{"id": "b1", "content": "source"}]
-    assert saved["reviews"] == [{"id": "r1"}]
+    assert saved["blocks"] == sidecar["blocks"]
+    assert saved["reviews"] == sidecar["reviews"]
+    if human_changed:
+        assert saved["metadata"]["human_review_revision"] == "manual-revision"
+
+
+@pytest.mark.asyncio
+async def test_figure_control_rejects_different_parse_attempt():
+    """允许同次人工正文变更，重新解析后的旧图片任务必须停止。"""
+    async def noop():
+        """保持任务自身有效。"""
+
+    context = SimpleNamespace(task_id="figures", deadline=None, raise_if_cancelled=noop, payload={
+        "kb_id": "kb", "file_id": "file", "attempt_id": "old", "markdown_file": "old.md",
+    })
+    from unittest.mock import patch
+
+    async def get(self, file_id):
+        """返回已经切换的发布事实。"""
+        return SimpleNamespace(kb_id="kb", parse_assets_file="kb/parsed/file/new/assets.json")
+
+    with patch.object(tasks.KnowledgeFileRepository, "get_by_file_id", get):
+        with pytest.raises(asyncio.CancelledError):
+            await tasks.FigureTaskControl(context).check_cancelled()
