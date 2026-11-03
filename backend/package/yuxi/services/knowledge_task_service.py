@@ -107,7 +107,7 @@ async def run_knowledge_ingest(context: TaskContext) -> dict:
                 if not auto_index or file_meta.get("status") != "parsed" or review_blocked:
                     processed_items[record["index"]] = file_meta
             except Exception as exc:
-                logger.error("解析文件失败 %s (file_id=%s): %s", record["item"], record["file_id"], exc)
+                logger.error("解析文件失败 {} (file_id={}): {}", record["item"], record["file_id"], exc)
                 error_type = "timeout" if isinstance(exc, TimeoutError) else "parse_failed"
                 error_message = "解析超时" if isinstance(exc, TimeoutError) else "解析失败"
                 processed_items[record["index"]] = {

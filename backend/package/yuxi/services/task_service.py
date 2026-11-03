@@ -523,7 +523,7 @@ async def process_task(ctx: dict[str, Any], task_id: str) -> None:
         if asyncio.current_task() is not None and asyncio.current_task().cancelling():
             raise
     except Exception as exc:
-        logger.exception("Durable task failed: task_id=%s, type=%s", task_id, record.type)
+        logger.exception("Durable task failed: task_id={}, type={}", task_id, record.type)
         await _finish_task_failure(
             repo,
             task_id=task_id,

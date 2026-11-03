@@ -310,6 +310,34 @@ async def test_process_task_rebuilds_handler_and_persists_success(monkeypatch):
     assert repo.record.attempt_count == 1
 
 
+async def test_process_task_failure_logs_task_identity_and_exception(monkeypatch):
+    """真实日志文本保留任务身份和异常，终态仍记录失败。"""
+    record = make_record(type="knowledge_ingest")
+    repo = FakeRepo(record)
+
+    async def handler(_context: TaskContext):
+        """注入可辨认的解析失败。"""
+        raise RuntimeError("OCR publication failed")
+
+    monkeypatch.setattr(task_service, "TaskRepository", lambda: repo)
+    monkeypatch.setattr(task_service, "get_task_definition", lambda *_args: FakeDefinition(handler))
+    messages = []
+    sink_id = task_service.logger.add(lambda message: messages.append(message), level="ERROR")
+    try:
+        await process_task({"worker_id": "worker-1"}, record.id)
+    finally:
+        task_service.logger.remove(sink_id)
+
+    assert repo.record.status == "failed"
+    assert repo.record.error == "OCR publication failed"
+    assert any(
+        "task_id=task-1" in message.record["message"]
+        and "type=knowledge_ingest" in message.record["message"]
+        and "RuntimeError: OCR publication failed" in str(message)
+        for message in messages
+    )
+
+
 async def test_process_task_uses_failure_hook_when_success_hook_cannot_load(monkeypatch):
     record = make_record(type="dataset_generation")
     repo = FakeRepo(record)

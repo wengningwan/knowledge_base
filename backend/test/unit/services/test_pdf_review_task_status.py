@@ -117,11 +117,20 @@ async def test_real_parse_failure_is_not_hidden_by_review_warning_handling(monke
                               index_file=AsyncMock())
     monkeypatch.setattr(service, "knowledge_base", backend)
     monkeypatch.setattr(service, "params_for_uploaded_document", lambda item, params: params)
-    with pytest.raises(RuntimeError, match="失败 1 个"):
-        await service.run_knowledge_ingest(context)
+    messages = []
+    sink_id = service.logger.add(lambda message: messages.append(message.record["message"]), level="ERROR")
+    try:
+        with pytest.raises(RuntimeError, match="失败 1 个"):
+            await service.run_knowledge_ingest(context)
+    finally:
+        service.logger.remove(sink_id)
     summary = context.set_result.await_args.args[0]
     assert summary["failed"] == 1 and summary["review_incomplete"] == 0
     assert "OCR publication failed" in summary["items"][0]["error"]
+    assert any(
+        "a.pdf" in message and "file_id=a" in message and "OCR publication failed" in message
+        for message in messages
+    )
     backend.index_file.assert_not_awaited()
 
 
