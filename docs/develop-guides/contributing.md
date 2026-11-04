@@ -9,7 +9,7 @@
 - 需求会改变架构、权限、持久化、运行生命周期、公开接口或模型可见输入时，先在 Issue 或 [Discussions](https://github.com/xerrors/Yuxi/discussions) 对齐方案，并建立 [工程决策记录](./decisions/README.md)。
 - 一个 PR 解决一个清楚的问题。无关的格式化、重构和“顺手优化”请另开 PR。
 
-修改不熟悉的模块前，先读 [ARCHITECTURE.md](https://github.com/xerrors/Yuxi/blob/main/ARCHITECTURE.md)，再从真实的路由、service、repository、Schema、Compose 和测试中定位实现。源码和可执行测试比旧文档、历史 PR 或自动生成 Wiki 更可靠。
+修改不熟悉的模块前，先读 [ARCHITECTURE.md](https://github.com/xerrors/Yuxi/blob/main/ARCHITECTURE.md)，再从真实的路由、service、repository、Schema、Compose 和实际运行结果中定位实现。源码和真实结果比旧文档、历史 PR 或自动生成 Wiki 更可靠。
 
 ## 1. Fork、同步和建分支
 
@@ -59,12 +59,12 @@ docker compose logs --tail=100 api
 - 权限在后端依赖和 repository 可见性查询处执行；前端守卫、prompt、schema omission 和隐藏按钮不是授权边界。
 - PostgreSQL 保存业务事实；Redis 只负责投递、短期事件、取消和缓存。LangGraph checkpoint 只使用 PostgreSQL。
 - 文件路径、沙盒虚拟路径、对象 URL 和宿主机路径不能混用；在真正产生副作用的 executor 或 repository 处做边界校验。
-- 修复 Bug 时先补一个能稳定复现原问题的回归测试，再改实现。
+- 修复 Bug 时记录可人工复现的问题、预期结果和验收步骤，再改实现。
 - 新增函数或类使用简洁中文 docstring；注释只说明时序、Owner、安全边界和调用义务。
 
 ### 后端
 
-后端代码位于 `backend/`。新增测试放在 `backend/test/unit`、`backend/test/integration` 或 `backend/test/e2e`，按测试实际依赖选择层级。测试分层、fixture 和 skip 规则见[测试规范](./testing-guidelines.md)。
+后端代码位于 `backend/`。项目不保留自动化测试，人工验证与静态检查遵循[验证规范](./testing-guidelines.md)。
 
 ### 前端
 
@@ -78,62 +78,38 @@ docker compose logs --tail=100 api
 
 不要为单次需求引入新的依赖、样式体系或抽象。确需新增依赖时，在 PR 中说明用途、替代方案和许可证影响。
 
-## 4. 检查和测试
+## 4. 检查和验证
 
-先跑与改动最相关的最小集合，再根据风险扩大：
+本机只修改代码和文档，不启动程序，不执行测试、构建或验证脚本。由用户在部署电脑核对真实流程、数据库/文件/对象结果与页面交互，记录明确预期和负向案例；具体观察边界见[验证规范](./testing-guidelines.md)。项目不保留自动化测试，只有用户明确要求时才恢复。
 
-| 改动 | 最低验证 |
-| --- | --- |
-| 纯 Python/JavaScript 逻辑 | 相关 unit，断言业务结果 |
-| API、权限或持久化 | 真实 HTTP integration |
-| Run、FIFO、SSE、沙盒、恢复或文件 | E2E，核对最终状态和产物 |
-| 前端交互 | lint、unit；重要行为再 build 和真实页面检查 |
-| 文档、导航或链接 | 相对链接检查、文档构建和 `git diff --check` |
-
-后端常用命令：
+保留的静态检查与构建命令：
 
 ```bash
-docker compose exec api uv run --group test pytest test/unit -m "not slow"
-docker compose exec api uv run --group test pytest test/integration
-docker compose exec api uv run --group test pytest test/e2e -m e2e
-```
-
-前端常用命令：
-
-```bash
-docker compose exec web pnpm run lint:check
-docker compose exec web pnpm run test:unit
+make lint
+python3 scripts/verify_engineering_contracts.py
 docker compose exec web pnpm run build
+git diff --check
 ```
 
-项目统一格式化命令会修改工作树，完成格式化后应重新查看 diff：
+统一格式化命令会修改工作树，执行后需重新审阅 diff：
 
 ```bash
 make format
 ```
 
-提交前至少运行仓库信任检查、其单元测试和后端 unit：
-
-```bash
-python3 scripts/verify_engineering_contracts.py
-python3 -m unittest scripts.test_verify_engineering_contracts
-docker compose exec api uv run --group test pytest test/unit -m "not slow"
-git diff --check
-```
-
-如果环境、凭证或外部服务导致某项检查无法执行，在 PR 中写明命令、原因、未验证范围和剩余风险。没有默认数据不是跳过测试的理由，应由 fixture 创建资源。测试“通过”也不能替代对数据库、文件、对象、DOM 或协议结果的回读。
+在 PR 中写明实际操作或命令、环境、观察结果、未验证范围和剩余风险。源码审查、构建成功或 HTTP 200 都不能单独证明业务运行正确。
 
 ## 5. 提交前 Review
 
-代码变更在 commit 前必须经过一个不继承当前开发上下文的独立 Reviewer。Reviewer 应读取完整需求、规范、完整 diff、相关源码、测试结果和未验证范围，重点检查：
+代码变更在 commit 前必须经过一个不继承当前开发上下文的独立 Reviewer。Reviewer 应读取完整需求、规范、完整 diff、相关源码、验证结果和未验证范围，重点检查：
 
-1. 主路径、边界、错误处理和回归测试是否完整；
-2. 路由、服务、仓储、前端 API 和测试是否位于正确边界；
+1. 主路径、边界、错误处理和人工验收步骤是否完整；
+2. 路由、服务、仓储和前端 API是否位于正确边界；
 3. 是否引入不必要的抽象、fallback、配置或维护表面；
 4. 权限、文件隔离、事务、Run ownership 和外部副作用是否闭合；
 5. 文档是否写对当前行为，oracle 是否独立，负向案例是否能让目标缺陷变红。
 
-发现影响功能、边界、证据可信度或认知负担的问题，先修正再提交。独立 Review 不能替代真实测试和最终事实回读。
+发现影响功能、边界、证据可信度或认知负担的问题，先修正再提交。独立 Review 不能替代真实运行验证和最终事实回读。
 
 ## 6. Commit 和 Pull Request
 
@@ -155,11 +131,11 @@ git diff
 
 PR 标题直接说明目标，正文说明背景、影响范围、验证命令和未验证风险。非平凡变更还要列出受影响主张、事实 Owner、决策记录、oracle、负向案例和观察边界；不要创建中央 claim ID 清单。
 
-- **Bug 修复**：说明触发步骤、错误表现、根因、回归测试、数据影响和未覆盖边界。
-- **新功能**：说明用户场景、目标、非目标、设计取舍、接口/配置/迁移影响和测试结果。
+- **Bug 修复**：说明触发步骤、错误表现、根因、人工复现与验收、数据影响和未覆盖边界。
+- **新功能**：说明用户场景、目标、非目标、设计取舍、接口/配置/迁移影响和验证结果。
 - **UI 改动**：附真实页面截图或录屏，覆盖关键状态和适用的浅色、暗色、响应式场景；没有截图就写明未完成视觉验证。
 
-Agent 创建 PR 前，先把拟提交的标题和完整正文展示给用户，得到明确确认后再创建。确认不代表跳过测试、敏感信息检查或 CI。
+Agent 创建 PR 前，先把拟提交的标题和完整正文展示给用户，得到明确确认后再创建。确认不代表跳过已约定的验证、敏感信息检查或 CI。
 
 PR 正文按创建方式选择模板：
 
@@ -173,7 +149,7 @@ PR 正文按创建方式选择模板：
 维护者在发布前定稿版本号、changelog 和升级说明。功能更新以最近的正式 tag 为基线，例如 0.7.3 使用 `v0.7.2..HEAD`；候选版本之间的修复归并到对应功能，不单独替代完整发布说明。
 
 1. 在已审查的提交上创建候选 tag，例如 `v0.7.3-rc.1`，显式推送该 tag。需要对外试用时创建 GitHub Release 并标记 Pre-release。
-2. 在 Actions 核对该 tag 的工程契约、后端单测、Ruff、Web、运行链路、依赖审计和文档构建结果；tag 检查覆盖完整范围。真实 provider 与生产备份恢复演练按[测试规范](./testing-guidelines.md)和[升级指南](../advanced/deployment.md)补充，记录未验证范围。
+2. 在 Actions 核对该 tag 的工程契约、Ruff、Web、工程契约、依赖审计和文档构建结果；tag 检查覆盖保留的静态与构建入口。真实 provider 与生产备份恢复演练按[验证规范](./testing-guidelines.md)和[升级指南](../advanced/deployment.md)补充，记录未验证范围。
 3. 修复产生新提交时创建下一个候选 tag；已推送的候选 tag 保留原指向。
 4. 最终候选通过后，在同一提交新增正式 tag，并发布正式 Release。Release 正文保留相对上一正式版本的完整功能更新及升级注意事项。应用 tag 触发检查，文档站只在 main 分支推送时部署。
 
@@ -196,14 +172,13 @@ CLI 使用 `packages/yuxi-cli/pyproject.toml` 中的独立版本。需要发布 
 
 ```bash
 python3 scripts/verify_engineering_contracts.py
-python3 -m unittest scripts.test_verify_engineering_contracts
 cd docs && pnpm run build
 git diff --check
 ```
 
 ## AI 辅助开发
 
-AI 可以帮助搜索、实现、测试和整理文档，但贡献者仍对最终代码、文档、安全性和验证结果负责。不要向不受信任的服务提供 `.env`、仓库 Secret、Token、用户数据或内部地址；AI 辅助贡献和人工贡献使用相同的 Review、测试和 PR 要求。
+AI 可以帮助搜索、实现、测试和整理文档，但贡献者仍对最终代码、文档、安全性和验证结果负责。不要向不受信任的服务提供 `.env`、仓库 Secret、Token、用户数据或内部地址；AI 辅助贡献和人工贡献使用相同的 Review、验证和 PR 要求。
 
 ## 获取帮助
 

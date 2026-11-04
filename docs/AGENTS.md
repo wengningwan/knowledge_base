@@ -6,19 +6,19 @@
 
 - 每个事实只有一个负责完整解释的 Owner；其他页面只保留完成当前任务需要的上下文并使用相对链接。先按[层级表](develop-guides/documentation-guidelines.md#信息架构与事实-owner)确定页面位置，再写内容。
 - `intro/` 拥有从零完成结果的教程，`advanced/` 拥有配置和运维参考，`agents/` 拥有 Agent 配置与扩展方法，`mechanisms/` 拥有运行机制、状态、权限、失败和源码定位。实质性混合内容必须拆页。
-- 当前系统边界和主链路属于仓库根 `ARCHITECTURE.md`；测试层级与命令属于[测试规范](develop-guides/testing-guidelines.md)；工程信任闭环属于[工程信任系统](develop-guides/engineering-trust.md)。不要在专题页复制这些完整规则。
+- 当前系统边界和主链路属于仓库根 `ARCHITECTURE.md`；人工验证职责与检查命令属于[验证规范](develop-guides/testing-guidelines.md)；工程信任闭环属于[工程信任系统](develop-guides/engineering-trust.md)。不要在专题页复制这些完整规则。
 - 非显然取舍属于 `develop-guides/decisions/`，达到门槛的事故因果属于 `develop-guides/postmortems/`，已发布事实属于 changelog，未完成方向属于 roadmap。`docs/vibe/` 只用于被忽略的本地临时计划。
-- 源码、schema、Compose、数据约束和测试拥有可执行事实；外部 Wiki、旧 changelog、历史 PR 和 Agent 自述只能帮助定位，不能覆盖当前 Owner。
+- 源码、schema、Compose、数据约束和真实运行结果拥有事实；外部 Wiki、旧 changelog、历史 PR 和 Agent 自述只能帮助定位，不能覆盖当前 Owner。
 
 ## Agent 写作流程
 
 1. 读取根与当前子树指令、`ARCHITECTURE.md`、owning 文档和相关源码；非平凡信息架构或长期约束变化先创建 tracked proposed decision。
 2. 写明预定读者、问题、前置知识、目标、非目标和页面类型。教程必须有顺序结果；参考必须有明确查找范围；实质性混合内容先拆分。
-3. 用符号搜索沿入口 → service/executor → repository/持久化或发布点 → 用户/模型结果重建真实链路，同时核对权限、失败路径、可选能力和相关测试。
+3. 用符号搜索沿入口 → service/executor → repository/持久化或发布点 → 用户/模型结果重建真实链路，同时核对权限、失败路径、可选能力和相关验证记录。
 4. 先列 Section 及每节唯一问题，按“概念 → 组件关系 → 状态/Owner → 权限/失败 → 源码定位”渐进；教程按完成任务所需的前置依赖排序。
 5. 一次最多撰写或重写一个 Section。完成后立即核对事实、相对链接、与相邻章节的重复及当前页面职责，再进入下一节。
 6. 先更新事实 Owner，再更新导航、索引和引用页。页面移动或拆分必须在同一变更中修复全部入站链接，不保留两个可独立编辑的副本。
-7. 提交前运行最小相关 gate，并由不继承开发上下文的全新 Reviewer 对照完整需求、源码、diff、测试和未验证范围审查。
+7. 提交前运行最小相关 gate，并由不继承开发上下文的全新 Reviewer 对照完整需求、源码、diff、验证证据和未验证范围审查。
 
 ## 写作与维护
 
@@ -38,12 +38,11 @@
 
 - 新增正式页面时更新 `.vitepress/config.mts` 的正确父级和阅读顺序；内部 `AGENTS.md`、decision 与 postmortem 不因位于 `docs/` 就自动成为用户导航入口。
 - `scripts/verify_engineering_contracts.py` 的 AGENTS 字符预算是 standing-order guardrail。超限时先下沉示例、背景和专题解释，再压缩重复；确需提高预算时同步更新 decision 和 gate，不能静默删掉必要约束或关闭检查。
-- 修改配置、API、状态、权限或机制说明时检查相关测试；文档构建只证明 Markdown、导航和链接有效，不证明语义正确。Reviewer 必须逐页对照当前源码、配置和风险相称的 oracle。
+- 修改配置、API、状态、权限或机制说明时核对相关人工验收证据；文档构建只证明 Markdown、导航和链接有效，不证明语义正确。Reviewer 必须逐页对照当前源码、配置和风险相称的 oracle。
 - 构建失败要修正文档、锚点或导航，不扩大 `ignoreDeadLinks` 掩盖问题。报告只写实际执行的命令、结果和未验证范围。
 
 ```bash
 python3 scripts/verify_engineering_contracts.py
-python3 -m unittest scripts.test_verify_engineering_contracts
 cd docs && pnpm run build
 git diff --check
 ```

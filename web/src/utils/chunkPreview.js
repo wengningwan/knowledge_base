@@ -93,6 +93,14 @@ export function describeChunkSource(chunk, source) {
     spans = [span]
   }
 
+  const previewContent = chunkPreviewContent(chunk)
+  if (previewContent !== chunk.content) {
+    // Paper 前缀的来源属于检索上下文，预览只定位实际展示的正文。
+    spans = spans.filter((span) =>
+      previewContent.includes(source.characters.slice(span.start_char, span.end_char).join('')))
+    if (!spans.length) return unavailable('unknown', '来源位置未知或无效')
+  }
+
   spans = spans.map(({ page, ...span }) => Number.isInteger(page) && page > 0 ? { ...span, page } : span)
   const ranges = [...new Set(spans.map((span) => span.line_start === span.line_end
     ? String(span.line_start) : `${span.line_start}–${span.line_end}`))]

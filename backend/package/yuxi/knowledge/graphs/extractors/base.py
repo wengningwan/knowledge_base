@@ -21,8 +21,7 @@ class GraphExtractor(ABC):
         return None
 
 
-# 与 knowledge_graph_entities / knowledge_graph_triples 的列长度对齐（见 storage/postgres/models_knowledge.py，
-# test/unit/graphs 里有一条用例断言它们一致，避免将来漂移）。
+# 与 knowledge_graph_entities / knowledge_graph_triples 的列长度对齐，见 storage/postgres/models_knowledge.py。
 #
 # 这几个值都由模型生成、本身没有长度上限。实测出现过把整段正文当成实体名（1672 字符），
 # 而 upsert_chunk_graph 是把一个分块的所有实体放进**一条多行 INSERT**：一个值超长，整批

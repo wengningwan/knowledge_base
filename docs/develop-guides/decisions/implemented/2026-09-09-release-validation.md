@@ -2,7 +2,9 @@
 
 状态：implemented
 类型：process
-Owner：.github/workflows/system-tests.yml
+Owner：.github/workflows/publish-yuxi-cli.yml
+
+测试与探针门禁由[移除项目自动化测试套件](2026-11-04-remove-project-test-suites.md)部分取代；候选 tag、CLI 独立发布及 Ruff 安装边界继续生效。本文的测试命令和结果保留历史证据含义。
 
 ## 问题
 

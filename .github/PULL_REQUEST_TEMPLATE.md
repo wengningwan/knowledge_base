@@ -29,7 +29,7 @@ Agent 创建 PR 时使用本默认模板。
 - 负向案例：
 - 结果：<Passed / Inspected / Not run / Inferred>
 
-涉及 Run、FIFO、SSE、沙盒、恢复或其他高风险 assembled path 时，请附 deterministic E2E 结果；真实 provider/browser 未执行时明确写 `Not run` 和风险。
+涉及 Run、FIFO、SSE、沙盒、恢复或其他高风险 assembled path 时，请附部署电脑上的人工操作、最终状态与产物证据；未执行时明确写 `Not run` 和风险。项目不保留自动化测试套件。
 
 ## 简化 / 删除验收
 
@@ -37,7 +37,7 @@ Agent 创建 PR 时使用本默认模板。
 
 ## 独立语义 Review
 
-请记录全新上下文 Reviewer 实际覆盖的需求、完整 diff 与测试范围、结论和未解决项；不粘贴推理流水账。Review 结论不能替代验证证据。
+请记录全新上下文 Reviewer 实际覆盖的需求、完整 diff 与验证范围、结论和未解决项；不粘贴推理流水账。Review 结论不能替代验证证据。
 
 ## 未验证范围与风险
 

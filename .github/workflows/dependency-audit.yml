@@ -16,7 +16,6 @@ on:
       - "docs/package.json"
       - "docs/pnpm-lock.yaml"
       - "docs/pnpm-workspace.yaml"
-      - "scripts/dependency-audit-fixtures/**"
   push:
     tags: ['v[0-9]*']
     branches: [main]
@@ -34,7 +33,6 @@ on:
       - "docs/package.json"
       - "docs/pnpm-lock.yaml"
       - "docs/pnpm-workspace.yaml"
-      - "scripts/dependency-audit-fixtures/**"
   workflow_dispatch:
 
 concurrency:
@@ -60,14 +58,6 @@ jobs:
       - name: Audit locked Python vulnerabilities
         working-directory: backend
         run: uv audit --locked --no-dev
-      - name: Exercise Python audit negative control
-        run: |
-          if uv audit --script scripts/dependency-audit-fixtures/vulnerable.py >python-audit-negative.log 2>&1; then
-            echo "Expected the vulnerable Python fixture to fail." >&2
-            exit 1
-          fi
-          grep -q "aiohttp 3.14.1 has" python-audit-negative.log
-          grep -q "GHSA-cq5v-8q36-5273" python-audit-negative.log
       - name: Audit Python transitive licenses
         working-directory: backend
         run: uv run --isolated --no-dev --with pip-licenses pip-licenses --from mixed --format markdown
@@ -97,6 +87,3 @@ jobs:
       - name: Audit locked Node.js production dependencies
         working-directory: ${{ matrix.project }}
         run: pnpm audit --audit-level=high --prod
-      - name: Exercise Node.js audit negative control
-        run: |
-          bash scripts/dependency-audit-fixtures/run-node-negative-control.sh

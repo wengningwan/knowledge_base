@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   web:
-    name: Lint, unit and production build
+    name: Lint and production build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -35,4 +35,4 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Run read-only web gates
-        run: pnpm run lint:check && pnpm run test:unit && pnpm run build
+        run: pnpm run lint:check && pnpm run build

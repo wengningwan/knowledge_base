@@ -36,8 +36,7 @@ cache
 *.bak
 *._*
 
-# test
-.pytest_cache
+# Local agent tooling
 .playwright
 .playwright-cli
 .playwright-mcp
@@ -54,7 +53,6 @@ cache
 .trae
 .codex
 .sisyphus
-.pytest_cache
 
 *.secret*
 *.nogit*

@@ -81,10 +81,8 @@ Viewer、附件和 artifact API 通过持久化 Workspace/Workdir 读取文件�
 - [Chatbot graph](https://github.com/xerrors/Yuxi/blob/main/backend/package/yuxi/agents/buildin/chatbot/graph.py)
 - [SubAgent graph](https://github.com/xerrors/Yuxi/blob/main/backend/package/yuxi/agents/buildin/subagent/graph.py)
 - [Memory middleware](https://github.com/xerrors/Yuxi/blob/main/backend/package/yuxi/agents/middlewares/memory.py)
-- [运行时上下文 unit](https://github.com/xerrors/Yuxi/tree/main/backend/test/unit/agents)
-- [Agent 主链路 E2E](https://github.com/xerrors/Yuxi/tree/main/backend/test/e2e)
 
-修改配置、权限、模型可见输入、文件作用域或恢复语义时，同时验证对应的 unit、integration 或 E2E，并回读最终 state、消息、文件或协议结果。
+修改配置、权限、模型可见输入、文件作用域或恢复语义时，由用户在部署电脑人工操作相关流程，并回读最终 state、消息、文件或协议结果。
 
 
 ## 线程阅读数据
@@ -95,4 +93,4 @@ Viewer、附件和 artifact API 通过持久化 Workspace/Workdir 读取文件�
 
 History 读取不改变已读标记。页面加载历史后以 `POST /api/chat/thread/{thread_id}/viewed` 显式标记已查看，并使用该操作返回的 Thread 更新侧栏。读取未知、已删除或其他用户的线程返回 404。多个查询遵循当前数据库事务隔离；响应不承诺跨 SQL 原子快照，运行中变化通过 SSE 与持久化重读收敛。
 
-接口契约由 `conversation_service` 装配、`ConversationRepository` 查询和前端 History consumers 共同拥有；真实 HTTP 测试回读 Run、消息和 PostgreSQL 已读标记，覆盖超过审计窗口的完整历史与用户隔离。取舍与兼容影响见 [前端优化](../develop-guides/decisions/archived/0.7.3/12-concurrency/2026-09-05-frontend-optimization.md)。
+接口契约由 `conversation_service` 装配、`ConversationRepository` 查询和前端 History consumers 共同拥有；人工验证通过真实 HTTP 操作回读 Run、消息和 PostgreSQL 已读标记，覆盖超过审计窗口的完整历史与用户隔离。取舍与兼容影响见 [前端优化](../develop-guides/decisions/archived/0.7.3/12-concurrency/2026-09-05-frontend-optimization.md)。

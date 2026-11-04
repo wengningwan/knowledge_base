@@ -1,6 +1,6 @@
 # Yuxi Spec Loop
 
-Yuxi Spec Loop 把非平凡工程请求从“实现建议”收敛为“可以被反证、审查和长期维护的仓库事实”。它复用现有语义 Owner、decision、测试、workflow 和独立 Review，不建立平行 notes、中央 claim ID 或手工状态清单。
+Yuxi Spec Loop 把非平凡工程请求从“实现建议”收敛为“可以被反证、审查和长期维护的仓库事实”。它复用现有语义 Owner、decision、验证证据、workflow 和独立 Review，不建立平行 notes、中央 claim ID 或手工状态清单。
 
 ## 适用范围
 
@@ -22,7 +22,7 @@ Yuxi Spec Loop 把非平凡工程请求从“实现建议”收敛为“可以�
 
 1. 根与子树 `AGENTS.md`、`ARCHITECTURE.md` 和安全不变量；
 2. 当前公开契约、真实 provider/registration/composition、持久化与用户入口；
-3. 可执行测试、workflow、构建产物和运行时探针；
+3. 实际验证记录、workflow、构建产物和运行时观察；
 4. active decision；
 5. history、archive、changelog 与 `docs/vibe/` 临时材料。
 
@@ -42,17 +42,17 @@ Yuxi Spec Loop 把非平凡工程请求从“实现建议”收敛为“可以�
 
 ### 4. Implement assembled path
 
-只实现验收所需的最小线性方案，并沿真实装配路径追踪 producer → registration → consumer → persistence/publication → user/model-visible result。同步更新真正拥有当前行为的文档、测试、fixture/snapshot/generated output 和 decision；不得以孤立 helper、mock 调用次数或未被 shipping composition 使用的实现宣告完成。
+只实现验收所需的最小线性方案，并沿真实装配路径追踪 producer → registration → consumer → persistence/publication → user/model-visible result。同步更新真正拥有当前行为的文档、验收步骤、必要的派生产物和 decision；不得以孤立 helper、mock 调用次数或未被 shipping composition 使用的实现宣告完成。
 
 ### 5. Verify
 
-先运行最小相关检查，再按风险升级到真实 PostgreSQL、HTTP、worker、SSE、对象/文件、浏览器或外部 provider。每个新 guard 必须有能恢复目标缺陷的负向案例；expected output 只能显式更新并 Review。完成结论需要回读数据库、文件、对象、DOM 或协议结果，不能只看 Agent 自述、HTTP 200、日志关键词或 workflow 绿色状态。
+先运行最小相关人工流程，再按风险扩大到真实 PostgreSQL、HTTP、worker、SSE、对象/文件、浏览器或外部 provider。每个新 guard 必须有能恢复目标缺陷的负向案例；预期结果必须显式记录并 Review。完成结论需要回读数据库、文件、对象、DOM 或协议结果，不能只看 Agent 自述、HTTP 200、日志关键词或 workflow 绿色状态。
 
-确定性 replay 与真实 provider probe 是互补证据：前者适合 PR 阻断并证明 shipping composition，后者校准外部漂移。缺少密钥或环境时写 `Not run`，不把 optional skip 计为产品通过。
+项目不保留自动化测试或专用探针套件。运行验证由用户在部署电脑操作；本机只修改代码文档与静态审阅。缺少环境或实际结果时写 `Not run`，不得生成未运行的测试来代替证据。
 
 ### 6. Independent review
 
-commit 前由不继承开发上下文的全新 Reviewer 读取完整需求、decision、完整 diff、实际测试结果和未验证范围。Reviewer 检查目标/非目标、Owner、oracle 独立性、负控、复杂度和当前文档，但不能替代直接证据。
+commit 前由不继承开发上下文的全新 Reviewer 读取完整需求、decision、完整 diff、实际验证结果和未验证范围。Reviewer 检查目标/非目标、Owner、oracle 独立性、负控、复杂度和当前文档，但不能替代直接证据。
 
 ### 7. Converge
 
@@ -60,7 +60,7 @@ commit 前由不继承开发上下文的全新 Reviewer 读取完整需求、dec
 
 ### 8. Learn
 
-达到 [postmortem 门槛](./postmortems/README.md) 的高影响逃逸缺陷，必须留下 reproducer、因果链、安全网漏过原因和更早的拒绝机制。普通缺陷仍需要风险相称的回归测试，但不制造事故文档。
+达到 [postmortem 门槛](./postmortems/README.md) 的高影响逃逸缺陷，必须留下 reproducer、因果链、安全网漏过原因和更早的拒绝机制。普通缺陷仍需要风险相称的人工复现与验证证据，但不制造事故文档。
 
 ## Simplification / deletion 闭环
 
@@ -71,14 +71,14 @@ commit 前由不继承开发上下文的全新 Reviewer 读取完整需求、dec
 - runtime consumer、provider registration、export/import 与调用入口；
 - 配置、环境变量、manifest、generated catalog 和 capability discovery；
 - durable/wire schema、migration、兼容承诺和部署脚本；
-- tests、fixture/snapshot、示例、正式文档和依赖声明。
+- 历史验证材料、示例、正式文档和依赖声明。
 
 提案的验收矩阵必须包含“旧能力不存在”的负向搜索，并明确重新引入条件。若以依赖为“简化”理由，结果必须净删除 Yuxi 自有实现或维护表面；若依赖实际新增能力，应改为独立 `feature` 决策。公开 API、持久数据、部署脚本和真实用户都算 consumer，不能因代码搜索为空就假设可删除。
 
 ## 各材料的职责
 
 - [工程信任系统](./engineering-trust.md) 定义 Owner、oracle、gate 与证据等级。
-- [测试规范](./testing-guidelines.md) 拥有测试分层和运行命令。
+- [验证规范](./testing-guidelines.md) 拥有人工验证职责、保留的检查命令与证据规则。
 - [工程决策记录](./decisions/README.md) 保存问题、决定、替代、后果与验证。
 - [事故复盘](./postmortems/README.md) 只保存达到门槛的逃逸事故及其防复发机制。
 - PR 描述记录本次变更实际执行的命令、结果、Reviewer 结论与未验证范围。

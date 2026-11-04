@@ -6,7 +6,7 @@ Yuxi 把 Agent 或开发者提交的实现视为待证伪候选。完成状态�
 
 ## 权威模型：主张在语义 Owner 处闭合
 
-Yuxi 不维护可独立编辑的中央 risk/claim inventory，也不要求 claim ID。中央清单会复制源码、数据约束、测试和 workflow 已经拥有的事实，最终形成需要人工同步的第二真相。
+Yuxi 不维护可独立编辑的中央 risk/claim inventory，也不要求 claim ID。中央清单会复制源码、数据约束、验证记录和 workflow 已经拥有的事实，最终形成需要人工同步的第二真相。
 
 一个重要工程主张由最接近行为的语义 Owner 拥有，并在该 Owner 周围形成可追踪闭环：
 
@@ -14,8 +14,8 @@ Yuxi 不维护可独立编辑的中央 risk/claim inventory，也不要求 claim
 |---|---|
 | 意图与外部结果 | owning 用户/协议文档、API 契约或决策记录中的问题与决定 |
 | 状态与副作用 | 实际写入代码、repository、数据约束及明确的 commit/publication 边界 |
-| 独立 oracle | 最接近风险、且与实现具有不同失败方式的 unit、integration、E2E、replay 或真实探针 |
-| 负向案例 | 恢复目标缺陷或制造非法状态后会因正确原因失败的测试 |
+| 独立 oracle | 最接近风险、且有独立预期的人工操作、最终状态回读或真实探针 |
+| 负向案例 | 可人工复现目标缺陷或非法状态，并核对实际拒绝原因 |
 | 执行后果 | 实际选择该 oracle 的阻断 workflow，或对语义取舍负责的 Reviewer |
 | 理由与代价 | 对应的 tracked decision record；当前行为仍以语义 Owner 为准 |
 
@@ -29,20 +29,18 @@ Yuxi 不维护可独立编辑的中央 risk/claim inventory，也不要求 claim
 python3 scripts/verify_engineering_contracts.py --report
 ```
 
-该输出由仓库事实重新生成，不提交、不手工编辑，也不反向定义事实。删除投影后应能从同一代码、测试、decision 和 workflow 得到相同结果。Verifier 只证明引用、接线和部分边界检查真实存在；router/web 边界检查只覆盖静态可判部分，service 层事务、锁与 lease 语义仍由真实 PostgreSQL integration 证明。它也不判断目标是否值得、测试断言是否正确、oracle 是否真正独立、远端是否把检查设为 required，或某个 diff 是否被错误归类为 trivial。这些语义仍由 Reviewer 结合真实系统证据裁决。
+该输出由仓库事实重新生成，不提交、不手工编辑，也不反向定义事实。删除投影后应能从同一代码、decision 和 workflow 得到相同结果。Verifier 只证明引用、接线和部分边界检查真实存在；router/web 边界检查只覆盖静态可判部分，service 层事务、锁与 lease 语义仍由部署环境中真实 PostgreSQL 操作与状态回读证明。它也不判断目标是否值得、验收预期是否正确、oracle 是否真正独立、远端是否把检查设为 required，或某个 diff 是否被错误归类为 trivial。这些语义仍由 Reviewer 结合真实系统证据裁决。
 
 ## 证据等级
 
 | 证据 | 证明什么 | 不能替代什么 |
 |---|---|---|
-| Unit | 纯逻辑、边界值、状态转换和失败分支 | PostgreSQL、Redis、HTTP、worker 或浏览器真实语义 |
-| Integration | 真实 API、认证、事务、锁和服务副作用 | 完整用户/模型 journey 与外部 provider 漂移 |
-| E2E | Compose 中的 shipping entry、worker、SSE、文件/对象和最终业务结果 | 每个局部分支与确定性故障注入 |
-| Deterministic replay | 不依赖真实 provider 的 assembled-path 回归 | 实时模型/provider 行为 |
-| Real probe | 外部模型、浏览器或部署实例的现实校准 | 低噪声、每 PR 都可执行的阻塞 gate |
-| Semantic Review | 目标、取舍、oracle 独立性和 expected-output 语义 | 可机械判断的格式、引用、选择器和构建错误 |
+| 静态检查 | 引用、部分架构边界、代码风格和构建配置 | 真实 HTTP、数据库、worker 或浏览器语义 |
+| 人工链路验证 | 实际操作、最终状态、文件/对象与页面结果 | 未执行的边界、并发和外部服务场景 |
+| 真实 provider 操作 | 模型或外部服务的现实行为 | 所有供应商、配额或故障场景 |
+| 独立语义 Review | 目标、取舍、Owner、复杂度和证据可信度 | 程序运行与最终事实回读 |
 
-每个 guard 都要证明目标缺陷会让它变红。Snapshot、fixture 和 expected output 只能显式更新，CI 只读验证。随机/并发测试失败必须保留可重放输入、seed 或数据库事实，不能用重试掩盖。
+项目不保留自动化测试套件。每个 guard 记录可人工复现的负向案例和预期拒绝原因。预期结果由 Reviewer 独立核对；缺少运行证据时写 Not run，不把静态审查或一次完成提示当作业务通过。历史测试结果的适用边界见[验证规范](./testing-guidelines.md)。
 
 ## 决策记忆
 
@@ -54,12 +52,11 @@ python3 scripts/verify_engineering_contracts.py --report
 
 ```bash
 python3 scripts/verify_engineering_contracts.py
-python3 -m unittest scripts.test_verify_engineering_contracts
 ```
 
-Gate 必须只读、失败可诊断、拥有明确 Owner，并保持有限延迟。低成本只读检查（`trust.yml`）在每个 PR 无条件阻塞；真实 Compose integration/E2E（`system-tests.yml` 等按路径触发）只在匹配高风险范围时运行。高风险 Agent 主链路使用无外部密钥的 deterministic assembled-path E2E 阻断，`real-provider-probe.yml` 手工探针负责外部 provider 校准；两者不能互相冒充。Workflow、selector、skip 或 expected-output 更新都按生产代码审查；长期 flake、误报、绕过或无 consumer 的 gate 应及时修复或退役，禁止用新增规则掩盖既有缺陷。
+Gate 必须只读、失败可诊断、拥有明确 Owner，并保持有限延迟。`trust.yml` 保留每个 PR 的静态工程契约检查，Web workflow 保留 lint 与构建，供应链审计及发布 workflow 保留各自职责。专用测试 workflow 与负控套件已移除；真实 HTTP、worker、外部 provider 和浏览器行为由用户在部署电脑人工验证并回读结果。Workflow 和验收预期的更新仍按生产代码审查。
 
-运行时当前事实属于 `ARCHITECTURE.md`、对应代码 Owner 与测试；本页不复制 readiness、Run 或 checkpoint 契约。相关非显然取舍保存在 [工程决策记录](./decisions/README.md) 的聚焦 implemented records 中，审计时从这些局部 Owner 派生，不维护另一份手工状态表。
+运行时当前事实属于 `ARCHITECTURE.md`、对应代码 Owner 与真实运行结果；本页不复制 readiness、Run 或 checkpoint 契约。相关非显然取舍保存在 [工程决策记录](./decisions/README.md) 的聚焦 implemented records 中，审计时从这些局部 Owner 派生，不维护另一份手工状态表。
 
 ## 事故反馈
 

@@ -31,7 +31,7 @@ provisioner 支持：
 | --- | --- | --- |
 | `docker` | 开发和单机部署的默认后端 | 为每个运行时创建独立容器和网络 |
 | `kubernetes` | 将沙盒 Pod 交给目标集群承载 | 取决于集群、Pod 和网络安全策略 |
-| `memory` | unit 测试和占位测试 | 不创建真实隔离环境 |
+| `memory` | 内存占位与协议演示 | 不创建真实隔离环境 |
 
 生产环境不要使用 `memory`。切换后端只改变动态沙盒的承载位置，API 和 worker 仍通过同一个认证的 provisioner 代理访问。
 
@@ -58,7 +58,7 @@ Compose 中的 `sandbox-provisioner` 使用以下变量：
 
 | 变量 | 作用 | Compose 默认值 |
 | --- | --- | --- |
-| `PROVISIONER_BACKEND` | `docker`、`kubernetes` 或测试用 `memory` | `docker` |
+| `PROVISIONER_BACKEND` | `docker`、`kubernetes` 或内存占位用 `memory` | `docker` |
 | `PROVISIONER_PUBLIC_URL` | 返回给 API/worker 的代理基地址 | `http://sandbox-provisioner:8002` |
 | `SANDBOX_IMAGE` | 动态沙盒镜像 | AIO Sandbox `1.11.0` |
 | `SANDBOX_RUNTIME_PROFILE` | 动态沙盒启用的服务规格 | `core` |

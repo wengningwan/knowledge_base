@@ -90,7 +90,7 @@ AgentRun 另行持久保存服务端权威时间点，用于历史诊断；它�
 
 移除取消 Pub/Sub 前，同一默认配置的 100 并发基线观察到 Redis 136 个客户端连接，其中 100 个是 Pub/Sub；移除后峰值为 36/0。延迟仍落在此前三轮 100 并发的范围内：准备 p95 4.34–5.60 秒、首 Token p95 57.30–61.44 秒、整体 p95 113.32–116.19 秒。专用实时取消探针在 Run 进入 `running` 后发起取消，235ms 收敛到同一 Run 的 PostgreSQL `cancelled` 终态。
 
-测试结束后 `/api/system/ready` 为 200，单 worker healthy，动态 Sandbox 容器和网络均归零。取消相关 unit、真实 HTTP integration、实时取消探针和完整并发链路均已通过；尚未执行 Redis 故障注入或 1000 并发测试。
+该轮历史验证结束后 `/api/system/ready` 为 200，单 worker healthy，动态 Sandbox 容器和网络均归零。当时的取消 unit、真实 HTTP integration、实时取消探针和完整并发链路记录为通过；相关自动化套件已移除，这些记录不表示当前代码已验证。Redis 故障注入和 1000 并发场景没有执行记录。
 
 ## 调整容量
 
@@ -114,15 +114,6 @@ docker compose up -d --force-recreate --scale worker=1 worker
 curl --fail http://localhost:5050/api/system/ready
 ```
 
-随后从小档位渐进到目标并发：
+随后由用户在隔离部署环境从小档位渐进到目标并发，记录每档的请求、输出与资源观察结果。历史性能工具随测试套件清理，仓库不再提供该压测命令。
 
-```bash
-python -m backend.test.performance load \
-  --base-url http://localhost:5050 \
-  --scenario sandbox \
-  --concurrency 1,10,20,50,100 \
-  --task-seconds 20 \
-  --collect-local-resources
-```
-
-通过条件包括所有 Request/Run 因果标识一致、SSE 工具生命周期完整、PostgreSQL 权威终态正确、readiness 最终恢复，并且 ARQ、Sandbox 容器和动态网络均已清理。脚本退出码或 HTTP 200 只能作为辅助信号。压测工具的协议和输出字段见 `backend/test/performance/load.py`。
+通过条件包括所有 Request/Run 因果标识一致、SSE 工具生命周期完整、PostgreSQL 权威终态正确、readiness 最终恢复，并且 ARQ、Sandbox 容器和动态网络均已清理。脚本退出码或 HTTP 200 只能作为辅助信号。人工验证步骤与证据要求见[验证规范](../develop-guides/testing-guidelines.md)。

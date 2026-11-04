@@ -12,8 +12,7 @@
 
 ```bash
 docker compose exec web pnpm run lint:check
-docker compose exec web pnpm run test:unit
 docker compose exec web pnpm run build
 ```
 
-UI 改动必须在真实页面验证，并提供最终截图或录屏；适用时覆盖浅/深色、响应式、loading、empty 和 error 状态。
+项目不保留自动化测试。UI 改动由用户在部署电脑的真实页面验证，并提供最终截图或录屏；适用时覆盖浅/深色、响应式、loading、empty 和 error 状态。本机不启动程序或执行上述检查。

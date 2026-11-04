@@ -1,6 +1,6 @@
 # ARCHITECTURE.md
 
-本文档是 Yuxi 的代码地图，只描述相对稳定的系统边界、目录职责、核心运行链路和架构不变量。它用于帮助贡献者判断“一个改动应该落在哪里”，不替代具体模块文档、测试规范或源码注释。
+本文档是 Yuxi 的代码地图，只描述相对稳定的系统边界、目录职责、核心运行链路和架构不变量。它用于帮助贡献者判断“一个改动应该落在哪里”，不替代具体模块文档、验证规范或源码注释。
 
 修改不熟悉的模块前，先阅读对应章节，再使用符号搜索定位具体类型、函数和路由。开发与运行拓扑始终以 `docker-compose.yml` 为准。
 
@@ -13,7 +13,7 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 核心开发服务包括：
 
 - `web`：Vue 3 / Vite 前端，挂载 `web/src` 并热重载。
-- `api`：FastAPI API 服务，挂载 `backend/server`、`backend/package` 和测试目录并热重载。
+- `api`：FastAPI API 服务，挂载 `backend/server`、`backend/package` 并热重载。
 - `worker`：ARQ worker，执行已经派发的 AgentRun 与注册的 Durable Task，并周期触发用户自建 Agent 定时任务；三者分别使用 PostgreSQL 中的运行租约、任务租约和调度锁闭合并发与恢复。
 - `storage-migrator`：Compose 中唯一修改 Yuxi 数据库 Schema 的一次性迁移进程，同时处理受支持的历史存储切换；API 与 worker 等待其成功后只校验 Schema 版本。
 - `sandbox-provisioner`：为智能体工具执行提供隔离沙盒。
@@ -60,7 +60,7 @@ Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowl
 - 用户定时 Agent：任务定义和 occurrence 独立持久化；worker 锁定到期任务后复用统一 AgentRun Request/Run 链路，排队与执行状态仍由 AgentRunRequest 和 AgentRun 拥有。
 - Durable Task：用于知识库解析、评估和图谱构建。API 只提交持久 `task_type + handler_version + payload`；`worker` 从 registry 惰性加载领域 Handler，并通过 Task 行的唯一 owner、heartbeat 和 lease 执行。知识文件中间态绑定 Task/attempt owner，失联 failure hook 与 Task 终态同事务收敛文件错误态；PG pending 行由启动与周期 publisher 补发。共享 ARQ worker 的执行槽由 Compose 配置，Durable Task 的 PG claim 上限为 4，不能占满 AgentRun 容量。
 
-测试代码位于 `backend/test`，按 `unit`、`integration`、`e2e` 分层。新增或修改后端行为时，测试应放在最能覆盖真实风险的层级。
+项目不保留第一方自动化测试套件。变更的人工验证与静态检查遵循[验证规范](docs/develop-guides/testing-guidelines.md)，最终事实由真实运行结果回读确认。
 
 ## 前端代码地图
 
@@ -102,7 +102,7 @@ Yuxi 只交付完整知识能力路径。API 始终注册 `external_kb`、`knowl
 - PostgreSQL 保存业务事实状态；Redis 承担投递、事件、取消和缓存，不作为 AgentRun 最终状态的唯一来源。
 - `pending` Run 是持久化投递意图；`running` / `cancel_requested` Run 必须由唯一 attempt lease 拥有。Heartbeat 只能由当前 owner 续租，终态或 retry publication 清除 lease，过期 ownership 不能被另一个执行者静默接管。
 - Run 结果以 `output_message_id` 指向的同 Run assistant 消息为权威；只有历史 `completed` Run 可在缺少指针时兼容读取同 conversation、相同 `run_id` 的 assistant 消息，禁止从未完成或相邻 Run 猜测输出。
-- `/api/system/health` 只表达 API 进程 liveness；Compose 以 `/api/system/ready` 判断启动完成、PostgreSQL/Redis 可用且存在完成启动的兼容 worker。worker 同时续租短 TTL ARQ 消费健康、AgentRun lease reconciliation 与 Durable Task reconciliation 成功事实；持久 key、超长 TTL、错误 Redis DSN 或持续无法收敛失联执行都不能维持 readiness。业务正确性仍由真实链路测试证明。
+- `/api/system/health` 只表达 API 进程 liveness；Compose 以 `/api/system/ready` 判断启动完成、PostgreSQL/Redis 可用且存在完成启动的兼容 worker。worker 同时续租短 TTL ARQ 消费健康、AgentRun lease reconciliation 与 Durable Task reconciliation 成功事实；持久 key、超长 TTL、错误 Redis DSN 或持续无法收敛失联执行都不能维持 readiness。业务正确性仍由真实链路人工操作与结果回读证明。
 - Yuxi 数据库 Schema 只由 `storage-migrator` 在 PostgreSQL advisory lock 内修改并记录 business/knowledge 域版本；API 与 worker 不建表或执行收敛 DDL，并在任一域版本缺失、过旧或过新时拒绝启动。
 - 内置 Skills 是默认 Agent shipping contract 的 required 组成，API/worker 通过 PostgreSQL advisory lock 串行同步；内置 MCP 定义是 optional，但失败必须形成可观测 degraded 而非被组件内部吞掉。
 - 跨 repository 的身份管理用例只有一个 service 事务 Owner；Department、User 与强制 OperationLog 同一提交。API Key 由独立服务端主密钥和客户端幂等 ID 确定性派生，只保存 hash；原始创建意图使用不可变指纹校验，撤销保留 request-id tombstone，同一请求可恢复响应但不能复活已撤销凭据。

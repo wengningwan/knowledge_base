@@ -27,14 +27,14 @@ JSONL 每行一题，包含以下字段：
 
 题目及原文范围独立于 chunk 编号。改变分块策略不更新金标准；修改原文后需人工复核题目和证据，命令会拒绝未知原文指纹。问题应至少覆盖公式变量及单位、同一样品的条件与结果、图注、表格表头。模型可以辅助起草，人工审核后再冻结为验收题。
 
-仓库的 [合成论文](https://github.com/xerrors/Yuxi/blob/main/backend/test/fixtures/paper_chunking/paper.md) 和 [四道固定题](https://github.com/xerrors/Yuxi/blob/main/backend/test/fixtures/paper_chunking/questions.jsonl) 使用虚构数据验证软件链路；它们不代表真实化学论文的质量验收。正式论文及测试结果保存在部署数据目录，不提交仓库。
+人工验收使用隔离环境中的虚构样本或获准使用的正式论文，分别核对软件链路与真实论文质量。历史合成测试样本已随测试套件移除；正式论文及评估结果保存在部署数据目录，不提交仓库。
 
 ## 执行对照
 
-先将合成论文分别上传到两个测试知识库并完成对应策略的索引，用真实知识库 ID 替换下面的占位值：
+先将获准使用的论文分别上传到两个隔离知识库并完成对应策略的索引，将人工审核后的问题 JSONL 放到容器可读取的位置，用真实文件路径与知识库 ID 替换下面的占位值：
 
 ```bash
-docker compose exec api uv run python -m yuxi.knowledge.eval.chunking_comparison --cases test/fixtures/paper_chunking/questions.jsonl --variant separator=kb_separator --variant paper=kb_paper --answer-model provider:model-id --output /tmp/chunking-comparison.json
+docker compose exec api uv run python -m yuxi.knowledge.eval.chunking_comparison --cases /app/runtime/evaluation/questions.jsonl --variant separator=kb_separator --variant paper=kb_paper --answer-model provider:model-id --output /tmp/chunking-comparison.json
 ```
 
 省略 `--answer-model` 只检查真实检索结果，答案状态保存为 `not_run`。真实模型报错、来源缺失或配置不一致时命令失败；不把空输出当作通过。命令只创建新报告文件，已有文件不会被覆盖。
@@ -53,11 +53,4 @@ docker compose exec api uv run python -m yuxi.knowledge.eval.chunking_comparison
 
 ## 部署后回归
 
-在有真实底座的部署中执行相关 PostgreSQL/HTTP integration 和论文入库 E2E，再检查真实页面的长片段展开、来源窗口、重复块、未知来源、暗色和窄屏。E2E 使用独立测试资源和真实 Embedding 模型，具体环境参数由测试源码维护；命令见[测试规范](../develop-guides/testing-guidelines.md)。离线切分与 Web unit 结果不能替代这些验证。
-
-```bash
-docker compose exec api uv run --group test pytest test/integration/services/test_schema_migration_version.py
-docker compose exec -e TEST_PAPER_EMBEDDING_MODEL_SPEC=provider:embedding-model api uv run --group test pytest test/e2e/test_paper_ingestion_e2e.py -m e2e
-```
-
-E2E 还需按测试规范配置测试管理员身份。缺少测试身份或真实 Embedding 时的 skip 表示未验证，不能计为产品通过。
+由用户在有真实 PostgreSQL、对象存储和 Embedding 模型的隔离部署中人工上传、索引、检索并核对报告，回读分块和来源结果，再检查真实页面的长片段展开、来源窗口、重复块、未知来源、暗色和窄屏。操作后清理自己创建的评估资源；缺少环境、身份或真实模型时记为未验证，具体证据要求见[验证规范](../develop-guides/testing-guidelines.md)。

@@ -27,13 +27,11 @@ API 和 Web 默认支持热重载；完整服务拓扑以 `docker-compose.yml` �
 
 ```bash
 make lint
-make test
 python3 scripts/verify_engineering_contracts.py
-python3 -m unittest scripts.test_verify_engineering_contracts
 git diff --check
 ```
 
-涉及 API、数据库、worker、SSE、沙盒、对象或浏览器时，按[测试规范](docs/develop-guides/testing-guidelines.md)补充真实 integration 或 E2E。未执行的检查要在 PR 中说明原因，不要把未验证写成通过。
+项目不保留自动化测试。涉及 API、数据库、worker、SSE、沙盒、对象或浏览器时，按[验证规范](docs/develop-guides/testing-guidelines.md)在部署电脑人工核对真实流程与最终结果。本机只修改代码文档；未执行的检查在 PR 中说明原因，不把未验证写成通过。
 
 ## Pull Request
 

@@ -66,7 +66,61 @@ export function reviewComparison(record) {
   return { before, after: null, label: '', kind: 'none' }
 }
 
-/** 按 Unicode 字符对照差异；大范围变化整体突出以限制比较开销。 */
+/** 双向搜索最短编辑路径的交点，长文本只保留线性大小的搜索前沿。 */
+function splitReviewText(a, b) {
+  const characters = new Set(a)
+  if (!b.some((char) => characters.has(char))) return null
+
+  const depth = Math.ceil((a.length + b.length) / 2)
+  const offset = depth + 1
+  const forward = new Int32Array(2 * depth + 3).fill(-1)
+  const reverse = new Int32Array(2 * depth + 3).fill(-1)
+  forward[offset + 1] = reverse[offset + 1] = 0
+  const delta = a.length - b.length
+  const odd = delta % 2 !== 0
+  let forwardStart = 0
+  let forwardEnd = 0
+  let reverseStart = 0
+  let reverseEnd = 0
+  for (let d = 0; d < depth; d++) {
+    for (let k = -d + forwardStart; k <= d - forwardEnd; k += 2) {
+      const index = offset + k
+      let x = k === -d || (k !== d && forward[index - 1] < forward[index + 1])
+        ? forward[index + 1] : forward[index - 1] + 1
+      let y = x - k
+      while (x < a.length && y < b.length && a[x] === b[y]) { x++; y++ }
+      forward[index] = x
+      if (x > a.length) forwardEnd += 2
+      else if (y > b.length) forwardStart += 2
+      else if (odd) {
+        const opposite = offset + delta - k
+        if (opposite >= 0 && opposite < reverse.length && reverse[opposite] !== -1 &&
+          x >= a.length - reverse[opposite]) return [x, y]
+      }
+    }
+    for (let k = -d + reverseStart; k <= d - reverseEnd; k += 2) {
+      const index = offset + k
+      let x = k === -d || (k !== d && reverse[index - 1] < reverse[index + 1])
+        ? reverse[index + 1] : reverse[index - 1] + 1
+      let y = x - k
+      while (x < a.length && y < b.length && a[a.length - x - 1] === b[b.length - y - 1]) { x++; y++ }
+      reverse[index] = x
+      if (x > a.length) reverseEnd += 2
+      else if (y > b.length) reverseStart += 2
+      else if (!odd) {
+        const opposite = offset + delta - k
+        if (opposite >= 0 && opposite < forward.length && forward[opposite] !== -1 &&
+          forward[opposite] >= a.length - x) {
+          const split = forward[opposite]
+          return [split, split - (delta - k)]
+        }
+      }
+    }
+  }
+  return null
+}
+
+/** 按 Unicode 字符精确对照差异，长文本拆分后继续保留内部共同文字。 */
 export function diffReviewText(before, after) {
   const left = Array.from(before)
   const right = Array.from(after)
@@ -85,10 +139,19 @@ export function diffReviewText(before, after) {
     else parts.push({ type, text })
   }
   append('equal', left.slice(0, start).join(''))
-  const coarse = (a.length + 1) * (b.length + 1) > 250000
-  if (coarse) {
+  if (!a.length || !b.length) {
     append('delete', a.join(''))
     append('insert', b.join(''))
+  } else if ((a.length + 1) * (b.length + 1) > 250000) {
+    const split = splitReviewText(a, b)
+    if (split) {
+      const [x, y] = split
+      for (const part of diffReviewText(a.slice(0, x).join(''), b.slice(0, y).join('')).parts) append(part.type, part.text)
+      for (const part of diffReviewText(a.slice(x).join(''), b.slice(y).join('')).parts) append(part.type, part.text)
+    } else {
+      append('delete', a.join(''))
+      append('insert', b.join(''))
+    }
   } else {
     const width = b.length + 1
     const lengths = new Uint32Array((a.length + 1) * width)
@@ -110,7 +173,7 @@ export function diffReviewText(before, after) {
     }
   }
   append('equal', end ? left.slice(left.length - end).join('') : '')
-  return { parts, coarse }
+  return { parts }
 }
 
 /** 缩略共同上下文，差异字符完整保留，全文由调用者按需展开。 */

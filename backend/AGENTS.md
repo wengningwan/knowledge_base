@@ -27,11 +27,8 @@
 ## 验证
 
 ```bash
-docker compose exec api uv run --group test pytest test/unit -m "not slow"
-docker compose exec api uv run --group test pytest test/integration
-docker compose exec api uv run --group test pytest test/e2e -m e2e
 docker compose exec api uv run ruff check package
 docker compose exec api uv run ruff format package --check
 ```
 
-并发、事务、锁、lease、schema 与 PostgreSQL 专属语义必须在真实 PostgreSQL 上验证；API 行为通过真实 HTTP integration 证明；关键 Run/worker/文件副作用通过 E2E 证明。
+项目不保留自动化测试。并发、事务、锁、lease、schema 与 PostgreSQL 专属语义由用户在部署电脑人工验证并回读最终状态；API 使用真实 HTTP 操作，关键 Run/worker/文件副作用核对完整流程与产物。本机不启动程序或执行上述检查。

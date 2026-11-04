@@ -112,7 +112,7 @@ export default defineConfig({
         text: '开发指南',
         items: [
           { text: '参与贡献', link: '/develop-guides/contributing' },
-          { text: '测试规范', link: '/develop-guides/testing-guidelines' },
+          { text: '验证规范', link: '/develop-guides/testing-guidelines' },
           { text: 'Yuxi Spec Loop', link: '/develop-guides/spec-loop' },
           { text: '工程信任系统', link: '/develop-guides/engineering-trust' },
           { text: '并行 worktree 环境', link: '/develop-guides/parallel-worktree-environments' },

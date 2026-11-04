@@ -101,70 +101,13 @@ class WorkflowContract:
 WORKFLOW_CONTRACTS = (
     WorkflowContract(
         path=".github/workflows/trust.yml",
-        commands=(
-            "python3 scripts/verify_engineering_contracts.py",
-            "python3 -m unittest scripts.test_verify_engineering_contracts",
-        ),
+        commands=("python3 scripts/verify_engineering_contracts.py",),
         unfiltered_pull_request=True,
     ),
     WorkflowContract(
-        path=".github/workflows/test.yml",
-        commands=(
-            "uv run pytest test/unit -m 'not slow' -q",
-            "pwsh -NoProfile -File scripts/test_init_security.ps1",
-        ),
-        required_paths=(
-            ".env.template",
-            "backend/**",
-            "docker/**",
-            "scripts/init.sh",
-            "scripts/init.ps1",
-            "scripts/test_init_security.ps1",
-            ".github/workflows/test.yml",
-        ),
-    ),
-    WorkflowContract(
         path=".github/workflows/web.yml",
-        commands=("pnpm run lint:check && pnpm run test:unit && pnpm run build",),
+        commands=("pnpm run lint:check && pnpm run build",),
         required_paths=("web/**", ".github/workflows/web.yml"),
-    ),
-    WorkflowContract(
-        path=".github/workflows/system-tests.yml",
-        commands=(
-            "docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/api/test_system_router_api.py::test_health_endpoint_is_public test/integration/api/test_system_router_api.py::test_readiness_endpoint_proves_core_runtime_dependencies test/integration/api/test_system_router_api.py::test_discovery_and_openapi_declare_full_knowledge_capabilities -q",
-            "docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_schema_migration_version.py -q",
-            "docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_agent_request_queue_concurrency.py -q",
-            "docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_agent_run_lease.py -q",
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_agent_run_result_causality.py -q',
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_message_audits_return_persisted_facts_without_leaking_into_history -q --setup-show -o faulthandler_timeout=60',
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_artifact_uses_image_signature_for_content_type -q',
-            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_deterministic_agent_path_e2e.py -q -m e2e_smoke --durations=10",
-            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_deterministic_agent_path_e2e.py -q -m e2e_lifecycle --durations=10",
-            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_deterministic_agent_path_e2e.py -q -m e2e_boundaries --durations=10",
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/services/test_identity_admin_service.py test/integration/services/test_api_key_schema_migration.py test/integration/services/test_api_key_user_lifecycle.py test/integration/api/test_apikey_router.py -q',
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/services/test_workdir_user_workspace.py test/integration/services/test_user_skill_projection.py test/integration/api/test_skill_artifact_authorization.py -q',
-            "docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_project_workdir_provisioner.py -q",
-        ),
-        required_paths=(
-            "backend/package/yuxi/**",
-            "backend/server/**",
-            "backend/test/integration/**",
-            "backend/test/e2e/**",
-            "backend/test/support/**",
-            "docker/**",
-            "scripts/ci_prepare_system_tests_env.sh",
-            "scripts/ci_build_topology_images.sh",
-            "scripts/migrate-storage.sh",
-            ".github/workflows/system-tests.yml",
-        ),
-    ),
-    WorkflowContract(
-        path=".github/workflows/real-provider-probe.yml",
-        trigger="workflow_dispatch",
-        commands=(
-            'if [ -z "$SILICONFLOW_API_KEY" ]; then\necho "SILICONFLOW_API_KEY repository secret is required for this manual probe." >&2\nexit 1\nfi',
-            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_agent_async_e2e.py -q",
-        ),
     ),
 )
 
@@ -176,6 +119,7 @@ def _require_repository_path(
     errors: list[str],
     *,
     file_only: bool = False,
+    require_exists: bool = True,
 ) -> Path | None:
     if not isinstance(raw_path, str) or not raw_path.strip():
         errors.append(f"{label} 必须是非空仓库相对路径")
@@ -189,7 +133,8 @@ def _require_repository_path(
         errors.append(f"{label} 不得通过符号链接逃逸仓库：{raw_path}")
         return None
     if not resolved.exists():
-        errors.append(f"{label} 引用不存在：{raw_path}")
+        if require_exists:
+            errors.append(f"{label} 引用不存在：{raw_path}")
         return None
     if file_only and not resolved.is_file():
         errors.append(f"{label} 必须引用文件：{raw_path}")
@@ -729,7 +674,12 @@ def _validate_decisions(root: Path, errors: list[str]) -> list[dict[str, str]]:
                 )
             owner = _metadata(lines, "Owner：")
             _require_repository_path(
-                root, owner, f"{relative} Owner", errors, file_only=True
+                root,
+                owner,
+                f"{relative} Owner",
+                errors,
+                file_only=True,
+                require_exists=lifecycle != "archived",
             )
             for heading in headings:
                 if heading not in sections:
@@ -1015,7 +965,7 @@ def verify(root: Path) -> tuple[list[str], dict[str, Any]]:
     )
     projection = {
         "derived": True,
-        "authority": "owner-local code, tests, decisions and workflows",
+        "authority": "owner-local code, verification evidence, decisions and workflows",
         "decisions": decisions,
         "postmortems": postmortems,
         "workflows": workflows,

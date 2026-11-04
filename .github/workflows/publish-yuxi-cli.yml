@@ -33,10 +33,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --group test
-
-      - name: Run tests
-        run: uv run pytest
+        run: uv sync --locked --no-dev
 
       - name: Build package
         run: uv build

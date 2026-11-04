@@ -18,7 +18,7 @@
       </div>
       <div v-else class="review-workspace">
         <aside class="review-sidebar" aria-label="校对问题列表">
-          <p class="review-list-heading">问题列表 <span>按原问题计数</span></p>
+          <p class="review-list-heading">问题列表</p>
           <div class="review-list">
             <button
               v-for="group in pageGroups" :key="group.key" type="button" class="review-item"
@@ -28,7 +28,6 @@
                 <span>{{ reviewKindLabel(group.primary.kind) }}</span>
                 <span class="review-page">{{ pageLabel(group.primary.page) }}</span>
               </span>
-              <span class="review-item-status" :class="{ 'needs-attention': group.attention || group.incomplete }">{{ reviewStatusLabel(group.primary) }}</span>
               <span class="review-excerpt">{{ group.primary.reason || group.primary.before || '查看原文与校对依据' }}</span>
               <span v-if="group.critical || group.records.length > 1" class="review-item-meta">
                 <span v-if="group.critical">关键修改</span>
@@ -46,8 +45,7 @@
           <header class="review-detail-header">
             <div>
               <h3>{{ reviewKindLabel(active.kind) }} <span class="review-page">{{ pageLabel(active.page) }}</span></h3>
-              <div class="review-detail-tags">
-                <a-tag :color="selected.attention || selected.incomplete ? 'warning' : undefined">{{ reviewStatusLabel(active) }}</a-tag>
+              <div v-if="active.classification === 'excluded' || active.critical" class="review-detail-tags">
                 <a-tag v-if="active.classification === 'excluded'">出版元素</a-tag>
                 <a-tag v-if="active.critical" color="warning">关键修改</a-tag>
               </div>
@@ -61,7 +59,6 @@
               </option>
             </select>
           </label>
-          <p v-if="selected.incomplete" class="review-notice">此问题存在未完成的复核；这不代表正文一定有错，请结合原文检查。</p>
           <p v-if="active.reason" class="review-reason">{{ active.reason }}</p>
           <section v-if="active.parent_issue_id && active.targets?.length" class="review-target" aria-label="本片段核对范围">
             <h4>本片段核对范围</h4>
@@ -81,7 +78,6 @@
               <p v-if="comparison.after === null" class="review-hint">未生成修改，保留已识别正文。</p>
               <p v-else-if="comparison.kind === 'snapshot'" class="review-hint">这里展示整段文字处理前后的内容，可能包含其他问题的修改，请结合当前核对范围判断。</p>
               <p v-if="comparison.kind === 'snapshot' && !hasChanges" class="review-hint">处理前后的文字没有变化。</p>
-              <p v-if="diff.coarse" class="review-hint">变化范围较大，已整体标出；可展开完整上下文逐字核对。</p>
               <div class="review-text-block">
                 <span class="review-text-label">{{ comparison.kind === 'snapshot' ? '处理前文字' : 'OCR识别文字' }}</span>
                 <p class="review-diff"><template v-for="(part, index) in beforeParts" :key="index"><mark v-if="part.type === 'delete'" class="review-difference">{{ part.text }}</mark><span v-else>{{ part.text }}</span></template><span v-if="!comparison.before" class="review-hint">未识别到文字</span></p>
@@ -306,15 +302,13 @@ button:focus-visible, summary:focus-visible, select:focus-visible { outline: 2px
 .review-workspace { display: grid; grid-template-columns: 224px minmax(0, 1fr); border: 1px solid var(--gray-150); border-radius: 8px; background: var(--gray-0); }
 .review-sidebar { min-width: 0; border-right: 1px solid var(--gray-150); }
 .review-list-heading { padding: 14px 12px; margin: 0; font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
-.review-list-heading span, .review-page, .review-item-meta, .review-hint, .review-text-label, .review-pagination, .review-navigation, .review-source-empty { color: var(--color-text-secondary); font-size: 12px; font-weight: 400; }
+.review-page, .review-item-meta, .review-hint, .review-text-label, .review-pagination, .review-navigation, .review-source-empty { color: var(--color-text-secondary); font-size: 12px; font-weight: 400; }
 .review-list { display: flex; flex-direction: column; }
 .review-item { min-width: 0; width: 100%; padding: 12px; display: flex; flex-direction: column; gap: 6px; text-align: left; border: 0; border-top: 1px solid var(--gray-150); background: transparent; color: var(--color-text); }
 .review-item:hover { background: var(--gray-25); }
 .review-item[aria-current="true"] { background: var(--main-30); box-shadow: inset 3px 0 var(--main-color); }
 .review-item-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 600; }
 .review-page { flex-shrink: 0; }
-.review-item-status { font-size: 12px; color: var(--color-text-secondary); }
-.needs-attention { color: var(--color-warning-700); }
 .review-excerpt { font-size: 12px; line-height: 1.6; color: var(--color-text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .review-item-meta { display: flex; flex-wrap: wrap; gap: 8px; }
 .review-pagination { padding: 8px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--gray-150); }

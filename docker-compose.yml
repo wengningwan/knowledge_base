@@ -65,7 +65,6 @@ services:
       - type: bind
         source: ${YUXI_STATE_DIR:-./docker/volumes}/yuxi/skill-projections
         target: /app/skill-projections
-      - ./backend/test:/app/test
       - ./backend/scripts:/app/scripts
       - ./docker/sandbox_provisioner:/app/docker/sandbox_provisioner:ro
     ports:
@@ -127,7 +126,6 @@ services:
       - type: bind
         source: ${YUXI_STATE_DIR:-./docker/volumes}/yuxi/skill-projections
         target: /app/skill-projections
-      - ./backend/test:/app/test
       - ./backend/scripts:/app/scripts
       - ./docker/sandbox_provisioner:/app/docker/sandbox_provisioner:ro
       - ./backend/pyproject.toml:/app/pyproject.toml
@@ -286,7 +284,6 @@ services:
     image: ${COMPOSE_PROJECT_NAME:-yuxi}-web:${YUXI_VERSION:-0.7.3}
     volumes:
       - ./web/src:/app/src
-      - ./web/test:/app/test
       - ./web/public:/app/public
       - ./web/index.html:/app/index.html
       - ./web/vite.config.js:/app/vite.config.js

@@ -4,6 +4,3 @@
 # Docker files
 Dockerfile* text eol=lf
 *.dockerfile text eol=lf
-
-# Keep fixed evidence coordinates identical on Windows and Linux.
-backend/test/fixtures/paper_chunking/* text eol=lf

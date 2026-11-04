@@ -43,11 +43,3 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 yuxi_cli = ["chat.html"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-
-[dependency-groups]
-test = [
-    "pytest>=8",
-]

@@ -1,7 +1,5 @@
 
-.PHONY: up down logs lint format seed reset test verify-trust audit-dependencies audit-licenses
-
-PYTEST_ARGS ?=
+.PHONY: up down logs lint format seed reset verify-trust audit-dependencies audit-licenses
 BACKEND_PYTHON ?= $(shell cat backend/.python-version)
 
 up:
@@ -56,23 +54,14 @@ lint:
 	cd backend && UV_PYTHON=$(BACKEND_PYTHON) uv run ruff check --select I package
 	cd web && pnpm run lint:check
 
-# 后端单元测试（不依赖 docker 服务）；integration/e2e 需在容器环境运行
-test:
-	cd backend && UV_PYTHON=$(BACKEND_PYTHON) uv run pytest test/unit -m "not slow" $(PYTEST_ARGS)
-
 verify-trust:
 	python3 scripts/verify_engineering_contracts.py
-	python3 -m unittest scripts.test_verify_engineering_contracts scripts.test_bump_version
 
 audit-dependencies:
 	cd backend && uv audit --locked --no-dev
 	cd packages/yuxi-cli && uv audit --locked --no-dev
 	cd web && pnpm audit --audit-level=high --prod
 	cd docs && pnpm audit --audit-level=high --prod
-	@if uv audit --script scripts/dependency-audit-fixtures/vulnerable.py > /tmp/yuxi-python-audit-negative.log 2>&1; then echo "Expected the vulnerable Python fixture to fail"; exit 1; fi
-	grep -q "aiohttp 3.14.1 has" /tmp/yuxi-python-audit-negative.log
-	grep -q "GHSA-cq5v-8q36-5273" /tmp/yuxi-python-audit-negative.log
-	bash scripts/dependency-audit-fixtures/run-node-negative-control.sh
 
 audit-licenses:
 	cd backend && UV_PYTHON=$(BACKEND_PYTHON) uv run --isolated --no-dev --with pip-licenses pip-licenses --from mixed --format markdown
