@@ -33,7 +33,7 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 
 通用策略和全库默认值保持原行为，已有文件需显式重新入库才能获得新分块及来源。General 等改写正文的策略、重叠 Separator 尚不能保证完整精确来源，不纳入该对照。规则的名称与结构识别范围有限，原文和人工核验继续承担科学语义判断。
 
-Paper 的同行数字小节、相邻英文续句及来源 PDF 页定位由[小节与来源页决定](2026-11-02-paper-subsections-and-source-pages.md)补充，切分版本为 paper_rules_v2；旧版本分块和检索正文继续保留。
+Paper 的同行数字小节与相邻英文续句由[小节与来源页决定](2026-11-02-paper-subsections-and-source-pages.md)补充；正文来源角色、v3 图号关系与同小节补取由[正文来源与关联证据决定](2026-11-03-paper-related-evidence.md)拥有。旧版本分块和检索正文继续保留，重新入库生成新元数据。
 
 ## 验证
 

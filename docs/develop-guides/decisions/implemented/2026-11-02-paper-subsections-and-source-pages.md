@@ -14,9 +14,9 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 
 Paper 在原 Markdown 坐标上识别独立和同行正文前的数字小节，区分标题范围与正文范围；同一小节、相同明确实验身份的相邻文字，仅在前段未结束且后段以英文小写续接时保留为一个证据单元。完整段落仍按现有长度目标组合，公式和图表继续独立保留完整证据。切分版本记为 paper_rules_v2；原文不被改写，所有范围可回读。
 
-ChunkPreviewPanel 仅为经当前来源指纹和坐标核对且具有真实页码的 PDF 来源提供打开按钮。FileDetailModal 复用现有授权原文件读取和 AgentFilePreview，向 PdfPreview 传入目标页；PDF 加载及页面渲染完成后定位。无页码、陈旧来源和非 PDF 文件不提供猜测跳转，文件切换清除目标页。
+分块专用 PDF 页跳转由[正文来源与关联证据决定](2026-11-03-paper-related-evidence.md)取代；当前预览保留 Markdown 来源弹窗与普通原文件预览。
 
-独立段落继续在同节按长度目标组合，正文图号和多式推导的跨块检索扩展、图表间的阅读顺序恢复属于独立问题。文末参考文献排除、正文引用标记保留及其他证据组织行为由[论文证据分块决定](2026-11-02-paper-evidence-chunking.md)说明。
+独立段落继续在同节按长度目标组合。正文图号和同小节的跨块检索补取由[正文来源与关联证据决定](2026-11-03-paper-related-evidence.md)拥有，图表间阅读顺序由解析链路负责。文末参考文献排除、正文引用标记保留及其他证据组织行为由[论文证据分块决定](2026-11-02-paper-evidence-chunking.md)说明。
 
 ## 替代方案
 
@@ -31,8 +31,6 @@ ChunkPreviewPanel 仅为经当前来源指纹和坐标核对且具有真实页�
 |---|---|---|---|---|---|
 | 同行标题的 2.1、2.2 和带句点的 2.3 被识别为独立小节，正文与范围完整 | 把整行正文当标题，或者将两个小节拼接 | Paper parser | test_paper_chunking.py 的合成输入与原文范围断言 | 恢复旧规则；以 2.1 K 开头的正文不作为标题 | Passed |
 | 未结束的相邻英文续句在小目标下也不会中途分块 | 长度边界切开句子，或混合独立段落/不同实验 | Paper parser | 同节续句及原文范围 unit | 句点、标题、不同样品和大写新段落 | Passed |
-| 页跳转只使用可核实的当前来源 | 陈旧或非法页码成为可操作按钮 | chunkPreview.js、ChunkPreviewPanel.vue | 真实组件事件及状态 unit | 陈旧指纹、无页码、非 PDF | Passed |
-| 打开原 PDF 后实际定位到目标页 | 只传参数但未滚动，旧文件页码泄漏 | FileDetailModal.vue、AgentFilePreview.vue、PdfPreview.vue | 组件回归和合成四页 PDF 的浏览器 DOM，浅色桌面及暗色窄屏 | 未指定页码保持自然浏览；文件切换复位；越界提示 | Passed |
 
 Not run：本机没有 Docker，真实 PostgreSQL、worker、Milvus 入库和真实论文的检索质量仍需部署环境验证。浏览器使用模拟 API 和真实 PDF.js 渲染，不冒充后端集成。
 

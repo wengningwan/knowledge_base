@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_knowledge import KnowledgeChunk
+from yuxi.storage.postgres.models_knowledge import KnowledgeChunk, KnowledgeFile
+from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
 from yuxi.utils.datetime_utils import utc_isoformat
 
 SQL_IN_BATCH_SIZE = 10_000
@@ -96,6 +97,123 @@ class KnowledgeChunkRepository:
                 result = await session.execute(select(KnowledgeChunk).where(KnowledgeChunk.chunk_id.in_(batch)))
                 chunks_by_id.update({chunk.chunk_id: chunk for chunk in result.scalars().all()})
         return [chunks_by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in chunks_by_id]
+
+    async def get_paper_related_evidence(self, *, kb_id: str, anchor: dict, limit: int) -> tuple[list[dict], dict]:
+        """仅在当前已发布文件与 PG 主命中一致时有界读取同版关联块。"""
+        from yuxi.knowledge.chunking.source import source_sha256
+        from yuxi.knowledge.related_evidence import public_source_metadata
+
+        metadata = anchor.get("metadata") or {}
+        expected = metadata.get("source_metadata") or {}
+        # 复用发布、索引及删除的文件操作边界，防止两次读取之间先删子块再更新文件。
+        async with KnowledgeFileRepository().lock_file_operation(kb_id, metadata.get("file_id"), wait=False) as session:
+            if session is None:
+                return [], {"scope": "unavailable", "reason": "file_operation_in_progress"}
+            row = (
+                await session.execute(
+                    select(KnowledgeChunk, KnowledgeFile)
+                    .join(KnowledgeFile, KnowledgeFile.file_id == KnowledgeChunk.file_id)
+                    .where(
+                        KnowledgeChunk.kb_id == kb_id,
+                        KnowledgeFile.kb_id == kb_id,
+                        KnowledgeChunk.file_id == metadata.get("file_id"),
+                        KnowledgeChunk.chunk_id == metadata.get("chunk_id"),
+                    )
+                )
+            ).one_or_none()
+            if row is None:
+                return [], {"scope": "unavailable", "reason": "anchor_not_current"}
+            current, file = row
+            source = current.source_metadata or {}
+            if (
+                file.status != "indexed"
+                or not file.markdown_file
+                or source.get("chunker_version") != "paper_rules_v3"
+                or source.get("_publication_id") != source_sha256(file.markdown_file)
+                or public_source_metadata(source) != expected
+                or current.content != anchor.get("content")
+                or current.chunk_index != metadata.get("chunk_index")
+            ):
+                return [], {"scope": "unavailable", "reason": "anchor_not_current"}
+
+            section_id = source.get("section_id")
+            references = source.get("figure_references") or []
+            target_ids = [
+                reference["target_chunk_id"] for reference in references if reference.get("status") == "linked"
+            ]
+            selectors = []
+            if section_id:
+                selectors.append(KnowledgeChunk.source_metadata["section_id"].as_string() == section_id)
+            if target_ids:
+                selectors.append(KnowledgeChunk.chunk_id.in_(target_ids))
+            status = {
+                "scope": "finest_section_and_explicit_figures",
+                "section": "complete" if section_id else "not_applicable",
+                "figures": [
+                    {"figure_id": reference["figure_id"], "status": reference["status"]} for reference in references
+                ],
+            }
+            if not selectors:
+                return [], status
+            rows = list(
+                (
+                    await session.execute(
+                        select(KnowledgeChunk)
+                        .where(
+                            KnowledgeChunk.kb_id == kb_id,
+                            KnowledgeChunk.file_id == current.file_id,
+                            KnowledgeChunk.source_metadata["source_sha256"].as_string() == source["source_sha256"],
+                            KnowledgeChunk.source_metadata["_publication_id"].as_string() == source["_publication_id"],
+                            or_(*selectors),
+                            KnowledgeChunk.chunk_id != current.chunk_id,
+                        )
+                        .order_by(KnowledgeChunk.chunk_index.asc())
+                        .limit(limit + 1)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if len(rows) > limit:
+                status.update({"budget": "truncated", "omitted_chunks_at_least": 1})
+                if section_id:
+                    status["section"] = "truncated"
+            rows = rows[:limit]
+            results = []
+            available_figures = set()
+            for record in rows:
+                related_source = public_source_metadata(record.source_metadata)
+                figure_ref = next(
+                    (
+                        reference
+                        for reference in references
+                        if reference.get("target_chunk_id") == record.chunk_id
+                        and reference["figure_id"] in related_source.get("figure_ids", [])
+                    ),
+                    None,
+                )
+                same_section = section_id and related_source.get("section_id") == section_id
+                if not same_section and figure_ref is None:
+                    continue
+                if figure_ref:
+                    available_figures.add(record.chunk_id)
+                results.append(
+                    {
+                        "content": record.content,
+                        "evidence_role": "figure_reference" if figure_ref else "section_context",
+                        "metadata": {
+                            "chunk_id": record.chunk_id,
+                            "file_id": record.file_id,
+                            "chunk_index": record.chunk_index,
+                            "source": file.filename,
+                            "source_metadata": related_source,
+                        },
+                    }
+                )
+            for reference, result in zip(references, status["figures"]):
+                if reference.get("status") == "linked" and reference["target_chunk_id"] not in available_figures:
+                    result["status"] = "unavailable"
+            return results, status
 
     async def batch_upsert(self, chunks: list[dict[str, Any]]) -> list[KnowledgeChunk]:
         if not chunks:

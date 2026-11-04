@@ -1,4 +1,5 @@
 from collections.abc import Callable
+import json
 from typing import Any
 
 from yuxi.knowledge.eval.metrics import EvaluationMetricsCalculator
@@ -15,11 +16,25 @@ def normalize_query_result(query_result: Any) -> tuple[str, list[dict[str, Any]]
 
 
 def build_answer_prompt(query: str, retrieved_chunks: list[dict[str, Any]], max_docs: int = 5) -> str:
+    """前五个主命中连同其独立补充证据、来源和缺失状态进入回答输入。"""
+    from yuxi.knowledge.related_evidence import pack_retrieval_evidence
+
+    primary, related = pack_retrieval_evidence("", retrieved_chunks, max_docs=max_docs)
     context_docs = []
-    for idx, chunk in enumerate(retrieved_chunks[:max_docs]):
+    for idx, chunk in enumerate([*primary, *related]):
         content = chunk.get("content", "")
         if content:
-            context_docs.append(f"文档 {idx + 1}:\n{content}")
+            metadata = chunk["metadata"]
+            identity = {
+                "chunk_id": chunk["id"],
+                "file_id": chunk["file_id"],
+                "role": metadata.get("evidence_role", "primary"),
+                "source": metadata.get("source"),
+                "source_metadata": metadata.get("source_metadata"),
+                "anchor_chunk_id": metadata.get("anchor_chunk_id"),
+                "status": metadata.get("evidence_status"),
+            }
+            context_docs.append(f"文档 {idx + 1} 来源：{json.dumps(identity, ensure_ascii=False)}\n{content}")
 
     context_text = "\\n\\n".join(context_docs)
     return (

@@ -81,3 +81,41 @@ test('章节和需要人工检查的超长、歧义关联提示使用人类术�
   assert.deepEqual(result.notices, ['完整证据超过目标长度，已保留全文', '图表说明归属需核对', '公式说明关联需核对',
     '实验条件存在多个候选，未自动关联', '部分实验条件未找到明确来源'])
 })
+
+test('v3 正文来源只读取 source_spans，标题上下文不进入标签或高亮', () => {
+  const result = describeChunkSource(chunk([last], {
+    chunker_version: 'paper_rules_v3', context_source_spans: [span(0, 4, 1, 1), first]
+  }), source)
+  assert.equal(result.label, '原文第 8 行 · PDF 第 4 页')
+  assert.deepEqual(result.spans, [last])
+})
+
+test('旧 Paper 只过滤经过前缀和原文核对的前置上下文，保留正文重复标题', () => {
+  const original = '\n\n# 合成论文\n\n## 实验\n\n合成论文\n\n实验\n\n实际结果'
+  const document = createChunkSourceDocument(original, 'current')
+  const range = (needle) => {
+    const start = original.indexOf(needle)
+    return { start_char: start, end_char: start + needle.length,
+      line_start: original.slice(0, start).split('\n').length,
+      line_end: original.slice(0, start + needle.length - 1).split('\n').length }
+  }
+  const title = range('# 合成论文')
+  const heading = range('## 实验')
+  const body = range('合成论文\n\n实验\n\n实际结果')
+  for (const version of ['paper_rules_v1', 'paper_rules_v2']) {
+    const record = { content: '论文：合成论文\n章节：实验\n\n合成论文\n\n实验\n\n实际结果',
+      source_metadata: { source_sha256: 'current', chunker_version: version,
+        section_path: ['实验'], source_spans: [title, heading, body] } }
+    const result = describeChunkSource(record, document)
+    assert.equal(result.label, '原文第 7–11 行')
+    assert.deepEqual(result.spans, [body])
+    assert.deepEqual(chunkSourceWindows(result.spans, document, 0)[0].lines.map((line) => line.text),
+      ['合成论文', '', '实验', '', '实际结果'])
+    const uncertain = describeChunkSource({ ...record, source_metadata: {
+      ...record.source_metadata, section_path: ['其他章节']
+    } }, document)
+    assert.equal(uncertain.status, 'unknown')
+    assert.match(uncertain.label, /重新入库/)
+    assert.deepEqual(uncertain.spans, [])
+  }
+})

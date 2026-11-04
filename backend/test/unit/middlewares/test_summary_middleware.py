@@ -429,6 +429,44 @@ def test_query_kb_preview_preserves_document_identity_and_metadata() -> None:
 
 
 @pytest.mark.unit
+def test_query_kb_compaction_keeps_related_evidence_in_model_tool_message() -> None:
+    """实际中间件替换消息保留图注角色和省略提示，原工具结果完整落盘。"""
+    backend = _MemoryBackend()
+    payload = {
+        "kb_id": "kb-paper",
+        "results": [
+            {
+                "id": "a",
+                "kb_id": "kb-paper",
+                "file_id": "paper",
+                "content": "Main result. " * 300,
+                "metadata": {"evidence_status": {"section": "complete", "budget": "complete"}},
+            }
+        ],
+        "context_results": [
+            {
+                "id": "fig",
+                "kb_id": "kb-paper",
+                "file_id": "paper",
+                "content": "Figure 1. Measured at 298 K. " * 300,
+                "metadata": {"anchor_chunk_id": "a", "evidence_role": "figure_reference"},
+            }
+        ],
+    }
+    content = json.dumps(payload)
+    sanitized = _compact_messages(
+        [ToolMessage(content=content, tool_call_id="call-1", name="query_kb")], backend, token_limit=400
+    )
+    compact = _replacement_preview(sanitized[0])
+    assert compact["results"][0]["id"] == "a"
+    assert compact["context_results"][0]["metadata"]["evidence_role"] == "figure_reference"
+    assert "298 K" in compact["context_results"][0]["content_preview"]
+    assert compact["context_results"][0]["content_truncated"] is True
+    assert compact["omitted_context_results"] == 0
+    assert backend.files[_expected_tool_result_path(content)] == content
+
+
+@pytest.mark.unit
 def test_web_search_preview_preserves_citations_and_reports_omitted_results() -> None:
     backend = _MemoryBackend()
     payload = {

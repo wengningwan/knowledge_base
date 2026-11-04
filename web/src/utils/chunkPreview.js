@@ -18,7 +18,7 @@ export function sortedPreviewChunks(chunks = []) {
 export function chunkPreviewContent(chunk) {
   const content = chunk.content ?? ''
   const metadata = chunk.source_metadata
-  if (!['paper_rules_v1', 'paper_rules_v2'].includes(metadata?.chunker_version) || !Array.isArray(metadata.section_path)) return content
+  if (!['paper_rules_v1', 'paper_rules_v2', 'paper_rules_v3'].includes(metadata?.chunker_version) || !Array.isArray(metadata.section_path)) return content
   const prefix = /^论文：[^\n]*\n章节：([^\n]*)\n\n/.exec(content)
   const section = metadata.section_path.join(' > ') || '正文'
   return prefix?.[1] === section ? content.slice(prefix[0].length) : content
@@ -85,6 +85,10 @@ export function describeChunkSource(chunk, source) {
       const actual = characterSpan(source, span?.start_char, span?.end_char)
       return !actual || actual.line_start !== span.line_start || actual.line_end !== span.line_end
     })) return unavailable('unknown', '来源位置未知或无效')
+    if (['paper_rules_v1', 'paper_rules_v2'].includes(metadata.chunker_version)) {
+      spans = legacyPaperBodySpans(chunk, source, spans)
+      if (!spans) return unavailable('unknown', '旧论文来源角色无法确认，请重新入库后核对来源')
+    }
   } else {
     const span = characterSpan(source, chunk.start_char_pos, chunk.end_char_pos)
     if (!span || source.characters.slice(span.start_char, span.end_char).join('') !== chunk.content) {
@@ -99,6 +103,26 @@ export function describeChunkSource(chunk, source) {
   const pages = [...new Set(spans.map((span) => span.page).filter((page) => Number.isInteger(page) && page > 0))]
   const label = `原文第 ${ranges.join('、')} 行${pages.length ? ` · PDF 第 ${pages.join('、')} 页` : ''}`
   return { ...result, status: 'located', label, spans, pages }
+}
+
+/** 仅剥离旧 Paper 里能与生成前缀及原文标题逐项核对的前置来源。 */
+function legacyPaperBodySpans(chunk, source, spans) {
+  const metadata = chunk.source_metadata
+  const prefix = /^论文：([^\n]*)\n章节：([^\n]*)\n\n/.exec(chunk.content || '')
+  if (!prefix || !Array.isArray(metadata.section_path) ||
+      prefix[2] !== (metadata.section_path.join(' > ') || '正文')) return null
+  const sourceText = (span) => source.characters.slice(span.start_char, span.end_char).join('').trim()
+  const headingName = (span) => /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(sourceText(span))?.[1]
+  let index = 0
+  if (headingName(spans[0]) === prefix[1] &&
+      !source.characters.slice(0, spans[0].start_char).join('').trim()) index++
+  for (const section of metadata.section_path) {
+    if (!spans[index] || headingName(spans[index]) !== section) return null
+    index++
+  }
+  const bodySpans = spans.slice(index)
+  if (!bodySpans.length || !chunkPreviewContent(chunk).startsWith(sourceText(bodySpans[0]))) return null
+  return bodySpans
 }
 
 /** 为每个独立来源保留单独行窗口，不把中间正文当成证据。 */

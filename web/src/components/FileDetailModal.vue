@@ -77,7 +77,6 @@
           :status="sourcePreview.loading ? 'loading' : ''"
           loading-message="正在加载文件内容..."
           :show-header="false"
-          :pdf-page="sourcePdfPage"
           :show-download="false"
           :show-inline-html-controls="true"
           :full-height="true"
@@ -120,8 +119,6 @@
           :source-content="contentState.content"
           :source-sha256="contentState.source_sha256"
           :source-error="contentState.error"
-          :can-open-pdf="hasSourcePreview && sourcePreviewCandidateType === 'pdf'"
-          @open-pdf="openSourcePdfPage"
         />
         <div v-if="!contentState.loading && chunkCount === 0" class="empty-content">
           <p>{{ contentState.error || '暂无分块信息' }}</p>
@@ -201,7 +198,6 @@ const basicLoading = ref(false)
 const detailError = ref('')
 const downloadingOriginal = ref(false)
 const downloadingMarkdown = ref(false)
-const sourcePdfPage = ref(null)
 const contentState = ref(emptyDocumentContent())
 const assetsState = ref(emptyDocumentAssets())
 const parseLoader = createDocumentParseLoader({
@@ -254,7 +250,6 @@ const revokeSourcePreviewUrl = () => {
 
 const resetSourcePreview = () => {
   sourceRequestSeq += 1
-  sourcePdfPage.value = null
   revokeSourcePreviewUrl()
   sourcePreview.value = {
     loading: false,
@@ -508,13 +503,6 @@ const afterOpenChange = (open) => {
     resetLocalState()
     emit('closed')
   }
-}
-
-/** 使用当前文件已有的授权预览路径打开核实来源页。 */
-const openSourcePdfPage = (page) => {
-  if (!hasSourcePreview.value || sourcePreviewCandidateType.value !== 'pdf' || !Number.isInteger(page) || page < 1) return
-  sourcePdfPage.value = page
-  viewMode.value = 'source'
 }
 
 const loadSourcePreview = async () => {

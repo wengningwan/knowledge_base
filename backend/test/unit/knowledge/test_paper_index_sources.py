@@ -60,6 +60,38 @@ async def test_source_hydration_rejects_stale_or_cross_identity_hits(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["current", "new_parse", "parsing", "unbound"])
+async def test_paper_hydration_requires_same_published_markdown(monkeypatch, state):
+    """旧块即使正文相同，也不能在新解析发布后借用当前文件身份。"""
+    source = {"chunker_version": "paper_rules_v3", "source_sha256": "digest", "_publication_id": "current"}
+    if state == "unbound":
+        source.pop("_publication_id")
+    record = SimpleNamespace(
+        chunk_id="c", kb_id="kb", file_id="file", chunk_index=0, content="body", source_metadata=source
+    )
+    publication = {
+        "source": "paper.md",
+        "_publication_id": "new" if state == "new_parse" else "current",
+        "_file_status": "parsing" if state == "parsing" else "indexed",
+    }
+    monkeypatch.setattr(
+        module,
+        "KnowledgeFileRepository",
+        lambda: SimpleNamespace(get_chunk_sources_by_file_ids=AsyncMock(return_value={"file": publication})),
+    )
+    monkeypatch.setattr(
+        module, "KnowledgeChunkRepository", lambda: SimpleNamespace(list_by_chunk_ids=AsyncMock(return_value=[record]))
+    )
+    result = await MilvusKB.__new__(MilvusKB)._hydrate_chunk_sources(
+        "kb", [{"content": "body", "metadata": {"chunk_id": "c", "file_id": "file", "chunk_index": 0}}]
+    )
+    if state == "current":
+        assert len(result) == 1 and "_publication_id" not in str(result)
+    else:
+        assert result == []
+
+
+@pytest.mark.asyncio
 async def test_over_capacity_evidence_is_rejected_before_pg_or_vector_writes(monkeypatch):
     """UTF-8 字节容量超限显式失败，不截断完整公式。"""
     repo = SimpleNamespace(batch_upsert=AsyncMock())

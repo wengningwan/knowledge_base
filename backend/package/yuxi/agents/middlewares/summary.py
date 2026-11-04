@@ -620,6 +620,9 @@ def _structured_search_preview(tool_name: str | None, raw_content: Any, max_char
     if parsed is None:
         return None
 
+    if tool_name == "query_kb" and isinstance(parsed.get("context_results"), list):
+        return _structured_knowledge_context_preview(parsed, max_chars)
+
     results = parsed["results"]
     preview = _search_header(tool_name, parsed, len(results))
     selected = [_search_result_record(tool_name, result) for result in results[:8]]
@@ -657,6 +660,91 @@ def _structured_search_preview(tool_name: str | None, raw_content: Any, max_char
                 else:
                     record.pop("content_preview")
         encoded = _encode_search_preview(preview, selected, len(results))
+    return encoded
+
+
+def _structured_knowledge_context_preview(parsed: dict[str, Any], max_chars: int) -> str | None:
+    """交错保留主证据与关联块；被省略的块和被缩短的正文均显式标记。"""
+    results, contexts = parsed["results"], parsed["context_results"]
+    ordered = []
+    remaining = list(contexts[:24])
+    for result in results[:8]:
+        ordered.append((False, result))
+        if not isinstance(result, dict):
+            continue
+        related = [
+            item
+            for item in remaining
+            if isinstance(item, dict)
+            and isinstance(item.get("metadata"), dict)
+            and item["metadata"].get("anchor_chunk_id") == result.get("id")
+        ]
+        ordered.extend((True, item) for item in related)
+        remaining = [item for item in remaining if item not in related]
+    ordered.extend((True, item) for item in remaining)
+
+    selected = []
+    for is_context, result in ordered[:16]:
+        record, body = _search_result_record("query_kb", result)
+        metadata = result.get("metadata") if isinstance(result, dict) else None
+        if isinstance(metadata, dict):
+            extra = {}
+            for key in ("evidence_role", "anchor_chunk_id", "evidence_status"):
+                value = metadata.get(key)
+                if value is None:
+                    continue
+                extra[key] = _bounded_search_scalar(value)
+            source = metadata.get("source_metadata")
+            digest = source.get("source_sha256") if isinstance(source, dict) else None
+            if isinstance(digest, str):
+                extra["source_sha256"] = _bounded_search_scalar(digest)
+            if extra:
+                record.setdefault("metadata", {}).update(extra)
+        record["content_truncated"] = bool(body)
+        selected.append((is_context, record, body))
+
+    def encode() -> str:
+        """预算核对与最终输出共用同一结构，避免省略计数失真。"""
+        primary = [record for flag, record, _ in selected if not flag]
+        related = [record for flag, record, _ in selected if flag]
+        return json.dumps(
+            {
+                **_search_header("query_kb", parsed, len(results)),
+                "context_result_count": len(contexts),
+                "results": primary,
+                "context_results": related,
+                "omitted_results": len(results) - len(primary),
+                "omitted_context_results": len(contexts) - len(related),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    while selected and len(encode()) > max_chars:
+        selected.pop()
+    if not selected:
+        full = encode()
+        minimal = json.dumps(
+            {"omitted_results": len(results), "omitted_context_results": len(contexts)}, separators=(",", ":")
+        )
+        return full if len(full) <= max_chars else minimal if len(minimal) <= max_chars else None
+
+    per_result = max(max_chars - len(encode()) - 24 * len(selected), 0) // len(selected)
+    for _, record, body in selected:
+        if body and per_result:
+            record["content_preview"] = _clip_search_content(body, per_result)
+            record["content_truncated"] = len(body) > per_result
+    encoded = encode()
+    while len(encoded) > max_chars and any("content_preview" in record for _, record, _ in selected):
+        for _, record, _ in selected:
+            if "content_preview" in record:
+                shortened = record["content_preview"][:-16]
+                record["content_truncated"] = True
+                if shortened:
+                    record["content_preview"] = shortened
+                else:
+                    record.pop("content_preview")
+        encoded = encode()
     return encoded
 
 

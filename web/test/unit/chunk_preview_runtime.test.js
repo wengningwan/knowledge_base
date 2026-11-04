@@ -45,7 +45,7 @@ const renderer = createRenderer({
   patchProp: (node, key, _previous, value) => { node.props[key] = value }
 })
 
-test('PDF 渲染完成后定位来源页，页码变更会定位，越界会显示明确提示', async () => {
+test('普通 PDF 预览继续渲染全部页面', async () => {
   const sourcePath = new URL('../../src/components/common/PdfPreview.vue', import.meta.url)
   const compiledPath = fileURLToPath(new URL(`../../.pdf-page-test-${pid}.mjs`, import.meta.url))
   const { descriptor } = parse(readFileSync(sourcePath, 'utf8'))
@@ -72,21 +72,6 @@ test('PDF 渲染完成后定位来源页，页码变更会定位，越界会显�
     assert.ok(byClass(defaultRoot, 'pdf-page-card').every((page) => !page.scrolled))
     assert.equal(nodes(defaultRoot, (node) => node.props.role === 'status').length, 0)
     app.unmount()
-    const props = ref({ url: 'synthetic.pdf', page: 2 })
-    const root = hostNode('root')
-    app = renderer.createApp(() => h(Preview, props.value))
-    app.mount(root)
-    await new Promise(setImmediate)
-    const pages = byClass(root, 'pdf-page-card')
-    assert.equal(pages.length, 3)
-    assert.deepEqual(pages.map((page) => Boolean(page.scrolled)), [false, true, false])
-    props.value = { ...props.value, page: 3 }
-    await nextTick()
-    await nextTick()
-    assert.equal(pages[2].scrolled, true)
-    props.value = { ...props.value, page: 99 }
-    await nextTick()
-    assert.match(nodes(root, (node) => node.props.role === 'status')[0].text, /PDF 共 3 页，无法定位到第 99 页/)
   } finally {
     app?.unmount()
     if (previousWindow === undefined) delete globalThis.window
@@ -184,10 +169,8 @@ test('真实分块组件保留重复块、换行和全文，并响应展开、�
     const openedPdfPages = []
     props.value = { ...props.value, canOpenPdf: true, onOpenPdf: (page) => openedPdfPages.push(page) }
     await nextTick()
-    const pdfButton = nodes(root, (node) => node.props['aria-label'] === '查看 PDF 第 4 页')[0]
-    assert.ok(pdfButton)
-    pdfButton.props.onClick()
-    assert.deepEqual(openedPdfPages, [4])
+    assert.equal(nodes(root, (node) => node.type === 'button' && /查看 PDF/.test(node.props['aria-label'] || '')).length, 0)
+    assert.deepEqual(openedPdfPages, [])
     expand.props.onClick()
     await nextTick()
     assert.equal(expand.props['aria-expanded'], false)
@@ -231,6 +214,7 @@ test('真实分块组件保留重复块、换行和全文，并响应展开、�
     for (const [content, metadata, expected] of [
       [storedContent, { chunker_version: 'ragflow_like_v1' }, storedContent],
       [storedContent, { chunker_version: 'paper_rules_v2', section_path: ['1. INTRODUCTION'] }, body],
+      [storedContent, { chunker_version: 'paper_rules_v3', section_path: ['1. INTRODUCTION'] }, body],
       [storedContent, { chunker_version: 'paper_rules_unknown', section_path: ['1. INTRODUCTION'] }, storedContent],
       [storedContent, { chunker_version: 'paper_rules_v1', section_path: '1. INTRODUCTION' }, storedContent],
       [storedContent, { chunker_version: 'paper_rules_v1', section_path: ['另一章节'] }, storedContent],
@@ -241,6 +225,31 @@ test('真实分块组件保留重复块、换行和全文，并响应展开、�
       props.value = { ...props.value, chunks: [{ content, source_metadata: metadata }] }
       await nextTick()
       assert.equal(byClass(root, 'chunk-card-content')[0].text, expected)
+    }
+    const original = '\n# 合成论文\n\n## 实验\n\n合成论文\n\n实验'
+    const range = (needle) => {
+      const start = original.indexOf(needle)
+      return { start_char: start, end_char: start + needle.length,
+        line_start: original.slice(0, start).split('\n').length,
+        line_end: original.slice(0, start + needle.length - 1).split('\n').length }
+    }
+    const contextSpans = [range('# 合成论文'), range('## 实验')]
+    const bodySpan = range('合成论文\n\n实验')
+    for (const version of ['paper_rules_v1', 'paper_rules_v2', 'paper_rules_v3']) {
+      props.value = { sourceContent: original, sourceSha256: 'current', chunks: [{ chunk_order_index: 0,
+        content: '论文：合成论文\n章节：实验\n\n合成论文\n\n实验', source_metadata: {
+          chunker_version: version, section_path: ['实验'], source_sha256: 'current',
+          source_spans: version === 'paper_rules_v3' ? [bodySpan] : [...contextSpans, bodySpan],
+          context_source_spans: contextSpans
+        } }] }
+      await nextTick()
+      assert.equal(byClass(root, 'chunk-card-content')[0].text, '合成论文\n\n实验')
+      assert.equal(byClass(root, 'chunk-source')[0].children[0].text, '原文第 6–8 行')
+      nodes(root, (node) => node.props['aria-label'] === '查看分块 0 的原文位置')[0].props.onClick()
+      await nextTick()
+      assert.equal(byClass(root, 'source-window').length, 1)
+      assert.deepEqual(nodes(root, (node) => node.props['data-source-line'] != null)
+        .map((node) => node.props['data-source-line']), [6, 7, 8])
     }
     app.unmount()
   } finally {

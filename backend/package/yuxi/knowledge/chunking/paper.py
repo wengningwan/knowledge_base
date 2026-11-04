@@ -9,10 +9,10 @@ from typing import Any
 from yuxi.knowledge.chunking.ragflow_like.nlp import count_tokens
 from yuxi.knowledge.chunking.source import SourceDocument, source_sha256
 
-PAPER_CHUNKER_VERSION = "paper_rules_v2"
+PAPER_CHUNKER_VERSION = "paper_rules_v3"
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 CAPTION = re.compile(
-    r"^(?:#{1,6}\s+)?(?:\*\*)?(table|figure|fig\.?|scheme|表|图)\s*(S?\d+(?:[.-]\d+)*)[.:：、]?\s*",
+    r"^(?:#{1,6}\s+)?(?:\*\*)?(table|figure|fig\.?|scheme|表|图)\s*(S?\d+(?:[.-]\d+)*)(?![A-Za-z0-9_])[.:：、]?\s*",
     re.I,
 )
 DEFINITION = re.compile(
@@ -61,6 +61,12 @@ def chunk_paper(
     """直接生成含完整检索正文和显式来源的论文分块。"""
     target = max(1, int(config.get("chunk_token_num", 512) or 512))
     title, title_range, parsed_units = _parse_units(text)
+    caption_counts: dict[str, int] = {}
+    for unit in parsed_units:
+        caption = CAPTION.match(_body(text, unit)) if unit.kind == "figure_caption" else None
+        if caption and caption[1].lower() in {"figure", "fig", "fig.", "图"}:
+            number = caption[2].upper()
+            caption_counts[number] = caption_counts.get(number, 0) + 1
     units = _group_evidence(text, parsed_units)
     condition_sources: dict[str, list[Evidence]] = {}
     for unit in units:
@@ -94,9 +100,9 @@ def chunk_paper(
         headings = group[0].headings
         section_path = [heading[1] for heading in headings]
         content = f"论文：{title or filename}\n章节：{' > '.join(section_path) or '正文'}\n\n{body}"
-        ranges = [title_range] if title_range else []
-        ranges.extend((heading[2], heading[3]) for heading in headings)
-        ranges.extend(span for unit in group for span in unit.ranges)
+        context_ranges = [title_range] if title_range else []
+        context_ranges.extend((heading[2], heading[3]) for heading in headings)
+        ranges = [span for unit in group for span in unit.ranges]
         evidence_ids = [f"evidence_{unit.ranges[0][0]}" for unit in group]
         associations = []
         if RESULT.search(body):
@@ -120,9 +126,13 @@ def chunk_paper(
             "source_sha256": digest,
             "chunker_version": PAPER_CHUNKER_VERSION,
             "section_path": section_path,
+            "section_id": source_sha256(f"{file_id}:{digest}:{headings[-1][2]}") if headings else None,
             "content_type": next(iter(kinds)) if len(kinds) == 1 else "mixed",
             "evidence_ids": evidence_ids,
             "source_spans": [source.span(start, end) for start, end in dict.fromkeys(ranges)],
+            "context_source_spans": [source.span(start, end) for start, end in dict.fromkeys(context_ranges)],
+            "figure_ids": [],
+            "figure_references": [],
             "warnings": warnings,
             "associations": associations,
         }
@@ -143,7 +153,67 @@ def chunk_paper(
                 "extraction_result": None,
             }
         )
+    # 只有实际绑定完整图片的唯一图注才能成为目标，不能从相邻图片猜测归属。
+    figures: dict[str, list[str]] = {}
+    for record, group in zip(records, groups):
+        for unit in group:
+            if unit.kind != "figure" or "ambiguous_caption" in unit.warnings:
+                continue
+            captions = [CAPTION.match(text[start:end]) for start, end in unit.ranges]
+            numbers = [
+                caption[2].upper()
+                for caption in captions
+                if caption and caption[1].lower() in {"figure", "fig", "fig.", "图"}
+            ]
+            if len(numbers) == 1:
+                record["source_metadata"]["figure_ids"] = numbers
+                figures.setdefault(numbers[0], []).append(record["chunk_id"])
+    for record, group in zip(records, groups):
+        body = "\n\n".join(
+            text[start:end]
+            for unit in group
+            for start, end in unit.ranges
+            if unit.kind not in {"figure", "figure_caption", "table_caption"}
+            and _line_kind(text[start:end]) not in {"figure_caption", "table_caption"}
+        )
+        for number in _figure_references(body):
+            targets = figures.get(number, [])
+            unique = len(targets) == 1 and caption_counts.get(number) == 1
+            reference = {
+                "figure_id": number,
+                "status": "linked" if unique else "ambiguous" if caption_counts.get(number) else "missing",
+            }
+            if unique:
+                reference["target_chunk_id"] = targets[0]
+            record["source_metadata"]["figure_references"].append(reference)
     return records
+
+
+def _figure_references(text: str) -> list[str]:
+    """识别显式图号、有限数字区间与面板，补充材料编号独立归一。"""
+    token = r"S?\d+(?:\.\d+)*(?:[a-z](?:\s*[–—-]\s*[a-z])?)?(?![A-Za-z0-9_]|\.\d)"
+    separator = r"(?:[,，、]\s*(?:(?:and|or)\b\s*)?|\b(?:and|or)\b|&|[–—-])"
+    pattern = rf"(?:\bFig(?:ure)?s?\.?\s*|图\s*)({token}(?:\s*{separator}\s*{token})*)"
+    numbers = []
+    for match in re.finditer(pattern, text, re.I):
+        sequence = match[1]
+        parts = list(re.finditer(r"(S?)(\d+(?:\.\d+)*)(?:[a-z](?:\s*[–—-]\s*[a-z])?)?", sequence, re.I))
+        for index, part in enumerate(parts):
+            label = ".".join(str(int(value)) for value in part[2].split("."))
+            number = f"{part[1].upper()}{label}"
+            if index:
+                previous = parts[index - 1]
+                separator = sequence[previous.end() : part.start()].strip()
+                if previous[2].isdigit() and part[2].isdigit():
+                    first, last = int(previous[2]), int(part[2])
+                    if (
+                        separator in {"-", "–", "—"}
+                        and previous[1].upper() == part[1].upper()
+                        and 0 < last - first <= 20
+                    ):
+                        numbers.extend(f"{part[1].upper()}{value}" for value in range(first + 1, last))
+            numbers.append(number)
+    return list(dict.fromkeys(numbers))
 
 
 def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Evidence]]:
@@ -377,6 +447,8 @@ def _line_kind(line: str) -> str:
         return "figure"
     caption = CAPTION.match(line)
     if caption:
+        if re.match(r"\s*(?:[,，、]\s*(?:S?\d|and\b)|(?:and|or)\b|[–—-]\s*S?\d)", line[caption.end(2) :], re.I):
+            return "text"
         # 正文中“Figure 1 shows ...”不是图注，避免吸走下一段讨论。
         if re.match(
             r"(?:shows?|provides?|lists?|compares?|presents?|indicates?|is|was)\b|显示|表明|给出|中",

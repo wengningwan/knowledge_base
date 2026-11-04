@@ -139,10 +139,12 @@ async def test_comparison_scores_the_actual_first_five_answer_chunks() -> None:
         query=query,
         answer=answer,
         build_prompt=prompt,
-        retrieval_config={"final_top_k": 10},
+        retrieval_config={"final_top_k": 10, "include_related_evidence": True},
     )
     assert cases == original
-    assert calls == [(cases[0]["query"], "kb_a", {"final_top_k": 10}), (cases[0]["query"], "kb_b", {"final_top_k": 10})]
+    expected = {"final_top_k": 10, "include_related_evidence": False}
+    assert calls == [(cases[0]["query"], "kb_a", expected), (cases[0]["query"], "kb_b", expected)]
+    assert report["retrieval_config"] == expected
     row = report["variants"]["paper"]["items"][0]
     assert row["retrieval_metrics"]["evidence_coverage"] == 1
     assert row["answer_context_metrics"]["evidence_coverage"] == 0

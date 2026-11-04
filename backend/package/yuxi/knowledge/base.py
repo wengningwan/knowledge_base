@@ -603,40 +603,13 @@ class KnowledgeBase(ABC):
         if not isinstance(retrieval_results, list):
             return retrieval_results
 
-        results = []
-        for index, chunk in enumerate(retrieval_results):
-            if not isinstance(chunk, dict):
-                continue
+        from yuxi.knowledge.related_evidence import pack_retrieval_evidence
 
-            metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
-            metadata = {
-                key: value
-                for key, value in metadata.items()
-                if key not in {"filepath", "parsed_path", "path", "markdown_file"}
-            }
-            file_id = metadata.get("file_id") or chunk.get("file_id") or chunk.get("full_doc_id") or ""
-            chunk_id = metadata.get("chunk_id") or chunk.get("chunk_id") or chunk.get("id")
-            chunk_index = metadata.get("chunk_index")
-            if chunk_index is None:
-                chunk_index = chunk.get("chunk_index")
-            if chunk_index is not None:
-                metadata.setdefault("chunk_index", chunk_index)
-            if chunk.get("score") is not None:
-                metadata.setdefault("score", chunk.get("score"))
-            if chunk.get("distance") is not None:
-                metadata.setdefault("distance", chunk.get("distance"))
-
-            results.append(
-                SearchResultSchema(
-                    id=str(chunk_id or f"{file_id}:{index + 1}"),
-                    kb_id=str(kb_id),
-                    file_id=str(file_id or ""),
-                    content=str(chunk.get("content") or ""),
-                    metadata=metadata,
-                )
-            )
-
-        return SearchOutputSchema(kb_id=str(kb_id), results=results).model_dump()
+        primary, context = pack_retrieval_evidence(kb_id, retrieval_results)
+        output = SearchOutputSchema(kb_id=str(kb_id), results=primary)
+        if context or any("related_evidence_status" in hit for hit in retrieval_results if isinstance(hit, dict)):
+            output.context_results = [SearchResultSchema(**chunk) for chunk in context]
+        return output.model_dump(exclude_none=True)
 
     @staticmethod
     def _build_find_file_windows(

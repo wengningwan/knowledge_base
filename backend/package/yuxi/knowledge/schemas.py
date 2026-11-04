@@ -20,6 +20,7 @@ class SearchResultSchema(BaseModel):
 class SearchOutputSchema(BaseModel):
     kb_id: str = Field(description="知识库资源 ID，也就是 kb_id")
     results: list[SearchResultSchema] = Field(default_factory=list, description="检索结果列表")
+    context_results: list[SearchResultSchema] | None = Field(default=None, description="独立于主排序的同源关联证据")
 
 
 class FindInputSchema(BaseModel):

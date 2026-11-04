@@ -26,6 +26,7 @@ async def compare_variants(
     """用同题同配置保存实际召回、回答上下文和待人工核验的答案。"""
     if len(variants) < 2 or len(set(variants.values())) != len(variants):
         raise ValueError("至少提供两个不同的方案知识库")
+    retrieval_config = {**retrieval_config, "include_related_evidence": False}
     frozen_cases = json.loads(json.dumps(cases, ensure_ascii=False))
     _validate_cases(frozen_cases)
     report = {

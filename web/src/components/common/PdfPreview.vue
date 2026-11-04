@@ -14,7 +14,6 @@
 
     <!-- PDF 页面列表 -->
     <div v-else class="pdf-pages-scroll-wrapper">
-      <p v-if="pageNotice" class="pdf-status-text" role="status">{{ pageNotice }}</p>
       <div
         v-for="pageNum in totalPages"
         :key="pageNum"
@@ -29,7 +28,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { CircleAlert, LoaderCircle } from '@lucide/vue'
 import { resolvePdfLoadErrorMessage } from '@/utils/pdfPreviewErrors'
 
@@ -37,10 +36,6 @@ const props = defineProps({
   url: {
     type: String,
     required: true
-  },
-  page: {
-    type: Number,
-    default: null
   },
   // 左右保留的安全内边距（px）
   horizontalPadding: {
@@ -53,11 +48,6 @@ const containerRef = ref(null)
 const loading = ref(true)
 const error = ref('')
 const totalPages = ref(0)
-const pageNotice = computed(() => props.page !== null && !loading.value && totalPages.value > 0 &&
-  (!Number.isInteger(props.page) || props.page < 1 || props.page > totalPages.value)
-  ? `PDF 共 ${totalPages.value} 页，无法定位到第 ${props.page} 页。`
-  : '')
-
 const canvasMap = new Map()
 const renderTasks = new Map()
 let pdfjsLibInstance = null
@@ -190,12 +180,6 @@ const renderAllPages = async () => {
   }
 }
 
-/** 页面尺寸确定后定位来源页；越界时保留全文并展示明确提示。 */
-const scrollToSourcePage = () => {
-  if (loading.value || !Number.isInteger(props.page) || props.page < 1 || props.page > totalPages.value) return
-  containerRef.value?.querySelector(`[data-page-number="${props.page}"]`)?.scrollIntoView({ block: 'start' })
-}
-
 const loadPdf = async () => {
   const seq = ++loadSeq
   loading.value = true
@@ -247,7 +231,6 @@ const loadPdf = async () => {
     await nextTick()
     if (seq === loadSeq) {
       await renderAllPages()
-      if (seq === loadSeq) scrollToSourcePage()
     }
   } catch (err) {
     if (seq === loadSeq && err?.name !== 'RenderingCancelledException') {
@@ -272,14 +255,6 @@ const handleResize = () => {
     }
   }, 120)
 }
-
-watch(
-  () => props.page,
-  async () => {
-    await nextTick()
-    scrollToSourcePage()
-  }
-)
 
 watch(
   () => props.url,

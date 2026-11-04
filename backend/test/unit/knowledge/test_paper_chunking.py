@@ -182,7 +182,7 @@ def test_h2_paper_title_survives_h1_chapters_and_plain_numbered_subsections():
     assert "Unrelated measurement discussion." not in method["content"]
     result = next(chunk for chunk in chunks if "reached" in chunk["content"])
     assert "300 K" in result["content"] and "Unrelated measurement discussion." not in result["content"]
-    assert all(chunk["source_metadata"]["source_spans"][0]["line_start"] == 1 for chunk in chunks)
+    assert all(chunk["source_metadata"]["context_source_spans"][0]["line_start"] == 1 for chunk in chunks)
 
 
 def test_section_only_document_uses_filename_as_unconfirmed_title():
@@ -213,8 +213,9 @@ def test_run_in_subsections_keep_heading_and_body_ranges_separate():
         assert chunk["content"].split("\n\n", 1)[1] == body
         spans = chunk["source_metadata"]["source_spans"]
         assert any(text[span["start_char"] : span["end_char"]] == body for span in spans)
-        assert any(text[span["start_char"] : span["end_char"]].rstrip(".") == label for span in spans)
-    assert all(chunk["source_metadata"]["chunker_version"] == "paper_rules_v2" for chunk in chunks)
+        context = chunk["source_metadata"]["context_source_spans"]
+        assert any(text[span["start_char"] : span["end_char"]].rstrip(".") == label for span in context)
+    assert all(chunk["source_metadata"]["chunker_version"] == "paper_rules_v3" for chunk in chunks)
 
 
 def test_adjacent_lowercase_continuation_is_atomic_even_over_target():

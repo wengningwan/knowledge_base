@@ -12,6 +12,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from yuxi.knowledge.base import KnowledgeBase
+from yuxi.knowledge.eval.evaluator import build_answer_prompt
+from yuxi.knowledge.related_evidence import public_source_metadata
+
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
@@ -133,7 +137,142 @@ async def test_paper_ingestion_persists_sources_and_returns_same_indexed_evidenc
         hit = next((hit for hit in hits if hit["metadata"]["chunk_id"] == formula["id"]), None)
         assert hit is not None, hits
         assert hit["content"] == formula["content"]
-        assert hit["metadata"]["source_metadata"] == formula["source_metadata"]
+        assert hit["metadata"]["source_metadata"] == public_source_metadata(formula["source_metadata"])
+    finally:
+        await engine.dispose()
+        deleted = await e2e_client.delete(base, headers=e2e_headers)
+        assert deleted.status_code == 200, deleted.text
+
+
+async def test_paper_related_evidence_reaches_search_and_answer_after_worker_indexing(e2e_client, e2e_headers):
+    """独立合成原文经真实 HTTP/worker 入库后补取同节公式和跨节明确图片。"""
+    model_spec = os.getenv("TEST_PAPER_EMBEDDING_MODEL_SPEC")
+    if not model_spec:
+        pytest.skip("真实 embedding 未配置：设置 TEST_PAPER_EMBEDDING_MODEL_SPEC 后运行论文关联证据 E2E")
+    document = (
+        "# Related evidence study\n\n## Model\n\n"
+        "Anchoruniquexenon is explained in Figure 1e–g and Figure S4."
+        "\n\n$$\nx=a+b\n$$\n\nwhere a is length and b is width."
+        "\n\n## Model\n\nWRONG REPEATED SECTION."
+        "\n\n## Images\n\n![plot](plot.png)\n\nFigure 1. Exact image caption."
+    )
+    created = await e2e_client.post(
+        "/api/knowledge/databases",
+        headers=e2e_headers,
+        json={
+            "database_name": f"pytest_paper_related_{uuid.uuid4().hex[:8]}",
+            "kb_type": "milvus",
+            "embedding_model_spec": model_spec,
+            "description": "synthetic related evidence regression",
+            "additional_params": {"chunk_preset_id": "paper", "chunk_parser_config": {"chunk_token_num": 1}},
+        },
+    )
+    assert created.status_code == 200, created.text
+    kb_id = created.json()["kb_id"]
+    base = f"/api/knowledge/databases/{kb_id}"
+    engine = create_async_engine(os.environ["POSTGRES_URL"], pool_pre_ping=True)
+    try:
+        uploaded = await e2e_client.post(
+            "/api/knowledge/files/upload",
+            params={"kb_id": kb_id},
+            headers=e2e_headers,
+            files={"file": ("related-evidence.md", document.encode(), "text/markdown")},
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        upload = uploaded.json()
+        added = await e2e_client.post(
+            f"{base}/documents/add",
+            headers=e2e_headers,
+            json={
+                "items": [upload["file_path"]],
+                "params": {"content_type": "file", "content_hashes": {upload["file_path"]: upload["content_hash"]}},
+            },
+        )
+        assert added.status_code == 200 and added.json()["failed"] == 0, added.text
+        file_id = added.json()["items"][0]["file_id"]
+        for action in ("parse", "index"):
+            submitted = await e2e_client.post(
+                f"{base}/documents/{action}", headers=e2e_headers, json={"file_ids": [file_id], "params": {}}
+            )
+            assert submitted.status_code == 200 and submitted.json()["status"] == "queued", submitted.text
+            task = await _wait_for_terminal_task(e2e_client, e2e_headers, submitted.json()["task_id"])
+            assert task["status"] == "success" and task["result"]["failed"] == 0, task
+        async with engine.connect() as connection:
+            rows = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT chunk_id, content, source_metadata FROM knowledge_chunks "
+                            "WHERE kb_id=:kb AND file_id=:file ORDER BY chunk_index"
+                        ),
+                        {"kb": kb_id, "file": file_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        assert len(rows) == 4
+        assert all(row["source_metadata"]["chunker_version"] == "paper_rules_v3" for row in rows)
+        anchor, formula, _wrong_section, figure = rows
+        query_options = {"search_mode": "keyword", "final_top_k": 1, "bm25_top_k": 1, "use_reranker": False}
+        enriched = []
+        for _ in range(30):
+            response = await e2e_client.post(
+                f"{base}/query", headers=e2e_headers, json={"query": "Anchoruniquexenon", "meta": query_options}
+            )
+            assert response.status_code == 200, response.text
+            enriched = response.json()["result"]
+            if enriched:
+                break
+            await asyncio.sleep(0.2)
+        assert len(enriched) == 1 and enriched[0]["metadata"]["chunk_id"] == anchor["chunk_id"], enriched
+        related = enriched[0]["related_evidence"]
+        assert [row["metadata"]["chunk_id"] for row in related] == [formula["chunk_id"], figure["chunk_id"]]
+        assert [row["content"] for row in related] == [formula["content"], figure["content"]]
+        assert enriched[0]["related_evidence_status"]["figures"] == [
+            {"figure_id": "1", "status": "linked"},
+            {"figure_id": "S4", "status": "missing"},
+        ]
+        baseline = await e2e_client.post(
+            f"{base}/query",
+            headers=e2e_headers,
+            json={"query": "Anchoruniquexenon", "meta": {**query_options, "include_related_evidence": False}},
+        )
+        assert baseline.status_code == 200, baseline.text
+        assert baseline.json()["result"] == [
+            {key: value for key, value in enriched[0].items() if not key.startswith("related_")}
+        ]
+        search = KnowledgeBase.build_search_output(kb_id, enriched)
+        assert len(search["results"]) == 1 and len(search["context_results"]) == 2
+        prompt = build_answer_prompt("Explain the relationship", enriched)
+        assert "x=a+b" in prompt and "Exact image caption" in prompt
+        assert "WRONG REPEATED SECTION" not in prompt and '"status": "missing"' in prompt
+        assert "_publication_id" not in str(search) and "_publication_id" not in prompt
+
+        # 同一文件已经发布新解析指针但旧向量/PG 块残留时，主命中也必须失效。
+        async with engine.begin() as connection:
+            original_pointer = await connection.scalar(
+                text("SELECT markdown_file FROM knowledge_files WHERE kb_id=:kb AND file_id=:file"),
+                {"kb": kb_id, "file": file_id},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE knowledge_files SET markdown_file=:pointer, status='indexed' "
+                    "WHERE kb_id=:kb AND file_id=:file"
+                ),
+                {"pointer": "synthetic-new-attempt/document.md", "kb": kb_id, "file": file_id},
+            )
+        try:
+            stale = await e2e_client.post(
+                f"{base}/query", headers=e2e_headers, json={"query": "Anchoruniquexenon", "meta": query_options}
+            )
+            assert stale.status_code == 200 and stale.json()["result"] == [], stale.text
+        finally:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("UPDATE knowledge_files SET markdown_file=:pointer WHERE kb_id=:kb AND file_id=:file"),
+                    {"pointer": original_pointer, "kb": kb_id, "file": file_id},
+                )
     finally:
         await engine.dispose()
         deleted = await e2e_client.delete(base, headers=e2e_headers)

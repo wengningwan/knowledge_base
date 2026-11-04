@@ -28,25 +28,36 @@ KB_FILE_STATS_CACHE_TTL = 10
 
 class KnowledgeFileRepository:
     @asynccontextmanager
-    async def lock_file_operation(self, kb_id: str, file_id: str, control=None) -> AsyncIterator[None]:
-        """串行化同文件的发布、索引和删除，取消时事务自动释放锁。"""
+    async def lock_file_operation(
+        self, kb_id: str, file_id: str, control=None, *, wait: bool = True
+    ) -> AsyncIterator[AsyncSession | None]:
+        """串行化文件操作并提供锁事务；非等待读取遇忙返回空会话。"""
         key = int.from_bytes(
             hashlib.blake2b(f"knowledge-file:{kb_id}:{file_id}".encode(), digest_size=8).digest(),
-            byteorder="big", signed=True,
+            byteorder="big",
+            signed=True,
         )
-        database_key = int.from_bytes(hashlib.blake2b(f"knowledge-database:{kb_id}".encode(), digest_size=8).digest(), "big", signed=True)
+        database_key = int.from_bytes(
+            hashlib.blake2b(f"knowledge-database:{kb_id}".encode(), digest_size=8).digest(), "big", signed=True
+        )
         async with pg_manager.get_async_session_context() as session:
             while not await session.scalar(select(func.pg_try_advisory_xact_lock_shared(database_key))):
+                if not wait:
+                    yield None
+                    return
                 if control is not None:
                     await control.check_cancelled()
                 await asyncio.sleep(0.2)
             while not await session.scalar(select(func.pg_try_advisory_xact_lock(key))):
+                if not wait:
+                    yield None
+                    return
                 if control is not None:
                     await control.check_cancelled()
                 await asyncio.sleep(0.2)
             if control is not None:
                 await control.check_cancelled()
-            yield
+            yield session
 
     @asynccontextmanager
     async def lock_database_maintenance(self, kb_id: str) -> AsyncIterator[None]:
@@ -400,14 +411,27 @@ class KnowledgeFileRepository:
 
         async with pg_manager.get_async_session_context() as session:
             result = await session.execute(
-                select(KnowledgeFile.file_id, KnowledgeFile.filename, KnowledgeFile.chunk_count).where(
+                select(
+                    KnowledgeFile.file_id,
+                    KnowledgeFile.filename,
+                    KnowledgeFile.chunk_count,
+                    KnowledgeFile.status,
+                    KnowledgeFile.markdown_file,
+                ).where(
                     KnowledgeFile.kb_id == kb_id,
                     KnowledgeFile.file_id.in_(normalized_ids),
                 )
             )
+            from yuxi.knowledge.chunking.source import source_sha256
+
             return {
-                str(file_id): {"source": str(filename or ""), "chunk_count": int(chunk_count or 0)}
-                for file_id, filename, chunk_count in result.all()
+                str(file_id): {
+                    "source": str(filename or ""),
+                    "chunk_count": int(chunk_count or 0),
+                    "_publication_id": source_sha256(pointer) if pointer else None,
+                    "_file_status": status,
+                }
+                for file_id, filename, chunk_count, status, pointer in result.all()
             }
 
     async def list_children(self, *, kb_id: str, parent_id: str | None) -> list[KnowledgeFile]:

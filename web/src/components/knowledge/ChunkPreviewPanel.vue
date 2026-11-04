@@ -32,16 +32,6 @@
             :aria-label="`查看分块 ${entry.chunk.chunk_order_index ?? index} 的原文位置`"
             @click="selectedIndex = index"
           >查看原文位置</button>
-          <template v-if="canOpenPdf && entry.source.status === 'located'">
-            <button
-              v-for="page in entry.source.pages"
-              :key="page"
-              type="button"
-              class="chunk-action"
-              :aria-label="`查看 PDF 第 ${page} 页`"
-              @click="emit('open-pdf', page)"
-            >查看 PDF 第 {{ page }} 页</button>
-          </template>
         </div>
         <p v-for="notice in entry.source.notices" :key="notice" class="chunk-notice">{{ notice }}</p>
       </article>
@@ -86,10 +76,8 @@ const props = defineProps({
   chunks: { type: Array, default: () => [] },
   sourceContent: { type: String, default: '' },
   sourceSha256: { type: String, default: '' },
-  sourceError: { type: String, default: '' },
-  canOpenPdf: { type: Boolean, default: false }
+  sourceError: { type: String, default: '' }
 })
-const emit = defineEmits(['open-pdf'])
 
 const expanded = ref(new Set())
 const selectedIndex = ref(null)
