@@ -7,6 +7,39 @@ from yuxi.services.pdf_review_service import review_pdf_document
 
 
 @pytest.mark.asyncio
+async def test_publication_regions_remain_auditable_without_blocking_review(monkeypatch, tmp_path):
+    """真实复核装配保留出版候选，排除项不进入模型队列或待核状态。"""
+    text = "The membrane was prepared."
+    result, path, requests, _ = configure_review_case(monkeypatch, tmp_path, before=text, source=text)
+    result.metadata["parsed_pages"] = [1, 2]
+    natives = [
+        {"id": "body", "page": 1, "bbox": [.1, .2, .9, .4], "content": text},
+        {"id": "copyright", "page": 1, "bbox": [.1, .95, .4, .97], "content": "© 2025 Example publisher"},
+        {"id": "doi", "page": 1, "bbox": [.1, .92, .8, .94], "content": "https://doi.org/10.1021/example"},
+        {"id": "page1", "page": 1, "bbox": [.48, .95, .53, .97], "content": "15855"},
+        {"id": "page2", "page": 2, "bbox": [.48, .95, .53, .97], "content": "15856"},
+    ]
+
+    def native(path, *, page_info):
+        """只替换 PDF 提取边界，分类与状态计算使用实际实现。"""
+        page_info["page_count"] = 2
+        return natives
+
+    monkeypatch.setattr("yuxi.knowledge.parser.pdf_native.read_native_blocks", native)
+    await review_pdf_document(result, path, {"document_review_model": "p:model"})
+
+    assert result.markdown == text
+    assert result.metadata["review_status"] == "completed"
+    assert result.metadata["pdf_repair"]["native_blocks"] == natives
+    assert result.metadata["pdf_repair"]["rule_version"] == "yuxi-r2-3"
+    assert result.metadata["pdf_repair"]["excluded_publication_elements"] == 4
+    assert len(result.reviews) == 4
+    assert all(row["classification"] == "excluded" and row["status"] == "checked" and not row["targets"] for row in result.reviews)
+    assert {row["candidates"]["native"] for row in result.reviews} == {entry["content"] for entry in natives[1:]}
+    assert requests == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("native_geometry", [False, True])
 async def test_no_change_correction_retries_only_reliable_native_conflict(monkeypatch, tmp_path, native_geometry):
     """弱原生证据的noop一次归一；可靠冲突需第二次聚焦且仍待复核。"""

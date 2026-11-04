@@ -196,6 +196,170 @@ def test_repeated_margin_and_image_text_are_separate_from_body_omission():
     assert result.metadata["pdf_repair"]["excluded_publication_elements"] == 2
 
 
+def test_footer_copyright_page_sequence_and_nearby_doi_are_excluded():
+    """页脚版权、递进页码与邻近独立 DOI 留存证据，不报漏段。"""
+    natives = [
+        _native("© 2025 American Chemical Society", bbox=[.08, .95, .4, .97]),
+        _native("15855", id="page1", bbox=[.48, .95, .53, .97]),
+        _native("15856", id="page2", page=2, bbox=[.48, .95, .53, .97]),
+        _native("https://doi.org/10.1021/example", id="doi", bbox=[.1, .92, .75, .94]),
+    ]
+    original = deepcopy(natives)
+    result = ParsedDocument()
+
+    rows = run_rule_repair(result, natives, 2)
+
+    assert len(rows) == 4
+    assert all(row["kind"] == "publication_element" and row["classification"] == "excluded" for row in rows)
+    assert all(row["status"] == "checked" and row["review_route"] == "none" for row in rows)
+    assert [row["candidates"]["native"] for row in rows] == [entry["content"] for entry in natives]
+    assert all(row["evidence"] for row in rows)
+    assert result.blocks == [] and natives == original
+    assert result.metadata["pdf_repair"]["excluded_publication_elements"] == 4
+
+
+@pytest.mark.parametrize("content", [
+    "© 2025 The Authors. Published by Example publisher.",
+    "Copyright 2025 Example publisher",
+    "(c) 2025 Example publisher",
+])
+def test_single_margin_copyright_variants_are_excluded(content):
+    """明确版权声明含 Authors 时仍按出版用途分类。"""
+    rows = run_rule_repair(ParsedDocument(), [_native(content, bbox=[.1, .95, .9, .97])], 1)
+
+    assert len(rows) == 1
+    assert rows[0]["classification"] == "excluded"
+    assert rows[0]["candidates"]["native"] == content
+
+
+@pytest.mark.parametrize("kind", ["page_header", "page_footer"])
+@pytest.mark.parametrize("content", ["15855", "Unique journal heading", "https://doi.org/10.1021/example"])
+def test_explicit_header_footer_proves_native_publication_region(kind, content):
+    """解析块类型支持原生区域归属，单页页眉页脚不再产生差异。"""
+    block = _block(content, type=kind, bbox=[.1, .86, .9, .89])
+    result = ParsedDocument(blocks=[block])
+
+    rows = run_rule_repair(result, [_native(content, bbox=block["bbox"])], 1)
+
+    assert len(rows) == 1
+    assert rows[0]["classification"] == "excluded"
+    assert rows[0]["candidates"]["native"] == content
+    assert block["content"] == content
+    assert render_document(result.blocks) == ""
+
+
+def test_repeated_footer_doi_is_excluded_but_body_reference_is_preserved():
+    """同位重复页脚 DOI 可排除，正文相同 DOI 仍是遗漏候选。"""
+    doi = "https://doi.org/10.1021/example"
+    natives = [
+        _native(doi, bbox=[.1, .95, .8, .97]),
+        _native(doi, id="n2", page=2, bbox=[.1, .95, .8, .97]),
+        _native(doi, id="n3", bbox=[.1, .3, .8, .32]),
+    ]
+
+    rows = run_rule_repair(ParsedDocument(), natives, 2)
+
+    assert [row["classification"] for row in rows] == ["excluded", "excluded", "content"]
+    assert rows[2]["kind"] == "missing_region"
+
+
+@pytest.mark.parametrize("content", [
+    "(12) Smith. Title. https://doi.org/10.1021/example",
+    "Data are available at https://doi.org/10.1021/example",
+    "Author Contributions",
+    "Author: Jane Doe",
+    "Supporting Information is available",
+])
+def test_repeated_margin_references_and_author_metadata_remain_missing(content):
+    """完整引用、DOI 说明和作者元数据不能因重复而排除。"""
+    natives = [
+        _native(content, bbox=[.1, .95, .8, .97]),
+        _native(content, id="n2", page=2, bbox=[.1, .95, .8, .97]),
+    ]
+
+    rows = run_rule_repair(ParsedDocument(), natives, 2)
+
+    assert len(rows) == 2
+    assert all(row["kind"] == "missing_region" and row["classification"] == "content" for row in rows)
+
+
+def test_explicit_footnotes_do_not_supply_running_footer_evidence():
+    """明确脚注虽逐页同位重复，仍保留内容核对与原文。"""
+    text = "Footnote with experimental details."
+    blocks = [_block(text, id=f"b{page}", page=page, type="footnote", bbox=[.1, .95, .8, .97]) for page in (1, 2)]
+    natives = [_native(text, id=f"n{page}", page=page, bbox=[.1, .95, .8, .97]) for page in (1, 2)]
+    result = ParsedDocument(blocks=blocks)
+
+    rows = run_rule_repair(result, natives, 2)
+
+    assert not any(row["classification"] == "excluded" for row in rows)
+    assert all(block["content"] == text for block in result.blocks)
+    assert render_document(result.blocks).count(text) == 2
+
+
+def test_body_repetition_does_not_prove_running_header():
+    """正文中的相同文字不能给单次页边文字提供重复页眉证据。"""
+    natives = [
+        _native("Results and discussion", bbox=[.1, .02, .8, .04]),
+        _native("Results and discussion", id="n2", page=2),
+    ]
+
+    rows = run_rule_repair(ParsedDocument(), natives, 2)
+
+    assert len(rows) == 2
+    assert all(row["kind"] == "missing_region" for row in rows)
+
+
+@pytest.mark.parametrize("content,box", [
+    ("15855", [.1, .3, .2, .32]),
+    ("© 2025 American Chemical Society", [.1, .3, .8, .32]),
+    ("https://doi.org/10.1021/example", [.1, .3, .8, .32]),
+    ("15855", [.48, .95, .53, .97]),
+    ("https://doi.org/10.1021/example", [.1, .95, .8, .97]),
+    ("Measured yield was 15855 at the final step.", [.1, .95, .8, .97]),
+    ("(12) Author. Title. https://doi.org/10.1021/example", [.1, .95, .8, .97]),
+    ("Footnote with experimental details.", [.1, .95, .8, .97]),
+])
+def test_publication_like_text_without_layout_proof_remains_missing(content, box):
+    """数字、版权和 DOI 内容本身不构成出版区域证明。"""
+    rows = run_rule_repair(ParsedDocument(), [_native(content, bbox=box)], 1)
+
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "missing_region"
+    assert rows[0]["candidates"]["native"] == content
+
+
+@pytest.mark.parametrize("content", ["15855", "https://doi.org/10.1021/example", "© 2025 Example publisher"])
+def test_figure_and_table_margin_text_is_not_classified_as_publication(content):
+    """图表覆盖的页边文字按图表保留，不套用出版噪声规则。"""
+    blocks = [_block("table data", type="table", bbox=[.1, .90, .9, .99])]
+    natives = [_native(content, bbox=[.1, .95, .8, .97])]
+    result = ParsedDocument(blocks=blocks)
+
+    rows = run_rule_repair(result, natives, 1)
+
+    assert rows == []
+    assert result.metadata["pdf_repair"]["excluded_publication_elements"] == 0
+    assert blocks[0]["content"] == "table data"
+
+
+@pytest.mark.parametrize("value,box", [
+    ("15860", [.48, .95, .53, .97]),
+    ("15856", [.48, .91, .53, .93]),
+])
+def test_nonsequential_or_unaligned_margin_numbers_remain_missing(value, box):
+    """页码需要同时满足相邻页递进与位置对应。"""
+    natives = [
+        _native("15855", bbox=[.48, .95, .53, .97]),
+        _native(value, id="n2", page=2, bbox=box),
+    ]
+
+    rows = run_rule_repair(ParsedDocument(), natives, 2)
+
+    assert len(rows) == 2
+    assert all(row["kind"] == "missing_region" for row in rows)
+
+
 def test_bare_math_delimiters_preserve_tokens_and_protected_content():
     """图注定界只补完整数学 token；代码、HTML、图片和 URL 保留。"""
     content = "CO_2, C_2H_4/C_2H_6 and min^{-1}; `CO_2` https://x.test/C_2H_4 ![](asset://a) <table><th>CO_2</th></table>"

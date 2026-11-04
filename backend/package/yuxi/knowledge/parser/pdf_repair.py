@@ -26,17 +26,15 @@ from yuxi.knowledge.parser.pdf_repair_rules import (
 from yuxi.knowledge.parser.result import ParsedDocument
 
 
-RULE_VERSION = "yuxi-r2-2"
+RULE_VERSION = "yuxi-r2-3"
 
 
 def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_count: int) -> list[dict]:
     """原位修复 blocks 并更新统计，返回审计项供调用方扩展 reviews。"""
-    repeats = defaultdict(set)
-    for native in native_blocks:
-        repeats[layout_text(native.get("content", ""))].add(native["page"])
+    publication_regions = _publication_regions(result.blocks, native_blocks)
     evidence = []
     for native in native_blocks:
-        role = _region_role(native, repeats)
+        role = _region_role(native, publication_regions)
         evidence.append({
             "id": native["id"], "page": native["page"], "bbox": native.get("bbox"),
             "content": str(native.get("content") or ""), "source": "native",
@@ -59,10 +57,10 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
     for block in result.blocks:
         content = str(block.get("content") or "")
         sources = matches[block["id"]]
-        role = _region_role(block, repeats)
+        role = _region_role(block, publication_regions)
         block["repair_role"] = role
         if role == "publication_noise":
-            rows.append(_row(block, "publication_element", sources, status="checked", reason="几何位置与重复或下载用途共同确认出版元素", classification="excluded", severity="low"))
+            rows.append(_row(block, "publication_element", sources, status="checked", reason="区域类型、页边位置与出版用途证据支持排除正文核对", classification="excluded", severity="low"))
             continue
         if block["type"] in {"picture", "table", "code_block", "chemical_structure"}:
             if block["type"] == "table" and re.search(r"<(?:eq|th)\b", content, re.I) and re.search(r"[_^{}]", content):
@@ -380,22 +378,73 @@ def _native_quality(native: dict) -> str:
     return "high"
 
 
-def _region_role(region: dict, repeats) -> str:
-    """出版用途需位置佐证，唯一 DOI、SI 和通讯信息始终保留。"""
+def _region_role(region: dict, publication_regions: list[dict]) -> str:
+    """按版面证据排除出版区域，保留科学内容和文章联系信息。"""
     content = layout_text(str(region.get("content") or ""))
-    if re.search(r"\bdoi\b|10\.\d{4,9}/|Supporting Information|Correspond(?:ing|ence)|^(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:|\bE[-\s]?mail\b|[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}|orcid\.org|Author|Acknowledg|Cite This", content, re.I):
+    if re.search(r"Supporting Information|Correspond(?:ing|ence)|^(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:|\bE[-\s]?mail\b|[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}|orcid\.org|Acknowledg|Cite This", content, re.I):
         return "article_metadata"
+    if re.search(r"Author", content, re.I) and not re.match(r"(?:©|\(c\)|copyright)\s*", content, re.I):
+        return "article_metadata"
+    if region.get("type") in {"picture", "table", "formula", "caption", "chemical_equation", "chemical_structure", "code_block"}:
+        return region["type"]
     box = region.get("bbox")
+    if region.get("type") in {"page_header", "page_footer"} or any(
+        item["page"] == region["page"] and overlap_fraction(box, item.get("bbox")) >= .85
+        for item in publication_regions
+    ):
+        return "publication_noise"
+    if re.search(r"\bdoi\b|10\.\d{4,9}/", content, re.I):
+        return "article_metadata"
     margin = bool(box) and (box[3] <= 0.10 or box[1] >= 0.90 or box[0] >= 0.92)
     known_purpose = bool(re.search(r"Downloaded (?:via|from)|sharingguidelines|pubs\.acs\.org/sharing|Contents lists available at|journal homepage:", content, re.I))
-    repeated_margin = margin and len(repeats.get(content, set())) >= 2
-    if (margin and known_purpose) or repeated_margin:
+    if margin and known_purpose:
         return "publication_noise"
-    if region.get("type") in {"picture", "table", "formula", "caption", "chemical_equation", "chemical_structure"}:
-        return region["type"]
     if box and 0.08 <= box[1] < box[3] <= 0.94:
         return "body"
     return "unknown"
+
+
+def _publication_regions(blocks: list[dict], native_blocks: list[dict]) -> list[dict]:
+    """收集明确页眉页脚与有跨页、版权邻接证据的原生页边行。"""
+    regions = [block for block in blocks if block["type"] in {"page_header", "page_footer"}]
+    margins = []
+    for native in native_blocks:
+        box = native.get("bbox")
+        if not box or box[3] - box[1] > .04 or not (box[3] <= .10 or box[1] >= .90):
+            continue
+        # 图表、公式和明确脚注内的文字不能独立充当出版元素证据。
+        if any(block["page"] == native["page"] and block["type"] in {"picture", "table", "formula", "caption", "chemical_equation", "chemical_structure", "code_block", "footnote"}
+               and overlap_fraction(box, block.get("bbox")) >= .85 for block in blocks):
+            continue
+        margins.append(native)
+    copyrights = [item for item in margins if re.fullmatch(
+        r"(?:©|\(c\)|copyright)\s*(?:copyright\s*)?(?:19|20)\d{2}\b\s*\S.*",
+        layout_text(item.get("content", "")), re.I,
+    )]
+    for native in margins:
+        content = layout_text(native.get("content", ""))
+        box = native["bbox"]
+        number = bool(re.fullmatch(r"[0-9]{1,6}", content)) and box[2] - box[0] <= .18
+        peers = [item for item in margins if item["page"] != native["page"] and all(
+            abs(left - right) <= .02 for left, right in zip(box, item["bbox"], strict=True)
+        )]
+        standalone_doi = bool(re.fullmatch(r"(?:https?://(?:dx\.)?doi\.org/|doi\s*:\s*)?10\.\d{4,9}/\S+", content, re.I))
+        contains_doi = bool(re.search(r"\bdoi\b|10\.\d{4,9}/", content, re.I))
+        repeated = (bool(content) and not content.isdecimal() and (not contains_doi or standalone_doi)
+                    and any(layout_text(item.get("content", "")) == content for item in peers))
+        page_sequence = number and any(
+            abs(item["page"] - native["page"]) == 1
+            and re.fullmatch(r"[0-9]{1,6}", layout_text(item.get("content", "")))
+            and int(layout_text(item["content"])) - int(content) == item["page"] - native["page"]
+            for item in peers
+        )
+        doi_by_copyright = standalone_doi and any(
+            item["page"] == native["page"] and abs(item["bbox"][1] - box[1]) <= .06
+            for item in copyrights
+        )
+        if native in copyrights or repeated or page_sequence or doi_by_copyright:
+            regions.append(native)
+    return regions
 
 
 def _delimit_bare_math(text: str) -> str:
