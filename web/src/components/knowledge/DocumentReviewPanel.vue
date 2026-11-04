@@ -14,8 +14,7 @@
       </div>
       <a-empty v-if="!groups.length" description="本次解析没有校对记录。" />
       <div v-else-if="!filtered.length" class="review-empty">
-        <p>{{ filter === 'attention' ? '当前没有待人工核对的问题。' : '当前分类没有校对记录。' }}</p>
-        <button type="button" class="review-action" @click="changeFilter('all')">查看全部记录</button>
+        <p>{{ filter === 'attention' ? '当前没有待确认的问题。' : '当前没有已确认的问题。' }}</p>
       </div>
       <div v-else class="review-workspace">
         <aside class="review-sidebar" aria-label="校对问题列表">
@@ -107,7 +106,7 @@
               <h4>{{ activeBlock ? '校对后正文（完整段落）' : '补入遗漏正文' }}</h4>
               <button v-if="active.candidates?.native" type="button" class="review-action" :disabled="saving" @click="draft = active.candidates.native">采用 PDF 提取文字</button>
             </div>
-            <p class="review-hint">{{ activeBlock ? '请核对完整段落。确认后，该段相关问题均标记为人工已确认，原机器记录保留供参考。' : '此问题未定位到原段落。需要补充正文时，请明确选择补入位置；原文无误则保留正文并确认。' }}</p>
+            <p class="review-hint">{{ activeBlock ? '请核对完整段落。确认后，该段相关问题均标记为已确认，原机器记录保留供参考。' : '此问题未定位到原段落。需要补充正文时，请明确选择补入位置；原文无误则保留正文并确认。' }}</p>
             <label v-if="!activeBlock" class="review-part-selector">
               补入位置
               <select v-model="anchorBlockId" :disabled="saving" aria-label="选择补入位置">
@@ -176,12 +175,14 @@ const groups = computed(() => groupDocumentReviews(props.state.reviews))
 const autoIndexDeferred = computed(() => props.state.metadata.auto_index_enabled === true &&
   (['needs_review', 'incomplete'].includes(props.state.metadata.review_status) ||
     groups.value.some((group) => group.attention || group.incomplete)))
+/** 待确认合并人工核对与未完成复核，按原问题计数。 */
+function matchesFilter(group, value) {
+  return value === 'attention' ? group.attention || group.incomplete : group.confirmed
+}
 const filters = computed(() => [
-  { value: 'attention', label: '待人工核对' }, { value: 'incomplete', label: '复核未完成' },
-  { value: 'modified', label: '系统已修改' }, { value: 'confirmed', label: '人工已确认' },
-  { value: 'all', label: '全部记录' }
-].map((option) => ({ ...option, count: groups.value.filter((group) => option.value === 'all' || group[option.value]).length })))
-const filtered = computed(() => groups.value.filter((group) => filter.value === 'all' || group[filter.value]))
+  { value: 'attention', label: '待确认' }, { value: 'confirmed', label: '已确认' }
+].map((option) => ({ ...option, count: groups.value.filter((group) => matchesFilter(group, option.value)).length })))
+const filtered = computed(() => groups.value.filter((group) => matchesFilter(group, filter.value)))
 const pageCount = computed(() => Math.ceil(filtered.value.length / pageSize))
 const pageGroups = computed(() => filtered.value.slice((listPage.value - 1) * pageSize, listPage.value * pageSize))
 const selectedIndex = computed(() => Math.max(0, filtered.value.findIndex((group) => group.key === selectedKey.value)))
@@ -283,8 +284,8 @@ function discardDraft() {
 }
 
 watch([() => props.state.attempt_id, () => props.state.reviews], () => {
-  const initial = groups.value.some((group) => group.attention) ? 'attention'
-    : groups.value.some((group) => group.incomplete) ? 'incomplete' : 'all'
+  const initial = groups.value.some((group) => group.attention || group.incomplete) || !groups.value.some((group) => group.confirmed)
+    ? 'attention' : 'confirmed'
   changeFilter(initial)
 }, { immediate: true })
 watch(partIndex, () => { imageExpanded.value = false })

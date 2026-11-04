@@ -31,7 +31,7 @@ export function groupDocumentReviews(reviews) {
 
 /** 明确核对来源，系统回执不能表达为人工确认。 */
 export function reviewStatusLabel(record) {
-  if (record.human_review) return '人工已确认'
+  if (record.human_review) return '已确认'
   if (record.protocol_errors?.length) return '复核未完成'
   if (record.remaining_conflicts?.length) return '仍有差异待核对'
   return {

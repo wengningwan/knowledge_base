@@ -58,7 +58,7 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
     const reviews = [
       { id: 'ok', status: 'checked', source: 'model', before: '正常内容', after: '正常内容' },
       ...Array.from({ length: 10 }, (_, index) => ({ id: `issue-${index}`, kind: 'text_mismatch', page: index + 1, status: 'unresolved', before: `片段 ${index} 旧`, candidates: { native: `片段 ${index} 新` } })),
-      { id: 'part1', parent_issue_id: 'split', status: 'machine_corrected', applied: true, before: '甲旧，乙旧', after: '甲新，乙旧', page: 12,
+      { id: 'part1', parent_issue_id: 'split', status: 'machine_corrected', remaining_conflicts: ['a'], applied: true, before: '甲旧，乙旧', after: '甲新，乙旧', page: 12,
         targets: [{ id: 'a', old: '甲旧', context_after: '，乙旧' }] },
       { id: 'part2', parent_issue_id: 'split', status: 'technical_failed', applied: false, before: '甲旧，乙旧', after: '甲新，乙旧', source_image: '/api/knowledge/databases/kb/images/crop.png', page: 12,
         targets: [{ id: 'b', old: '乙旧', context_before: '甲旧，' }] },
@@ -82,7 +82,7 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
     const click = async (node) => { node.props.onClick(); await nextTick() }
     const button = (text) => nodes(root, (node) => node.type === 'button' && textOf(node).includes(text))[0]
     assert.equal(byClass(root, 'review-item').length, 8)
-    assert.match(textOf(byClass(root, 'review-filters')[0]), /待人工核对 10/)
+    assert.deepEqual(byClass(root, 'review-filter').map(textOf), ['待确认 11', '已确认 0'])
     assert.equal(byClass(root, 'review-detail').length, 1)
     assert.match(textOf(byClass(root, 'review-detail')[0]), /OCR识别文字/)
     assert.match(textOf(byClass(root, 'review-detail')[0]), /PDF提取文字/)
@@ -91,16 +91,17 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
     assert.equal(nodes(root, (node) => ['del', 'ins'].includes(node.type)).length, 0)
     assert.doesNotMatch(textOf(root), /候选文本与校对依据|解析诊断|诊断内容不应显示/)
     for (let i = 0; i < 8; i++) await click(button('下一项'))
-    assert.match(textOf(byClass(root, 'review-navigation')[0]), /第 9 \/ 10 项/)
+    assert.match(textOf(byClass(root, 'review-navigation')[0]), /第 9 \/ 11 项/)
     assert.match(textOf(byClass(root, 'review-pagination')[0]), /2 \/ 2 页/)
     assert.equal(Boolean(button('查看 PDF')), false, '校对面板不得生成 PDF 跳转按钮')
     visible.value = false
     await nextTick()
     visible.value = true
     await nextTick()
-    assert.match(textOf(byClass(root, 'review-navigation')[0]), /第 9 \/ 10 项/)
-    await click(button('复核未完成'))
-    assert.equal(byClass(root, 'review-item').length, 1)
+    assert.match(textOf(byClass(root, 'review-navigation')[0]), /第 9 \/ 11 项/)
+    await click(button('下一项'))
+    await click(button('下一项'))
+    assert.match(textOf(byClass(root, 'review-navigation')[0]), /第 11 \/ 11 项/)
     assert.match(textOf(byClass(root, 'review-detail')[0]), /可能包含其他问题的修改/)
     assert.match(textOf(byClass(root, 'review-target')[0]), /本片段核对范围甲旧，乙旧/)
     assert.equal(textOf(nodes(byClass(root, 'review-target')[0], (node) => node.type === 'mark')[0]), '乙旧')
@@ -116,11 +117,16 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
     assert.equal(nodes(root, (node) => node.type === 'dialog').length, 0)
     state.value = { ...state.value, reviews: [{ id: 'new', status: 'machine_corrected', before: '已删除', after: '' }], attempt_id: 'v2' }
     await nextTick()
-    assert.match(textOf(byClass(root, 'review-detail')[0]), /内容已移除/)
-    await click(button('待人工核对'))
-    assert.match(textOf(root), /当前没有待人工核对的问题/)
-    await click(button('查看全部记录'))
-    assert.equal(byClass(root, 'review-item').length, 1)
+    assert.deepEqual(byClass(root, 'review-filter').map(textOf), ['待确认 0', '已确认 0'])
+    assert.match(textOf(root), /当前没有待确认的问题/)
+    assert.equal(byClass(root, 'review-item').length, 0)
+    assert.equal(Boolean(button('查看全部记录')), false)
+    await click(button('已确认'))
+    assert.match(textOf(root), /当前没有已确认的问题/)
+    state.value = { ...state.value, reviews: [{ id: 'failed', status: 'technical_failed' }], attempt_id: 'v3' }
+    await nextTick()
+    assert.deepEqual(byClass(root, 'review-filter').map(textOf), ['待确认 1', '已确认 0'])
+    assert.equal(byClass(root, 'review-item').length, 1, '只有复核未完成时也默认进入待确认')
     for (const [metadata, blocked] of [
       [{ review_status: 'needs_review', auto_index_enabled: true }, true],
       [{ review_status: 'incomplete', auto_index_enabled: true }, true],
@@ -191,10 +197,10 @@ test('真实校对组件筛选、分页、分片、差异、原图与版本切�
     state.value = { ...state.value, metadata: { review_status: 'completed', human_review_revision: 'r2' },
       reviews: state.value.reviews.map((row) => ({ ...row, human_review: { confirmed_by: 'human' } })) }
     await nextTick()
-    assert.doesNotMatch(textOf(byClass(root, 'review-filters')[0]), /待人工核对 [1-9]/)
-    await click(button('人工已确认'))
+    assert.doesNotMatch(textOf(byClass(root, 'review-filters')[0]), /待确认 [1-9]/)
+    await click(button('已确认'))
     assert.equal(byClass(root, 'review-item').length, 2)
-    assert.match(textOf(byClass(root, 'review-detail-tags')[0]), /人工已确认/)
+    assert.match(textOf(byClass(root, 'review-detail-tags')[0]), /已确认/)
     state.value = { attempt_id: 'two-drafts', metadata: { review_status: 'needs_review' },
       blocks: [{ id: 'a', type: 'text', content: 'A 原文' }, { id: 'b', type: 'text', content: 'B 原文' }],
       reviews: [{ id: 'ra', block_id: 'a', status: 'unresolved' }, { id: 'rb', block_id: 'b', status: 'unresolved' }] }
