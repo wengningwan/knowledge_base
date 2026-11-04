@@ -50,6 +50,7 @@ export function reviewKindLabel(kind) {
     critical_mismatch: '关键内容差异', text_mismatch: '文字差异', math_syntax: '公式格式',
     title_hierarchy: '标题层级', missing_region: '疑似正文遗漏', reading_flow: '阅读顺序',
     native_evidence_unavailable: '原文证据缺失', missing_page: '疑似缺页',
+    scientific_notation: '科学符号核对',
     date_body_split: '日期与正文', same_line_join: '同行文字', high_risk: '图表与公式',
     weak_reference: '缺少可靠对照'
   }[kind] || '内容核对'

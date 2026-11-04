@@ -18,7 +18,7 @@ export function sortedPreviewChunks(chunks = []) {
 export function chunkPreviewContent(chunk) {
   const content = chunk.content ?? ''
   const metadata = chunk.source_metadata
-  if (!['paper_rules_v1', 'paper_rules_v2'].includes(metadata?.chunker_version) || !Array.isArray(metadata.section_path)) return content
+  if (!['paper_rules_v1', 'paper_rules_v2', 'paper_rules_v3'].includes(metadata?.chunker_version) || !Array.isArray(metadata.section_path)) return content
   const prefix = /^论文：[^\n]*\n章节：([^\n]*)\n\n/.exec(content)
   const section = metadata.section_path.join(' > ') || '正文'
   return prefix?.[1] === section ? content.slice(prefix[0].length) : content
@@ -55,12 +55,6 @@ function chunkNotices(metadata) {
   }
   const notices = (metadata.warnings || []).map((warning) =>
     warningLabels[warning] || '分块包含需检查的提示')
-  if (metadata.associations?.some((item) => item.status === 'ambiguous')) {
-    notices.push('实验条件存在多个候选，未自动关联')
-  }
-  if (metadata.associations?.some((item) => item.status === 'unresolved')) {
-    notices.push('部分实验条件未找到明确来源')
-  }
   return [...new Set(notices)]
 }
 

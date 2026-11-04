@@ -97,6 +97,17 @@ def critical_signature(text: str) -> list[str]:
     return re.findall(pattern, text)
 
 
+def scientific_symbol_spans(text: str) -> list[tuple[int, int]]:
+    """定位需原图核对的混合字母下标和化学键，跳过代码与链接。"""
+    protected = protected_spans(text)
+    pattern = r"[A-Za-z][ₐ-₟]+[A-Za-z]|\b[A-Z][a-z]?\s*(?:≡|=|\\equiv\b)\s*[A-Z][a-z]?\b"
+    return [
+        (match.start(), match.end())
+        for match in re.finditer(pattern, text)
+        if not any(start < match.end() and end > match.start() for start, end in protected)
+    ]
+
+
 def is_local_candidate(before: str, after: str) -> bool:
     """只接受少量局部差异，不把全段候选选择变成任意重写。"""
     if len(after.split()) < len(before.split()):

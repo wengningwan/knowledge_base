@@ -43,7 +43,7 @@
             style="width: 100%"
           />
         </a-form-item>
-        <a-form-item v-if="showChunkSizeOverlap" name="overlapped_percent">
+        <a-form-item v-if="showChunkSizeOverlap && !isPaperPreset" name="overlapped_percent">
           <template #label>
             <span class="chunk-preset-label">
               重叠比例 (%)
@@ -60,7 +60,7 @@
             style="width: 100%"
           />
         </a-form-item>
-        <a-form-item v-if="showQaSplit" name="delimiter">
+        <a-form-item v-if="showQaSplit && !isPaperPreset" name="delimiter">
           <template #label>
             <span class="chunk-preset-label">
               分隔符

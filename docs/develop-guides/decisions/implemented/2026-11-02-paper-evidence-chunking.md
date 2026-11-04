@@ -14,7 +14,7 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 
 `paper` 是显式选择的论文证据策略，沿现有解析后入库、PostgreSQL chunk 事实和 Milvus 派生索引运行。章节、完整公式及定义、图片与图注、Markdown/HTML 表格与标题组织在实际检索正文中。显示编号的公式解释仅在编号吻合时附加；图表说明两侧都有候选时保留独立内容并提示歧义。参考文献保留在原文，不成为检索块或实验条件来源。
 
-实验跨段关联只识别单个大写字母或以大写字母/数字开头且含数字的明确标识，例如 `Sample A`、`Sample SX-1`。结果仅携带唯一处理条件来源的原文，多个候选、未命名或明确另一个实验时不推断。该规则提供检索上下文，不产生实验卡片或科学事实断言。长度是组合目标，单个完整公式/表格可超过目标并提示；超出 Milvus 字段容量时在清理旧索引前显式拒绝。
+分块中的实验跨段关联由[Paper 职责边界](2026-11-04-paper-chunking-boundary.md)收敛为仅组织原文，不再追加实验条件。长度是组合目标，单个完整公式/表格可超过目标并提示；超出 Milvus 字段容量时在清理旧索引前显式拒绝。
 
 `KnowledgeChunk.source_metadata` 是独立的可空 JSON，由分块模块产生、repository 持久化，Milvus executor 向预览和查询回填。它保存 Markdown 指纹、切分版本、章节、内容类型、证据标识及显式多来源范围。行号是一基闭区间；字符范围按 Unicode 码点零基左闭右开。不连续来源保留多个范围。PDF 页码仅来自同次解析、唯一逐字匹配的真实版面块；其余只提供 Markdown 位置。知识 schema 3→4 由 storage-migrator 幂等升级，1/2 版本继续走相邻升级链，旧记录保持空来源。
 
@@ -34,6 +34,8 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 通用策略和全库默认值保持原行为，已有文件需显式重新入库才能获得新分块及来源。General 等改写正文的策略、重叠 Separator 尚不能保证完整精确来源，不纳入该对照。规则的名称与结构识别范围有限，原文和人工核验继续承担科学语义判断。
 
 Paper 的同行数字小节、相邻英文续句及来源 PDF 页定位由[小节与来源页决定](2026-11-02-paper-subsections-and-source-pages.md)补充，切分版本为 paper_rules_v2；旧版本分块和检索正文继续保留。
+
+Paper v3 的浮图续接、同行父子标题及图表独立上下文由[正文连续性与处理边界决定](2026-11-04-paper-evidence-continuity.md)补充，当前规则以分块 Owner 为准。
 
 ## 验证
 

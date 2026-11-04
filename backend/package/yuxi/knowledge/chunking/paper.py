@@ -9,7 +9,7 @@ from typing import Any
 from yuxi.knowledge.chunking.ragflow_like.nlp import count_tokens
 from yuxi.knowledge.chunking.source import SourceDocument, source_sha256
 
-PAPER_CHUNKER_VERSION = "paper_rules_v2"
+PAPER_CHUNKER_VERSION = "paper_rules_v3"
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 CAPTION = re.compile(
     r"^(?:#{1,6}\s+)?(?:\*\*)?(table|figure|fig\.?|scheme|表|图)\s*(S?\d+(?:[.-]\d+)*)[.:：、]?\s*",
@@ -29,20 +29,11 @@ IDENTIFIER = re.compile(
     r"|(?:样品|实验)\s*([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*)",
     re.I,
 )
-CONDITION = re.compile(
-    r"\b(?:prepared|treated|heated|annealed|synthesi[sz]ed|conducted)\b|制备|处理|加热|退火|合成|实验条件",
-    re.I,
-)
-RESULT = re.compile(
-    r"\b(?:yield(?:ed)?|result(?:s)?|achieved|increased|decreased|showed|obtained|reached|reported)\b"
-    r"|结果|产率|达到|提高|降低|获得",
-    re.I,
-)
 
 
 @dataclass
 class Evidence:
-    """保留结构化单元及不连续原文范围。"""
+    """保留原文单元及不连续来源范围。"""
 
     kind: str
     ranges: list[tuple[int, int]]
@@ -62,18 +53,12 @@ def chunk_paper(
     target = max(1, int(config.get("chunk_token_num", 512) or 512))
     title, title_range, parsed_units = _parse_units(text)
     units = _group_evidence(text, parsed_units)
-    condition_sources: dict[str, list[Evidence]] = {}
-    for unit in units:
-        body = _body(text, unit)
-        if CONDITION.search(body) and re.search(r"\d", body):
-            for identifier in _identifiers(body):
-                condition_sources.setdefault(identifier, []).append(unit)
 
     groups: list[list[Evidence]] = []
     for unit in units:
         body = _body(text, unit)
         previous = groups[-1] if groups else []
-        # 实验身份和章节是组合边界，图表与公式始终保留为完整证据。
+        # 对象标识和章节是组合边界，图表与公式始终保留为完整证据。
         if (
             previous
             and unit.kind == "text"
@@ -91,27 +76,15 @@ def chunk_paper(
     records = []
     for index, group in enumerate(groups):
         body = "\n\n".join(_body(text, unit) for unit in group)
-        headings = group[0].headings
+        # 浮图在 PDF 中的位置不证明章节归属，图表保留独立上下文。
+        visual = all(unit.kind in {"figure", "figure_caption", "table", "table_caption"} for unit in group)
+        headings = () if visual else group[0].headings
         section_path = [heading[1] for heading in headings]
         content = f"论文：{title or filename}\n章节：{' > '.join(section_path) or '正文'}\n\n{body}"
         ranges = [title_range] if title_range else []
         ranges.extend((heading[2], heading[3]) for heading in headings)
         ranges.extend(span for unit in group for span in unit.ranges)
         evidence_ids = [f"evidence_{unit.ranges[0][0]}" for unit in group]
-        associations = []
-        if RESULT.search(body):
-            for identifier in sorted(_identifiers(body)):
-                candidates = condition_sources.get(identifier, [])
-                status = "ambiguous" if len(candidates) > 1 else "unresolved"
-                if len(candidates) == 1:
-                    status = "linked"
-                    condition = candidates[0]
-                    if condition not in group:
-                        content += f"\n\n实验条件（{identifier}）：\n{_body(text, condition)}"
-                        ranges.extend(condition.ranges)
-                        evidence_ids.append(f"evidence_{condition.ranges[0][0]}")
-                associations.append({"identifier": identifier, "status": status})
-
         warnings = list(dict.fromkeys(warning for unit in group for warning in unit.warnings))
         if count_tokens(content) > target:
             warnings.append("over_target_tokens")
@@ -124,7 +97,6 @@ def chunk_paper(
             "evidence_ids": evidence_ids,
             "source_spans": [source.span(start, end) for start, end in dict.fromkeys(ranges)],
             "warnings": warnings,
-            "associations": associations,
         }
         records.append(
             {
@@ -204,14 +176,19 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
                 title, title_range = name, heading_range
                 cursor += 1
                 continue
-            headings = [entry for entry in headings if entry[0] < level]
-            headings.append((level, name, *heading_range))
-            remainder = line[heading_length:]
-            if not remainder.strip():
+            while heading:
+                level, name, heading_length = heading
+                heading_range = (line_start, line_start + heading_length)
+                headings = [entry for entry in headings if entry[0] < level]
+                headings.append((level, name, *heading_range))
+                remainder = line[heading_length:]
+                line_start = heading_range[1] + len(remainder) - len(remainder.lstrip())
+                line = remainder.strip()
+                heading = _heading(line) if line else None
+            if not line:
                 cursor += 1
                 continue
-            body_start = heading_range[1] + len(remainder) - len(remainder.lstrip())
-            line = remainder.strip()
+            body_start = line_start
 
         first = cursor
         markdown_table = _is_markdown_table(lines, cursor)
@@ -258,19 +235,13 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
             for heading in headings
         ):
             unit = Evidence(kind, [(start, end)], tuple(headings), warnings)
-            previous = units[-1] if units else None
-            # 仅续接同节、同身份且以英文小写开头的相邻半句，不跨图表或公式重排原文。
-            if previous and previous.kind == kind == "text" and previous.headings == unit.headings:
-                previous_body = re.sub(
-                    r"(?:\$\^\{[\d\s,\[\]–-]+\}\$|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s*$", "", _body(text, previous)
-                ).rstrip()
-                if (
-                    re.match(r"[a-z]", _body(text, unit))
-                    and re.search(r"[A-Za-z0-9$)}]$", previous_body)
-                    and _identifiers(_body(text, previous)) == _identifiers(_body(text, unit))
-                ):
-                    previous.ranges.extend(unit.ranges)
-                    continue
+            # 浮图不拥有正文阅读流；只在同节未完句和明确续句同时成立时跨过它。
+            previous = next(
+                (part for part in reversed(units) if part.kind not in {"figure", "figure_caption"}), None
+            )
+            if previous and _continues_paragraph(text, previous, unit):
+                previous.ranges.extend(unit.ranges)
+                continue
             units.append(unit)
     return title, title_range, units
 
@@ -279,11 +250,16 @@ def _heading(line: str) -> tuple[int, str, int] | None:
     """识别 Markdown、独立数字小节及同行正文前的小节，返回原文标题长度。"""
     heading = HEADING.match(line)
     if heading:
+        run_in = _heading(heading[2])
+        if run_in and run_in[2] < len(heading[2]):
+            return run_in[0], run_in[1], heading.start(2) + run_in[2]
         number = re.match(r"^(\d+(?:\.\d+)*)\.\s", heading[2])
         level = number[1].count(".") + 1 if number else len(heading[1])
         return level, heading[2], len(line)
     numbered = re.fullmatch(r"(\d+(?:\.\d+)+)(\.)?\s+([^\n]+)", line)
     if not numbered or not re.match(r"[A-Z\u4e00-\u9fff]", numbered[3]):
+        return None
+    if not numbered[2] and re.match(r"(?:K|Pa|kPa|MPa|GPa)(?:\s|$)", numbered[3]):
         return None
     title = re.match(r"([^.!?。！？\n]{1,120})\.(?:\s+|$)", numbered[3])
     if title and numbered[2]:
@@ -299,6 +275,10 @@ def _group_evidence(text: str, units: list[Evidence]) -> list[Evidence]:
     for index, unit in enumerate(units):
         previous = grouped[-1] if grouped else None
         same_section = previous is not None and previous.headings == unit.headings
+        formula_owner = next(
+            (part for part in reversed(grouped) if part.kind not in {"figure", "figure_caption"}), None
+        )
+        same_formula_section = formula_owner is not None and formula_owner.headings == unit.headings
         body = _body(text, unit)
         if unit.kind in {"figure_caption", "table_caption"}:
             owner_kind = "figure" if unit.kind == "figure_caption" else "table"
@@ -316,24 +296,29 @@ def _group_evidence(text: str, units: list[Evidence]) -> list[Evidence]:
                 unit.warnings.append("ambiguous_caption")
                 grouped.append(unit)
                 continue
-        if same_section and previous.kind == "formula" and unit.kind == "text" and DEFINITION.match(body):
+        if (
+            same_formula_section and formula_owner.kind == "formula"
+            and unit.kind == "text" and DEFINITION.match(body)
+        ):
             reference = re.match(r"^in\s+(?:eq\.?|equation)\s*\(?(\d+)\)?", body, re.I)
-            labels = re.findall(r"\\tag\{(\d+)\}", _body(text, previous))
+            labels = re.findall(r"\\tag\{(\d+)\}", _body(text, formula_owner))
             if reference and reference[1] not in labels:
                 unit.warnings.append("unresolved_formula_reference")
                 grouped.append(unit)
             else:
-                previous.ranges.extend(unit.ranges)
+                formula_owner.ranges.extend(unit.ranges)
         elif (
-            same_section
+            same_formula_section
             and unit.kind == "formula"
-            and previous.kind == "text"
-            and INTRODUCTION.search(_body(text, previous))
-            and not DEFINITION.match(_body(text, previous))
+            and formula_owner.kind == "text"
+            and INTRODUCTION.search(
+                re.sub(r"(?:\$\^\{[\d\s,\[\]–-]+\}\$|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s*$", "", _body(text, formula_owner))
+            )
+            and not DEFINITION.match(_body(text, formula_owner))
         ):
-            previous.kind = "formula"
-            previous.ranges.extend(unit.ranges)
-            previous.warnings.extend(unit.warnings)
+            formula_owner.kind = "formula"
+            formula_owner.ranges.extend(unit.ranges)
+            formula_owner.warnings.extend(unit.warnings)
         elif (
             same_section
             and not any(CAPTION.match(text[start:end]) for start, end in previous.ranges)
@@ -402,8 +387,29 @@ def _body(text: str, unit: Evidence) -> str:
     return "\n\n".join(text[start:end] for start, end in unit.ranges)
 
 
+def _continues_paragraph(text: str, previous: Evidence, current: Evidence) -> bool:
+    """用同节、对象字面标识和未完句约束续接，保持独立原文范围。"""
+    if previous.kind != "text" or current.kind != "text" or previous.headings != current.headings:
+        return False
+    before, after = _body(text, previous), _body(text, current)
+    if re.match(r"(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:", before, re.I):
+        return False
+    before_samples, after_samples = _sample_names(before), _sample_names(after)
+    if before_samples and after_samples and not (
+        _same_sample_family(before_samples, after_samples)
+        or _same_sample_family(after_samples, before_samples)
+    ):
+        return False
+    ending = re.sub(r"(?:\$\^\{[\d\s,\[\]–-]+\}\$|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s*$", "", before).rstrip()
+    return bool(
+        re.search(r"[A-Za-z0-9$)},]$", ending)
+        and re.match(r"[a-z]|\(\s*[<>≤≥]?\s*\d", after)
+        and _identifiers(before) == _identifiers(after)
+    )
+
+
 def _identifiers(text: str) -> set[str]:
-    """仅关联单个大写字母或含数字的明确标识，排除泛称及另一个实验。"""
+    """提取明确对象标识作为切分边界，排除泛称及另一个实验。"""
     result = set()
     for match in IDENTIFIER.finditer(text):
         identifier = match[2] or match[3]
@@ -415,3 +421,23 @@ def _identifiers(text: str) -> set[str]:
         category = (match[1] or ("sample" if match[0].startswith("样品") else "experiment")).lower()
         result.add(f"{category}:{identifier.lower()}")
     return result
+
+
+def _sample_names(body: str) -> set[str]:
+    """识别样品字面名称，仅用于阻止不同对象的正文误续接。"""
+    names = {
+        "sample:" + name.split(":", 1)[1]
+        for name in _identifiers(body) if name.split(":", 1)[0] in {"sample", "specimen"}
+    }
+    for match in re.finditer(r"\b[A-Z][A-Za-z]*(?:-[A-Za-z]+)*-(?:[A-Z]?\d+[A-Za-z0-9]*|x)\b", body):
+        names.add(f"sample:{match[0].lower()}")
+    return names
+
+
+def _same_sample_family(left: set[str], right: set[str]) -> bool:
+    """按字面系列前缀检查续句身份，具体样品之间不互相替代。"""
+    return bool(left & right) or any(
+        re.fullmatch(re.escape(name[:-1]) + r"\d+[A-Za-z0-9]*", sample)
+        for name in left if name.endswith("-x")
+        for sample in right
+    )

@@ -19,6 +19,7 @@ from yuxi.knowledge.parser.pdf_repair_rules import (
     preserves_protected,
     protected_spans,
     proven_representation_equivalent,
+    scientific_symbol_spans,
 )
 from yuxi.knowledge.parser.pdf_review import validate_review_patch
 from yuxi.knowledge.parser.pdf_review_messages import readable_review_reason
@@ -48,9 +49,13 @@ def prepare_review_issues(blocks: list[dict], issues: list[dict]) -> list[dict]:
         native = [entry for entry in issue.get("evidence", []) if entry.get("source") == "native"]
         candidate = "\n".join(str(entry.get("content") or "") for entry in native)
         strong = bool(native) and covers_block_region(block["bbox"], native) and all(entry.get("quality") == "high" and entry.get("page") == block["page"] and overlap_fraction(entry.get("bbox"), block["bbox"]) >= .98 and sum(other["page"] == entry["page"] and overlap_fraction(entry.get("bbox"), other.get("bbox")) >= .85 for other in blocks) == 1 for entry in native)
-        changes = _complete_changes(before, candidate) if candidate else []
+        symbols = scientific_symbol_spans(before) if issue.get("review_scientific_symbols") else []
+        changes = _complete_changes(before, candidate, extra_spans=symbols) if candidate else []
         # 未可靠对齐的整块保留原文；不从同页其他原生区域推断目标位置。
-        if not changes or not strong or len(changes) > 12 or not is_local_candidate(before, candidate):
+        if (
+            not changes or not strong or len(changes) > 12
+            or (candidate != before and not is_local_candidate(before, candidate))
+        ):
             changes = [(0, len(before), 0, len(candidate))]
             strong = False
         if critical_signature(before) != critical_signature(candidate) or block["type"] in {"formula", "chemical_equation"}:
@@ -128,7 +133,18 @@ def make_review_request(batch_id: str, issues: list[dict], blocks: list[dict]) -
         })
     return {
         "schema_version": 4, "batch_id": batch_id, "image_order": image_order, "issues": requests,
-        "instructions": "每个 issue_id 恰好返回一次，status 只能 corrected/unchanged/unresolved。只逐字读取target所对应原图，focus_conflicts给出需要裁决的具体差异，两种文字都是候选。只检查目标及上下文，不复写无误整段。原图与现有文字一致或只有等价排印差异时返回unchanged、patches=[]。response_example不是预先结论。原图证明确有错误时必须corrected，看不清返回unresolved。corrected的patches覆盖该问题全部target_id，不变目标old==new；仅含target_id/old/new，old逐字复制target.old，new仅含目标替换。unchanged/unresolved的patches为空。引用给出的evidence_ids，reason简短。保留完整公式、上下标及词间空格，作者上标星号使用数学上标，不用裸星号触发强调。保留原文标点、双句点、连字符、可疑化学键和重复句，禁止规范化或按科学常识纠正论文。输出仅batch_id/results，每项仅issue_id/status/patches/evidence_ids/reason。",
+        "instructions": (
+            "每个 issue_id 恰好返回一次，status 只能 corrected/unchanged/unresolved。"
+            "只逐字读取target所对应原图，focus_conflicts给出需要裁决的具体差异，两种文字都是候选。"
+            "只检查目标及上下文，不复写无误整段。原图与现有文字一致或只有等价排印差异时返回unchanged、patches=[]。"
+            "response_example不是预先结论。原图证明确有错误时必须corrected，看不清返回unresolved。"
+            "corrected的patches覆盖该问题全部target_id，不变目标old==new；仅含target_id/old/new，"
+            "old逐字复制target.old，new仅含目标替换。unchanged/unresolved的patches为空。引用给出的evidence_ids，reason简短。"
+            "逐字核对下标中的数字与字母、化学单键/双键/三键及其作用范围；原图证明OCR不同则修正，看不清不得猜改。"
+            "保留完整公式和词间空格，作者上标星号使用数学上标，不用裸星号触发强调。"
+            "原图确实采用的标点、双句点、连字符、化学键和重复句均保留，即使不符合领域常见写法也不得按科学常识改写。"
+            "输出仅batch_id/results，每项仅issue_id/status/patches/evidence_ids/reason。"
+        ),
         "response_example": {
             "batch_id": batch_id,
             "results": [{"issue_id": issue["issue_id"], "status": "unchanged", "patches": [],
@@ -344,11 +360,17 @@ def _rebuilt_error(block: dict, before: str, after: str, *, visual: bool,
     return "" if valid else "full_block_local_validation_failed"
 
 
-def _complete_changes(before: str, candidate: str) -> list[tuple[int, int, int, int]]:
+def _complete_changes(
+    before: str, candidate: str, *, extra_spans: list[tuple[int, int]] | None = None
+) -> list[tuple[int, int, int, int]]:
     """扩展原文跨度后沿同一对齐投影候选，禁止把公式碎片当完整目标。"""
     opcodes = difflib.SequenceMatcher(a=before, b=candidate, autojunk=False).get_opcodes()
-    spans = expand_target_spans(before, [(a, b) for op, a, b, c, d in opcodes
-                                        if op != "equal" and (before[a:b].strip() or candidate[c:d].strip())])
+    spans = [
+        (a, b) for op, a, b, c, d in opcodes
+        if op != "equal" and (before[a:b].strip() or candidate[c:d].strip())
+    ]
+    spans.extend(extra_spans or [])
+    spans = expand_target_spans(before, spans)
     changes = []
     for start, end in spans:
         native_start, native_end = len(candidate), 0

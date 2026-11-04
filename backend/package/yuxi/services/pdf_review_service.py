@@ -56,7 +56,7 @@ async def review_pdf_document(result, file_path: str, params: dict, control=None
     repair.update(ocr_snapshot_hash=content_digest(raw_blocks), native_snapshot_hash=content_digest(native),
                   ocr_blocks=raw_blocks, raw_markdown=raw_markdown, native_blocks=native,
                   r1_patches=copy.deepcopy([row for row in rows if row.get("status") == "machine_corrected"]),
-                  r2_patches=[], review_contract_version=4, prompt_version="review-4",
+                  r2_patches=[], review_contract_version=4, prompt_version="review-5",
                   task_id=getattr(control, "task_id", None), file_id=getattr(control, "file_id", None))
     try:
         repair["source_hash"] = await asyncio.to_thread(_source_hash, file_path)
@@ -81,7 +81,7 @@ async def review_pdf_document(result, file_path: str, params: dict, control=None
             scope = {"kb_id": getattr(control, "kb_id", None) if repair["source_hash"] else None,
                      "file_id": getattr(control, "file_id", None), "source": repair["source_hash"],
                      "ocr": repair["ocr_snapshot_hash"], "native": repair["native_snapshot_hash"], "rule": RULE_VERSION,
-                     "prompt_version": "review-4"}
+                     "prompt_version": "review-5"}
             batches = _batches(eligible)
             processed = 0
 

@@ -22,11 +22,12 @@ from yuxi.knowledge.parser.pdf_repair_rules import (
     overlap_fraction,
     protected_spans,
     proven_representation_equivalent,
+    scientific_symbol_spans,
 )
 from yuxi.knowledge.parser.result import ParsedDocument
 
 
-RULE_VERSION = "yuxi-r2-3"
+RULE_VERSION = "yuxi-r2-4"
 
 
 def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_count: int) -> list[dict]:
@@ -138,6 +139,20 @@ def run_rule_repair(result: ParsedDocument, native_blocks: list[dict], page_coun
         lint = _math_problem(content)
         if lint:
             rows.append(_row(block, "math_syntax", sources, reason=lint, route="vision", severity="medium"))
+        if scientific_symbol_spans(content):
+            symbol_issue = next((
+                row for row in reversed(rows)
+                if row.get("block_id") == block["id"]
+                and row.get("status") in {"unresolved", "not_checked"}
+                and row.get("kind") not in {"reading_flow", "title_hierarchy", "missing_region", "table_math"}
+            ), None)
+            if symbol_issue is None:
+                symbol_issue = _row(
+                    block, "scientific_notation", sources, route="vision", severity="medium",
+                    reason="行内字母下标或化学键级需要逐字对照原图，不按领域常识替换",
+                )
+                rows.append(symbol_issue)
+            symbol_issue.update(review_scientific_symbols=True, review_route="vision")
         if block["type"] == "title":
             numbered = re.match(r"^\s*(\d+(?:\.\d+)*)(?:[.)]?\s+)\S", content)
             title_offset = 2 if block.get("title_hierarchy_document_title_id") else 1
