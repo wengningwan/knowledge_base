@@ -9,7 +9,7 @@ from typing import Any
 from yuxi.knowledge.chunking.ragflow_like.nlp import count_tokens
 from yuxi.knowledge.chunking.source import SourceDocument, source_sha256
 
-PAPER_CHUNKER_VERSION = "paper_rules_v5"
+PAPER_CHUNKER_VERSION = "paper_rules_v6"
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 CAPTION = re.compile(
     r"^(?:#{1,6}\s+)?(?:\*\*)?(table|figure|fig[.．]?|scheme|表|图)\s*(S?\d+(?:[.-]\d+)*)[.:：、．]?\s*",
@@ -455,7 +455,7 @@ def _continues_paragraph(text: str, previous: Evidence, current: Evidence) -> bo
     before, after = _body(text, previous), _body(text, current)
     if re.match(r"(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:", before, re.I):
         return False
-    before_samples, after_samples = _sample_names(before), _sample_names(after)
+    before_samples, after_samples = _sample_names(before), _sample_names(_opening_sentence(after))
     if before_samples and after_samples and not (
         _same_sample_family(before_samples, after_samples)
         or _same_sample_family(after_samples, before_samples)
@@ -494,9 +494,24 @@ def _sample_names(body: str) -> set[str]:
         "sample:" + name.split(":", 1)[1]
         for name in _identifiers(body) if name.split(":", 1)[0] in {"sample", "specimen"}
     }
-    for match in re.finditer(r"\b[A-Z][A-Za-z]*(?:-[A-Za-z]+)*-(?:[A-Z]?\d+[A-Za-z0-9]*|x)\b", body):
-        names.add(f"sample:{match[0].lower()}")
+    for match in re.finditer(r"\b[A-Z][A-Za-z]*(?:-[A-Za-z0-9_]+)+\b", body):
+        if re.search(r"\d|(?:^|-)x$", match[0]):
+            names.add(f"sample:{match[0].lower()}")
     return names
+
+
+def _opening_sentence(body: str) -> str:
+    """仅取开头续句判断样品冲突，跳过数学与论文缩写内的句点。"""
+    abbreviations = {"fig", "figs", "eq", "eqs", "ref", "refs", "dr", "mr", "mrs", "ms", "al", "vs", "no"}
+    for match in re.finditer(r"[.!?。！？](?=\s+[A-Z][a-z]|\s*$)", body):
+        prefix = body[:match.end()]
+        if prefix.count("$") % 2:
+            continue
+        word = re.search(r"\b([A-Za-z]+)\.$", prefix)
+        if word and (len(word[1]) == 1 or word[1].casefold() in abbreviations):
+            continue
+        return prefix
+    return body
 
 
 def _same_sample_family(left: set[str], right: set[str]) -> bool:

@@ -18,7 +18,7 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 
 新块使用 `paper_rules_v4`，[预览](../../../../web/src/utils/chunkPreview.js)兼容 v1–v4，并提供未能绑定图注的提示。规则不改写解析 Markdown、不补写实验条件、不修复缺失汉字、不按图片语义猜图号。最终验收文档不参与规则制定。本决定补充[正文连续性、章节与解析边界](2026-11-04-paper-evidence-continuity.md)，分块职责继续遵循[Paper 分块边界](2026-11-04-paper-chunking-boundary.md)。
 
-后续[浮动表格、数值续句与显式脚注](2026-11-05-paper-float-continuity.md)补充表格跨越和脚注边界，当前批次标记为 v5，预览按版本标记格式识别 Paper 数据。
+后续[浮动表格、数值续句与显式脚注](2026-11-05-paper-float-continuity.md)补充 v5 的表格跨越和脚注边界，预览按版本标记格式识别 Paper 数据。当前批次与样品判断见[续句的样品冲突范围](2026-11-05-paper-continuation-sample-boundary.md)。
 
 ## 替代方案
 
