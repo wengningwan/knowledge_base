@@ -9,10 +9,10 @@ from typing import Any
 from yuxi.knowledge.chunking.ragflow_like.nlp import count_tokens
 from yuxi.knowledge.chunking.source import SourceDocument, source_sha256
 
-PAPER_CHUNKER_VERSION = "paper_rules_v4"
+PAPER_CHUNKER_VERSION = "paper_rules_v5"
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 CAPTION = re.compile(
-    r"^(?:#{1,6}\s+)?(?:\*\*)?(table|figure|fig\.?|scheme|表|图)\s*(S?\d+(?:[.-]\d+)*)[.:：、]?\s*",
+    r"^(?:#{1,6}\s+)?(?:\*\*)?(table|figure|fig[.．]?|scheme|表|图)\s*(S?\d+(?:[.-]\d+)*)[.:：、．]?\s*",
     re.I,
 )
 DEFINITION = re.compile(
@@ -254,9 +254,10 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
                 if kind == "figure" and re.fullmatch(r"\([a-z]\)", text[slice(*adjacent.ranges[-1])]):
                     adjacent.ranges.extend(unit.ranges)
                     continue
-            # 浮图不拥有正文阅读流；只在同节未完句和明确续句同时成立时跨过它。
+            # 浮动图表不拥有正文阅读流；只在同节未完句和明确续句同时成立时跨过它。
             previous = next(
-                (part for part in reversed(units) if part.kind not in {"figure", "figure_caption", "metadata"}), None
+                (part for part in reversed(units)
+                 if part.kind not in {"figure", "figure_caption", "table", "table_caption", "metadata"}), None
             )
             if previous and _continues_paragraph(text, previous, unit):
                 previous.ranges.extend(unit.ranges)
@@ -295,12 +296,27 @@ def _group_evidence(text: str, units: list[Evidence]) -> list[Evidence]:
     units = _bind_captions(units)
     grouped: list[Evidence] = []
     for unit in units:
+        previous = grouped[-1] if grouped else None
         formula_owner = next(
             (part for part in reversed(grouped) if part.kind not in {"figure", "figure_caption", "metadata"}), None
         )
         same_formula_section = formula_owner is not None and formula_owner.headings == unit.headings
         body = _body(text, unit)
+        footnote = re.match(r"^\$\^\{([a-z])\}\$", body) if unit.kind == "text" else None
+        # 浮动正文可能已移入表前证据，脚注的紧邻关系必须回查原文。
         if (
+            previous is not None and previous.kind == "table"
+            and previous.headings == unit.headings and footnote
+            and not text[max(end for _, end in previous.ranges) : unit.ranges[0][0]].strip()
+            and any(
+                re.search(rf"\^\{{{footnote[1]}\}}", text[start:end])
+                for start, end in previous.ranges
+                if _line_kind(text[start:end]) == "table"
+                or _is_markdown_table(text[start:end].splitlines(), 0)
+            )
+        ):
+            previous.ranges.extend(unit.ranges)
+        elif (
             same_formula_section and formula_owner.kind == "formula"
             and unit.kind == "text" and DEFINITION.match(body)
         ):
@@ -446,9 +462,13 @@ def _continues_paragraph(text: str, previous: Evidence, current: Evidence) -> bo
     ):
         return False
     ending = re.sub(r"(?:\$\^\{[\d\s,\[\]–-]+\}\$|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s*$", "", before).rstrip()
+    numeric_pair = (
+        re.search(r"(?:^|[\s(])[-+−]?(?:\d+(?:\.\d+)?|\.\d+)\s+(?:and|or)$", ending, re.I)
+        and re.match(r"[-+−]?(?:\d+(?:\.\d+)?|\.\d+)(?=[\s,;:%)]|$)", after)
+    )
     return bool(
         re.search(r"[A-Za-z0-9$)},]$", ending)
-        and re.match(r"[a-z]|\(\s*[<>≤≥]?\s*\d", after)
+        and (re.match(r"[a-z]|\(\s*[<>≤≥]?\s*\d", after) or numeric_pair)
         and _identifiers(before) == _identifiers(after)
     )
 

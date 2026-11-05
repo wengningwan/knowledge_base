@@ -16,7 +16,7 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 
 [参数组件](../../../../web/src/components/ChunkParamsConfig.vue)根据实际生效的策略隐藏 Paper 的重叠比例和分隔符，目标长度继续展示。[解析规则](../../../../backend/package/yuxi/knowledge/parser/pdf_repair.py)将行内混合字母下标和化学键作为视觉核对目标，复用现有局部裁图、模型回执、人工确认与原文同步流程；同段已有未决内容问题时，将科学符号的完整原子范围合并到该问题的实际目标，并保留原有差异及冲突提示。原图不清楚时保留原文，不预设符号替换答案。解析规则和校对提示版本随行为更新，避免沿用旧规则缓存。
 
-分块只组织原文与来源，实验条件不在分块器中匹配或补入；详细职责见[Paper 分块边界](2026-11-04-paper-chunking-boundary.md)。本轮规则对应 `paper_rules_v3`；后续[多样本结构边界](2026-11-04-paper-multisample-structure.md)将当前版本推进到 v4，补充图注竞争、子图标记、独立出版日期与文末栏目，预览兼容 v1–v4。
+分块只组织原文与来源，实验条件不在分块器中匹配或补入；详细职责见[Paper 分块边界](2026-11-04-paper-chunking-boundary.md)。本轮规则对应 `paper_rules_v3`；后续[多样本结构边界](2026-11-04-paper-multisample-structure.md)补充 v4 的图注竞争、子图标记、独立出版日期与文末栏目，当前续接与预览规则见[浮动表格、数值续句与显式脚注](2026-11-05-paper-float-continuity.md)。
 
 ## 替代方案
 

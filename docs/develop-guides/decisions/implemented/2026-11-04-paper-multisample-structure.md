@@ -18,6 +18,8 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 
 新块使用 `paper_rules_v4`，[预览](../../../../web/src/utils/chunkPreview.js)兼容 v1–v4，并提供未能绑定图注的提示。规则不改写解析 Markdown、不补写实验条件、不修复缺失汉字、不按图片语义猜图号。最终验收文档不参与规则制定。本决定补充[正文连续性、章节与解析边界](2026-11-04-paper-evidence-continuity.md)，分块职责继续遵循[Paper 分块边界](2026-11-04-paper-chunking-boundary.md)。
 
+后续[浮动表格、数值续句与显式脚注](2026-11-05-paper-float-continuity.md)补充表格跨越和脚注边界，当前批次标记为 v5，预览按版本标记格式识别 Paper 数据。
+
 ## 替代方案
 
 按最近图片配图注会在上下两图之间误绑。给单篇论文配置图号或标题规则会失去通用性。增大长度不修复误分类和章节继承。分块阶段补回缺失中文或删除疑似错误文字会越过解析职责。全文统一当一块会丢失来源粒度。
@@ -28,15 +30,17 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 
 ## 验证
 
-Inspected：读取5份同配置导出的解析正文、分块、章节与来源，并核对相关原 PDF 页面。既有导出中的正文范围与原文指纹核对只证明输入数据，不证明 v4 运行正确。独立 Reviewer 静态复审完整需求和最终 diff 后未发现剩余必改项。`git diff --check` 已执行且通过。部署后的重新入库、页面、检索及留出文档结果仍为 Not run。
+Inspected：读取5份论文材料的解析正文、分块、章节与来源，并核对相关原 PDF 页面。v4 实现经过独立静态复审，未发现剩余必改项；静态审查本身不证明入库效果。`git diff --check` 已执行且通过。
+
+Inspected（v4 实际导出）：用户在部署端同配置重新入库后提供5份结果，共257块。回读原文与 v3 逐字一致；1079个来源范围的指纹、Unicode坐标及行号均一致，正文按实际范围逐字重建，59处图片引用全部保留。给定正文图号引用、连续图注、子图、题名、独立日期与文末栏目目标例在导出中符合预期；表格造成的半句断点、数值续句和表脚注仍有遗漏，见后续决定。页面操作、PDF定位、检索回答和留出文档仍为 Not run；这些导出不证明 v5 的实际效果。
 
 | 验收主张 | 失败面 | 语义 Owner | 直接证据 / 操作 | 负向案例 | 当前结果 |
 |---|---|---|---|---|---|
-| 正文图号引用保留章节 | Fig. 2a shows、Figure 6c presents 被当图注 | paper.py | 同配置重新入库，回读正文、章节和内容类型 | 真正 Fig. 2a. SEM image、Figure 4b: Adsorption isotherms 仍按图注处理，引用句不被吸入图片 | Not run：本机约定 |
-| 连续图注按唯一配对绑定 | 下一图已有自己图注仍被误认为候选，或两图注抢同一图 | paper.py | 回读 image-caption-image-caption 及相反顺序 | image-caption-image、caption-image-caption 和图注多于图片的整条链均保留歧义，不按距离或扫描方向猜测 | Not run：本机约定 |
-| 独立子图标记不混入正文 | 多张子图被拆开且标记落入正文 | paper.py | 回读 image-(a)-image-(b)-caption 的完整范围 | 普通括号段落、不同章节和不同图注阻止任意组合 | Not run：本机约定 |
-| 图片前置不改变题名识别 | 论文名成为整篇章节，检索题名退回文件名 | paper.py | 读取首图后标题的题名和章节范围 | 有正文在前时不把后续章节猜为题名 | Not run：本机约定 |
-| 日期与文末层级正确分组 | 日期混入引言、作者信息挂在结论下 | paper.py | 回读日期独立块、引言续句与文末章节路径 | 正文中提及年份或实验发布日期不作为独立出版日期；普通小节保留层级 | Not run：本机约定 |
-| 原文、来源和职责保留 | 字符改写、图片丢失或条件补入 | paper.py、chunkPreview.js | 比对逐字正文范围、指纹与图片公式表格；部署后再读留出文档结果 | 代码围栏中的日期和标题保持原样；原文缺字不得猜补 | Not run：本机约定 |
+| 正文图号引用保留章节 | Fig. 2a shows、Figure 6c presents 被当图注 | paper.py | 同配置重新入库，回读正文、章节和内容类型 | 真正 Fig. 2a. SEM image、Figure 4b: Adsorption isotherms 仍按图注处理，引用句不被吸入图片 | Inspected：给定 v4 导出正例；负例 Not run |
+| 连续图注按唯一配对绑定 | 下一图已有自己图注仍被误认为候选，或两图注抢同一图 | paper.py | 回读 image-caption-image-caption 及相反顺序 | image-caption-image、caption-image-caption 和图注多于图片的整条链均保留歧义，不按距离或扫描方向猜测 | Inspected：v4 连续图注正例；负例 Not run |
+| 独立子图标记不混入正文 | 多张子图被拆开且标记落入正文 | paper.py | 回读 image-(a)-image-(b)-caption 的完整范围 | 普通括号段落、不同章节和不同图注阻止任意组合 | Inspected：v4 的 a–e 与 a/b 子图；负例 Not run |
+| 图片前置不改变题名识别 | 论文名成为整篇章节，检索题名退回文件名 | paper.py | 读取首图后标题的题名和章节范围 | 有正文在前时不把后续章节猜为题名 | Inspected：v4 首图后题名；负例 Not run |
+| 日期与文末层级正确分组 | 日期混入引言、作者信息挂在结论下 | paper.py | 回读日期独立块、引言续句与文末章节路径 | 正文中提及年份或实验发布日期不作为独立出版日期；普通小节保留层级 | Inspected：v4 日期与明确文末栏目；负例 Not run |
+| 原文、来源和职责保留 | 字符改写、图片丢失或条件补入 | paper.py、chunkPreview.js | 比对逐字正文范围、指纹与图片公式表格；部署后再读留出文档结果 | 代码围栏中的日期和标题保持原样；原文缺字不得猜补 | Inspected：v4 原文逐字重建及围栏；页面与留出文档 Not run |
 
 未运行项目、测试、lint、构建或工程契约脚本；不新增自动化测试套件，最终以部署电脑实际产物和页面为准。
