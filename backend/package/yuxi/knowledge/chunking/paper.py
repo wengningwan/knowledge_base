@@ -9,7 +9,7 @@ from typing import Any
 from yuxi.knowledge.chunking.ragflow_like.nlp import count_tokens
 from yuxi.knowledge.chunking.source import SourceDocument, source_sha256
 
-PAPER_CHUNKER_VERSION = "paper_rules_v3"
+PAPER_CHUNKER_VERSION = "paper_rules_v4"
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 CAPTION = re.compile(
     r"^(?:#{1,6}\s+)?(?:\*\*)?(table|figure|fig\.?|scheme|表|图)\s*(S?\d+(?:[.-]\d+)*)[.:：、]?\s*",
@@ -61,8 +61,8 @@ def chunk_paper(
         # 对象标识和章节是组合边界，图表与公式始终保留为完整证据。
         if (
             previous
-            and unit.kind == "text"
-            and all(part.kind == "text" for part in previous)
+            and unit.kind in {"text", "metadata"}
+            and all(part.kind == unit.kind for part in previous)
             and unit.headings == previous[0].headings
             and _identifiers(body) == _identifiers("\n".join(_body(text, part) for part in previous))
             and count_tokens("\n\n".join(_body(text, part) for part in [*previous, unit])) <= target
@@ -78,7 +78,7 @@ def chunk_paper(
         body = "\n\n".join(_body(text, unit) for unit in group)
         # 浮图在 PDF 中的位置不证明章节归属，图表保留独立上下文。
         visual = all(unit.kind in {"figure", "figure_caption", "table", "table_caption"} for unit in group)
-        headings = () if visual else group[0].headings
+        headings = () if visual or group[0].kind == "metadata" else group[0].headings
         section_path = [heading[1] for heading in headings]
         content = f"论文：{title or filename}\n章节：{' > '.join(section_path) or '正文'}\n\n{body}"
         ranges = [title_range] if title_range else []
@@ -130,7 +130,10 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
     title = None
     title_range = None
     units = []
-    first_content = next((index for index, line in enumerate(lines) if line.strip()), None)
+    first_content = next((
+        index for index, line in enumerate(lines)
+        if line.strip() and _line_kind(line.strip()) not in {"figure", "metadata"}
+    ), None)
     cursor = 0
     while cursor < len(lines):
         line = lines[cursor].strip()
@@ -148,6 +151,7 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
             if (
                 cursor == first_content
                 and HEADING.match(line)
+                and not _is_back_matter_heading(name)
                 and not re.match(r"^\d+(?:\.\d+)*\.?\s", name)
                 and name.casefold()
                 not in {
@@ -195,7 +199,14 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
         kind = "table" if markdown_table else _line_kind(line)
         warnings = []
         cursor += 1
-        if kind == "formula":
+        if kind == "code":
+            fence = re.match(r"(`{3,}|~{3,})", line)[0]
+            while cursor < len(lines):
+                closing = re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", lines[cursor].strip())
+                cursor += 1
+                if closing:
+                    break
+        elif kind == "formula":
             if line.startswith("$$"):
                 closed = line.count("$$") >= 2
                 closing = "$$"
@@ -221,7 +232,7 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
         elif kind == "table":
             while cursor < len(lines) and lines[cursor].strip() and "|" in lines[cursor]:
                 cursor += 1
-        elif kind not in {"figure"}:
+        elif kind not in {"figure", "metadata"}:
             while cursor < len(lines) and lines[cursor].strip():
                 next_line = lines[cursor].strip()
                 if _heading(next_line) or _line_kind(next_line) != "text" or _is_markdown_table(lines, cursor):
@@ -230,14 +241,22 @@ def _parse_units(text: str) -> tuple[str | None, tuple[int, int] | None, list[Ev
         start = body_start if body_start is not None else starts[first] + len(lines[first]) - len(lines[first].lstrip())
         end = starts[cursor - 1] + len(lines[cursor - 1].rstrip())
         if not any(
-            re.sub(r"^\d+(?:\.\d+)*[.、]?\s*", "", heading[1]).strip().casefold()
+            re.sub(r"^\d+(?:\.\d+)*[.、]?\s*", "", heading[1]).strip(" ()（）:：").casefold()
             in {"references", "bibliography", "参考文献"}
             for heading in headings
         ):
             unit = Evidence(kind, [(start, end)], tuple(headings), warnings)
+            adjacent = units[-1] if units else None
+            if adjacent and adjacent.headings == unit.headings and adjacent.kind == "figure":
+                if kind == "text" and re.fullmatch(r"\([a-z]\)", _body(text, unit)):
+                    adjacent.ranges.extend(unit.ranges)
+                    continue
+                if kind == "figure" and re.fullmatch(r"\([a-z]\)", text[slice(*adjacent.ranges[-1])]):
+                    adjacent.ranges.extend(unit.ranges)
+                    continue
             # 浮图不拥有正文阅读流；只在同节未完句和明确续句同时成立时跨过它。
             previous = next(
-                (part for part in reversed(units) if part.kind not in {"figure", "figure_caption"}), None
+                (part for part in reversed(units) if part.kind not in {"figure", "figure_caption", "metadata"}), None
             )
             if previous and _continues_paragraph(text, previous, unit):
                 previous.ranges.extend(unit.ranges)
@@ -255,6 +274,8 @@ def _heading(line: str) -> tuple[int, str, int] | None:
             return run_in[0], run_in[1], heading.start(2) + run_in[2]
         number = re.match(r"^(\d+(?:\.\d+)*)\.\s", heading[2])
         level = number[1].count(".") + 1 if number else len(heading[1])
+        if _is_back_matter_heading(heading[2]):
+            level = 1
         return level, heading[2], len(line)
     numbered = re.fullmatch(r"(\d+(?:\.\d+)+)(\.)?\s+([^\n]+)", line)
     if not numbered or not re.match(r"[A-Z\u4e00-\u9fff]", numbered[3]):
@@ -270,32 +291,15 @@ def _heading(line: str) -> tuple[int, str, int] | None:
 
 
 def _group_evidence(text: str, units: list[Evidence]) -> list[Evidence]:
-    """先绑定上一式定义，再绑定显式引导、图注和表标题。"""
+    """先组织唯一图表说明，再绑定公式引导与定义。"""
+    units = _bind_captions(units)
     grouped: list[Evidence] = []
-    for index, unit in enumerate(units):
-        previous = grouped[-1] if grouped else None
-        same_section = previous is not None and previous.headings == unit.headings
+    for unit in units:
         formula_owner = next(
-            (part for part in reversed(grouped) if part.kind not in {"figure", "figure_caption"}), None
+            (part for part in reversed(grouped) if part.kind not in {"figure", "figure_caption", "metadata"}), None
         )
         same_formula_section = formula_owner is not None and formula_owner.headings == unit.headings
         body = _body(text, unit)
-        if unit.kind in {"figure_caption", "table_caption"}:
-            owner_kind = "figure" if unit.kind == "figure_caption" else "table"
-            previous_candidate = (
-                same_section
-                and previous.kind == owner_kind
-                and not any(CAPTION.match(text[start:end]) for start, end in previous.ranges)
-            )
-            next_candidate = (
-                index + 1 < len(units)
-                and units[index + 1].kind == owner_kind
-                and units[index + 1].headings == unit.headings
-            )
-            if previous_candidate and next_candidate:
-                unit.warnings.append("ambiguous_caption")
-                grouped.append(unit)
-                continue
         if (
             same_formula_section and formula_owner.kind == "formula"
             and unit.kind == "text" and DEFINITION.match(body)
@@ -319,41 +323,77 @@ def _group_evidence(text: str, units: list[Evidence]) -> list[Evidence]:
             formula_owner.kind = "formula"
             formula_owner.ranges.extend(unit.ranges)
             formula_owner.warnings.extend(unit.warnings)
-        elif (
-            same_section
-            and not any(CAPTION.match(text[start:end]) for start, end in previous.ranges)
-            and (
-                (previous.kind == "figure" and unit.kind == "figure_caption")
-                or (
-                    previous.kind == "table"
-                    and unit.kind == "table_caption"
-                    and not (
-                        index + 1 < len(units)
-                        and units[index + 1].kind == "table"
-                        and units[index + 1].headings == unit.headings
-                    )
-                )
-            )
-        ):
-            previous.ranges.extend(unit.ranges)
-        elif (
-            same_section
-            and (
-                (previous.kind == "table_caption" and unit.kind == "table")
-                or (previous.kind == "figure_caption" and unit.kind == "figure")
-            )
-            and "ambiguous_caption" not in previous.warnings
-        ):
-            previous.kind = unit.kind
-            previous.ranges.extend(unit.ranges)
-            previous.warnings.extend(unit.warnings)
         else:
             grouped.append(unit)
     return grouped
 
 
+def _bind_captions(units: list[Evidence]) -> list[Evidence]:
+    """仅绑定整条相邻图注链中唯一的一对一归属，不用扫描方向消除竞争。"""
+    neighbors: dict[int, list[int]] = {}
+    captions = [index for index, unit in enumerate(units) if unit.kind in {"figure_caption", "table_caption"}]
+    for index in captions:
+        neighbors.setdefault(index, [])
+        for owner in _caption_candidates(units, index):
+            neighbors[index].append(owner)
+            neighbors.setdefault(owner, []).append(index)
+    visited: set[int] = set()
+    bound: set[int] = set()
+    for index in captions:
+        if index in visited:
+            continue
+        component: set[int] = set()
+        pending = [index]
+        while pending:
+            current = pending.pop()
+            if current in component:
+                continue
+            component.add(current)
+            pending.extend(neighbors[current])
+        visited.update(component)
+        chain = sorted(component)
+        caption_indices = [position for position in chain if units[position].kind.endswith("_caption")]
+        # 候选只来自左右紧邻，所以连通分量是交替链；数量相等时才有唯一完整配对。
+        if len(chain) == 2 * len(caption_indices):
+            for left, right in zip(chain[::2], chain[1::2]):
+                caption_index, owner_index = (left, right) if left in caption_indices else (right, left)
+                caption, owner = units[caption_index], units[owner_index]
+                owner.ranges = sorted([*owner.ranges, *caption.ranges])
+                owner.warnings.extend(caption.warnings)
+                bound.add(caption_index)
+        else:
+            for position in caption_indices:
+                units[position].warnings.append("ambiguous_caption" if neighbors[position] else "unresolved_caption")
+    return [unit for index, unit in enumerate(units) if index not in bound]
+
+
+def _caption_candidates(units: list[Evidence], index: int) -> list[int]:
+    """只接受同节紧邻的同类图表，不凭距离或图号猜归属。"""
+    caption = units[index]
+    owner_kind = "figure" if caption.kind == "figure_caption" else "table"
+    return [
+        position for position in (index - 1, index + 1)
+        if 0 <= position < len(units)
+        and units[position].kind == owner_kind
+        and units[position].headings == caption.headings
+    ]
+
+
+def _is_back_matter_heading(name: str) -> bool:
+    """用明确的文末栏目重置章节根，避免作者和致谢继承结论。"""
+    return re.fullmatch(
+        r"associated content|author information|acknowledg(?:e)?ments?|"
+        r"appendix(?:\s+[A-Z])?(?:[.:]\s*.+)?|致谢|作者信息|附录(?:\s*[A-Z一二三四五六七八九十])?",
+        name, re.I,
+    ) is not None
+
+
 def _line_kind(line: str) -> str:
     """识别需要完整保留的行级结构。"""
+    if re.match(r"`{3,}|~{3,}", line):
+        return "code"
+    if re.match(r"(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:\s*.+\b(?:19|20)\d{2}\b", line, re.I):
+        return "metadata"
     if line.startswith(("$$", r"\[")) or re.match(r"\\begin\{(?:equation|align|gather|displaymath)\*?\}", line):
         return "formula"
     if line.startswith("|") or re.match(r"<table\b", line, re.I):
@@ -363,9 +403,14 @@ def _line_kind(line: str) -> str:
     caption = CAPTION.match(line)
     if caption:
         # 正文中“Figure 1 shows ...”不是图注，避免吸走下一段讨论。
+        remainder = line[caption.end() :]
+        if not caption[0][-1].isspace() and re.match(r"[a-z]\b(?![.:：、])", remainder, re.I):
+            return "text"
+        remainder = re.sub(r"^(?:\([a-z]\)|[a-z])(?:[–-][a-z])?\s+", "", remainder, flags=re.I)
         if re.match(
-            r"(?:shows?|provides?|lists?|compares?|presents?|indicates?|is|was)\b|显示|表明|给出|中",
-            line[caption.end() :],
+            r"(?:shows?|provides?|lists?|compares?|presents?|indicates?|illustrates?|depicts?|"
+            r"delineates?|reveals?|displays?|demonstrates?|summari[sz]es|summaries|is|was)\b|显示|表明|给出|中",
+            remainder,
             re.I,
         ):
             return "text"

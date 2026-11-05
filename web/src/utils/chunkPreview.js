@@ -18,7 +18,7 @@ export function sortedPreviewChunks(chunks = []) {
 export function chunkPreviewContent(chunk) {
   const content = chunk.content ?? ''
   const metadata = chunk.source_metadata
-  if (!['paper_rules_v1', 'paper_rules_v2', 'paper_rules_v3'].includes(metadata?.chunker_version) || !Array.isArray(metadata.section_path)) return content
+  if (!['paper_rules_v1', 'paper_rules_v2', 'paper_rules_v3', 'paper_rules_v4'].includes(metadata?.chunker_version) || !Array.isArray(metadata.section_path)) return content
   const prefix = /^论文：[^\n]*\n章节：([^\n]*)\n\n/.exec(content)
   const section = metadata.section_path.join(' > ') || '正文'
   return prefix?.[1] === section ? content.slice(prefix[0].length) : content
@@ -49,6 +49,7 @@ function chunkNotices(metadata) {
   const warningLabels = {
     over_target_tokens: '完整证据超过目标长度，已保留全文',
     ambiguous_caption: '图表说明归属需核对',
+    unresolved_caption: '图表说明尚未找到唯一对应图表，请核对原文',
     unresolved_formula_reference: '公式说明关联需核对',
     unclosed_formula: '公式标记未闭合，请检查原文',
     unclosed_table: '表格标记未闭合，请检查原文'
