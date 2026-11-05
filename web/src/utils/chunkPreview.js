@@ -52,7 +52,9 @@ function chunkNotices(metadata) {
     over_target_tokens: '完整证据超过目标长度，已保留全文',
     ambiguous_caption: '图表说明归属需核对',
     unresolved_caption: '图表说明尚未找到唯一对应图表，请核对原文',
+    unresolved_figure_marker: '子图标记尚未找到唯一对应图片，请核对原文',
     unresolved_formula_reference: '公式说明关联需核对',
+    unclosed_code: '代码围栏未闭合，请检查原文',
     unclosed_formula: '公式标记未闭合，请检查原文',
     unclosed_table: '表格标记未闭合，请检查原文'
   }
@@ -93,9 +95,14 @@ export function describeChunkSource(chunk, source) {
   const previewContent = chunkPreviewContent(chunk)
   if (previewContent !== chunk.content) {
     // Paper 前缀的来源属于检索上下文，预览只定位实际展示的正文。
-    spans = spans.filter((span) =>
-      previewContent.includes(source.characters.slice(span.start_char, span.end_char).join('')))
-    if (!spans.length) return unavailable('unknown', '来源位置未知或无效')
+    const firstEvidence = /^evidence_(\d+)$/.exec(metadata.evidence_ids?.[0] ?? '')
+    const bodyStart = firstEvidence
+      ? spans.findIndex((span) => span.start_char === Number(firstEvidence[1])) : -1
+    if (bodyStart < 0) return unavailable('unknown', '来源位置未知或无效')
+    spans = spans.slice(bodyStart)
+    const body = spans.map((span) =>
+      source.characters.slice(span.start_char, span.end_char).join('')).join('\n\n')
+    if (body !== previewContent) return unavailable('unknown', '来源位置未知或无效')
   }
 
   spans = spans.map(({ page, ...span }) => Number.isInteger(page) && page > 0 ? { ...span, page } : span)

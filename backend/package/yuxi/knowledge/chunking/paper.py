@@ -19,7 +19,8 @@ DEFINITION = re.compile(
     re.I,
 )
 INTRODUCTION = re.compile(
-    r"(?:如下|可得|得到|写作|公式为|方程为|表达式为|表示为|按以下式计算|given by|expressed as|written as|defined as|as follows|following equation)"
+    r"(?:如下|可得|得到|写作|公式为|方程为|表达式为|表示为|定义为|按以下式计算|"
+    r"given by|expressed as|written as|defined as|as follows|following (?:equation|(?:thermodynamic )?relationships?))"
     r"\s*[:：]?$",
     re.I,
 )
@@ -57,14 +58,17 @@ def chunk_paper(
     for unit in units:
         body = _body(text, unit)
         previous = groups[-1] if groups else []
+        previous_body = "\n\n".join(_body(text, part) for part in previous)
         # 对象标识和章节是组合边界，图表与公式始终保留为完整证据。
         if (
             previous
             and unit.kind in {"text", "metadata"}
             and all(part.kind == unit.kind for part in previous)
             and unit.headings == previous[0].headings
-            and _identifiers(body) == _identifiers("\n".join(_body(text, part) for part in previous))
-            and count_tokens("\n\n".join(_body(text, part) for part in [*previous, unit])) <= target
+            and not unit.warnings and not any(part.warnings for part in previous)
+            and _identifiers(body) == _identifiers(previous_body)
+            and _sample_names(body) == _sample_names(previous_body)
+            and count_tokens(f"{previous_body}\n\n{body}") <= target
         ):
             previous.append(unit)
         else:
@@ -213,6 +217,9 @@ def _parse_units(text: str, filename: str) -> tuple[str | None, tuple[int, int] 
                     or name.casefold() in body_headings - {"abstract", "摘要"}
                 )
                 heading_range = (line_start, line_start + heading_length)
+                # 参考文献结束正文父章节，后续同级栏目不再继承结论或作者信息。
+                if _is_reference_heading(name):
+                    headings = []
                 headings = [entry for entry in headings if entry[0] < level]
                 headings.append((level, name, *heading_range))
                 remainder = line[heading_length:]
@@ -231,11 +238,15 @@ def _parse_units(text: str, filename: str) -> tuple[str | None, tuple[int, int] 
         cursor += 1
         if kind == "code":
             fence = re.match(r"(`{3,}|~{3,})", line)[0]
+            closed = False
             while cursor < len(lines):
                 closing = re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", lines[cursor].strip())
                 cursor += 1
                 if closing:
+                    closed = True
                     break
+            if not closed:
+                warnings.append("unclosed_code")
         elif kind == "formula":
             if line.startswith("$$"):
                 closed = line.count("$$") >= 2
@@ -262,7 +273,7 @@ def _parse_units(text: str, filename: str) -> tuple[str | None, tuple[int, int] 
         elif kind == "table":
             while cursor < len(lines) and lines[cursor].strip() and "|" in lines[cursor]:
                 cursor += 1
-        elif kind not in {"figure", "metadata"}:
+        elif kind != "figure":
             while cursor < len(lines) and lines[cursor].strip():
                 next_line = lines[cursor].strip()
                 if _heading(next_line) or _line_kind(next_line) != "text" or _is_markdown_table(lines, cursor):
@@ -270,21 +281,8 @@ def _parse_units(text: str, filename: str) -> tuple[str | None, tuple[int, int] 
                 cursor += 1
         start = body_start if body_start is not None else starts[first] + len(lines[first]) - len(lines[first].lstrip())
         end = starts[cursor - 1] + len(lines[cursor - 1].rstrip())
-        if not any(
-            re.sub(r"^\d+(?:\.\d+)*[.、]?\s*", "", heading[1]).strip(" ()（）:：").casefold()
-            in {"references", "bibliography", "参考文献"}
-            for heading in headings
-        ):
-            unit = Evidence(kind, [(start, end)], tuple(headings), warnings)
-            adjacent = units[-1] if units else None
-            if adjacent and adjacent.headings == unit.headings and adjacent.kind == "figure":
-                if kind == "text" and re.fullmatch(r"\([a-z]\)", _body(text, unit)):
-                    adjacent.ranges.extend(unit.ranges)
-                    continue
-                if kind == "figure" and re.fullmatch(r"\([a-z]\)", text[slice(*adjacent.ranges[-1])]):
-                    adjacent.ranges.extend(unit.ranges)
-                    continue
-            units.append(unit)
+        if not any(_is_reference_heading(heading[1]) for heading in headings):
+            units.append(Evidence(kind, [(start, end)], tuple(headings), warnings))
     return title, title_range, units
 
 
@@ -314,11 +312,17 @@ def _heading(line: str) -> tuple[int, str, int] | None:
 
 
 def _group_evidence(text: str, units: list[Evidence]) -> list[Evidence]:
-    """先组织唯一图表说明，再绑定公式引导与定义。"""
+    """先组织图表及表注，再续接正文和绑定公式定义。"""
     units = _group_subfigures(text, units)
     units = _bind_captions(text, units)
     flow: list[Evidence] = []
     for unit in units:
+        previous = flow[-1] if flow else None
+        # 表注须在续句之前归属，紧邻关系仍按原文而非重组位置判断。
+        if _is_table_note(text, previous, unit):
+            previous.ranges.extend(unit.ranges)
+            previous.warnings.extend(unit.warnings)
+            continue
         previous = next(
             (part for part in reversed(flow)
              if part.kind not in {"figure", "figure_caption", "table", "table_caption", "metadata"}), None
@@ -329,30 +333,12 @@ def _group_evidence(text: str, units: list[Evidence]) -> list[Evidence]:
             flow.append(unit)
     grouped: list[Evidence] = []
     for unit in flow:
-        previous = grouped[-1] if grouped else None
         formula_owner = next(
             (part for part in reversed(grouped) if part.kind not in {"figure", "figure_caption", "metadata"}), None
         )
         same_formula_section = formula_owner is not None and formula_owner.headings == unit.headings
         body = _body(text, unit)
-        footnote = re.match(r"^\$\^\{([a-z])\}\$", body) if unit.kind == "text" else None
-        table_note = unit.kind == "text" and re.match(r"^(?:注|Notes?)\s*[:：]", body, re.I)
-        # 浮动正文可能已移入表前证据，脚注的紧邻关系必须回查原文。
         if (
-            previous is not None and previous.kind == "table"
-            and previous.headings == unit.headings
-            and not text[max(end for _, end in previous.ranges) : unit.ranges[0][0]].strip()
-            and (
-                table_note or (footnote and any(
-                    re.search(rf"\^\{{{footnote[1]}\}}", text[start:end])
-                    for start, end in previous.ranges
-                    if _line_kind(text[start:end]) == "table"
-                    or _is_markdown_table(text[start:end].splitlines(), 0)
-                ))
-            )
-        ):
-            previous.ranges.extend(unit.ranges)
-        elif (
             same_formula_section and formula_owner.kind == "formula"
             and unit.kind == "text" and DEFINITION.match(body)
         ):
@@ -380,6 +366,32 @@ def _group_evidence(text: str, units: list[Evidence]) -> list[Evidence]:
     return grouped
 
 
+def _is_table_note(text: str, table: Evidence | None, note: Evidence) -> bool:
+    """仅接受原文紧邻且具有明确说明或同字母标记的表注。"""
+    if table is None or table.kind != "table" or note.kind != "text" or table.headings != note.headings:
+        return False
+    if not _adjacent_in_source(text, table, note):
+        return False
+    body = _body(text, note)
+    if re.match(r"^(?:注|Notes?)\s*[:：]", body, re.I):
+        return True
+    footnote = re.match(r"^(?:\$\^\{([a-z])\}\$|([a-z])[)）](?=\s|$))", body)
+    if not footnote:
+        return False
+    marker = footnote[1] or footnote[2]
+    for start, end in table.ranges:
+        source = text[start:end]
+        kind = _line_kind(source)
+        if (
+            (kind == "table" or _is_markdown_table(source.splitlines(), 0))
+            and re.search(rf"\^\{{{marker}\}}", source)
+        ):
+            return True
+        if footnote[2] and kind == "table_caption" and re.search(rf"(?<![A-Za-z]){marker}[)）]\s*$", source):
+            return True
+    return False
+
+
 def _group_subfigures(text: str, units: list[Evidence]) -> list[Evidence]:
     """仅组织连续字母标记、图片交替且以明确图注结束的多子图。"""
     grouped: list[Evidence] = []
@@ -398,11 +410,16 @@ def _group_subfigures(text: str, units: list[Evidence]) -> list[Evidence]:
             marker = re.fullmatch(r"[（(]([a-z])[)）][^\n]*", _body(text, label))
             if not marker or marker[1] != chr(ord("a") + len(panels) // 2):
                 break
+            if not _adjacent_in_source(text, picture, label):
+                break
+            if panels and not _adjacent_in_source(text, panels[-1], picture):
+                break
             panels.extend((picture, label))
             position += 2
         if (
             len(panels) >= 4 and position < len(units)
             and units[position].kind == "figure_caption" and units[position].headings == first.headings
+            and _adjacent_in_source(text, panels[-1], units[position])
         ):
             grouped.append(Evidence(
                 "figure", [span for part in panels for span in part.ranges], first.headings,
@@ -416,17 +433,18 @@ def _group_subfigures(text: str, units: list[Evidence]) -> list[Evidence]:
 
 
 def _bind_captions(text: str, units: list[Evidence]) -> list[Evidence]:
-    """仅绑定整条相邻图注链中唯一的一对一归属，不用扫描方向消除竞争。"""
+    """仅绑定唯一图注归属，再组织已确认单图前的独立标记。"""
     units = _merge_bilingual_captions(text, units)
     neighbors: dict[int, list[int]] = {}
     captions = [index for index, unit in enumerate(units) if unit.kind in {"figure_caption", "table_caption"}]
     for index in captions:
         neighbors.setdefault(index, [])
-        for owner in _caption_candidates(units, index):
+        for owner in _caption_candidates(text, units, index):
             neighbors[index].append(owner)
             neighbors.setdefault(owner, []).append(index)
     visited: set[int] = set()
     bound: set[int] = set()
+    single_figures: set[int] = set()
     for index in captions:
         if index in visited:
             continue
@@ -446,13 +464,39 @@ def _bind_captions(text: str, units: list[Evidence]) -> list[Evidence]:
             for left, right in zip(chain[::2], chain[1::2]):
                 caption_index, owner_index = (left, right) if left in caption_indices else (right, left)
                 caption, owner = units[caption_index], units[owner_index]
-                owner.ranges = sorted([*owner.ranges, *caption.ranges])
+                marker_index = (caption_index + owner_index) // 2 if abs(caption_index - owner_index) == 2 else None
+                if owner.kind == "figure" and len(owner.ranges) == 1 and marker_index is None:
+                    single_figures.add(owner_index)
+                ranges = [*owner.ranges, *caption.ranges]
+                if marker_index is not None:
+                    ranges.extend(units[marker_index].ranges)
+                    owner.warnings.extend(units[marker_index].warnings)
+                    bound.add(marker_index)
+                owner.ranges = sorted(ranges)
                 owner.warnings.extend(caption.warnings)
                 bound.add(caption_index)
         else:
             for position in caption_indices:
                 units[position].warnings.append("ambiguous_caption" if neighbors[position] else "unresolved_caption")
-    return [unit for index, unit in enumerate(units) if index not in bound]
+    grouped: list[Evidence] = []
+    for index, unit in enumerate(units):
+        if index in bound:
+            continue
+        previous = grouped[-1] if grouped else None
+        if (
+            index in single_figures and previous is not None and previous.kind == "text"
+            and previous.headings == unit.headings
+            and _is_figure_marker(_body(text, previous))
+            and _adjacent_in_source(text, previous, unit)
+        ):
+            unit.ranges = [*previous.ranges, *unit.ranges]
+            unit.warnings.extend(previous.warnings)
+            grouped.pop()
+        grouped.append(unit)
+    for unit in grouped:
+        if unit.kind == "text" and _is_figure_marker(_body(text, unit)):
+            unit.warnings.append("unresolved_figure_marker")
+    return grouped
 
 
 def _merge_bilingual_captions(text: str, units: list[Evidence]) -> list[Evidence]:
@@ -471,7 +515,7 @@ def _merge_bilingual_captions(text: str, units: list[Evidence]) -> list[Evidence
                 before and after and before[2].upper() == after[2].upper()
                 and before[1].casefold() != "scheme" and after[1].casefold() != "scheme"
                 and (before[1] in {"图", "表"}) != (after[1] in {"图", "表"})
-                and not text[previous.ranges[-1][1] : unit.ranges[0][0]].strip()
+                and _adjacent_in_source(text, previous, unit)
             ):
                 previous.ranges.extend(unit.ranges)
                 previous.warnings.extend(unit.warnings)
@@ -480,16 +524,40 @@ def _merge_bilingual_captions(text: str, units: list[Evidence]) -> list[Evidence
     return merged
 
 
-def _caption_candidates(units: list[Evidence], index: int) -> list[int]:
-    """只接受同节紧邻的同类图表，不凭距离或图号猜归属。"""
+def _caption_candidates(text: str, units: list[Evidence], index: int) -> list[int]:
+    """只接受原文同节紧邻的图表，图片前后可隔一个裸标记。"""
     caption = units[index]
     owner_kind = "figure" if caption.kind == "figure_caption" else "table"
-    return [
-        position for position in (index - 1, index + 1)
-        if 0 <= position < len(units)
-        and units[position].kind == owner_kind
-        and units[position].headings == caption.headings
-    ]
+    candidates = []
+    for direction in (-1, 1):
+        position = index + direction
+        if (
+            0 <= position < len(units) and owner_kind == "figure"
+            and units[position].kind == "text" and units[position].headings == caption.headings
+            and _is_figure_marker(_body(text, units[position]))
+        ):
+            position += direction
+        if not (0 <= position < len(units)):
+            continue
+        if units[position].kind != owner_kind or units[position].headings != caption.headings:
+            continue
+        path = units[min(position, index):max(position, index) + 1]
+        if any(not _adjacent_in_source(text, left, right) for left, right in zip(path, path[1:])):
+            continue
+        candidates.append(position)
+    return candidates
+
+
+def _is_figure_marker(body: str) -> bool:
+    """识别尚需明确图片归属的独立单字母标记。"""
+    return re.fullmatch(r"[（(][a-z][)）]", body) is not None
+
+
+def _adjacent_in_source(text: str, left: Evidence, right: Evidence) -> bool:
+    """按真实原文范围判断顺序及紧邻，不越过扫描跳过的内容。"""
+    end = max(end for _, end in left.ranges)
+    start = min(start for start, _ in right.ranges)
+    return end <= start and not text[end:start].strip()
 
 
 def _is_back_matter_heading(name: str) -> bool:
@@ -501,13 +569,20 @@ def _is_back_matter_heading(name: str) -> bool:
     ) is not None
 
 
+def _is_reference_heading(name: str) -> bool:
+    """识别拥有独立范围的参考文献栏目。"""
+    return re.sub(r"^\d+(?:\.\d+)*[.、]?\s*", "", name).strip(" ()（）:：").casefold() in {
+        "references", "bibliography", "参考文献",
+    }
+
+
 def _line_kind(line: str) -> str:
     """识别需要完整保留的行级结构。"""
     if re.match(r"`{3,}|~{3,}", line):
         return "code"
     if re.match(r"(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:\s*.+\b(?:19|20)\d{2}\b", line, re.I):
         return "metadata"
-    if re.match(r"(?:收稿日期|修回日期|改回日期|录用日期|发表日期|作者简介|基金项目)\s*[:：]", line):
+    if re.match(r"(?:收稿日期|修回日期|改回日期|录用日期|发表日期|作者简介|基金项目|引用格式)\s*[:：]", line):
         return "metadata"
     if line.startswith(("$$", r"\[")) or re.match(r"\\begin\{(?:equation|align|gather|displaymath)\*?\}", line):
         return "formula"
@@ -552,8 +627,12 @@ def _continues_paragraph(text: str, previous: Evidence, current: Evidence) -> bo
     """用同节、对象字面标识和未完句约束续接，保持独立原文范围。"""
     if previous.kind != "text" or current.kind != "text" or previous.headings != current.headings:
         return False
+    if previous.warnings or current.warnings:
+        return False
     before, after = _body(text, previous), _body(text, current)
     if re.match(r"^(?:注|Notes?)\s*[:：]", after, re.I):
+        return False
+    if re.match(r"^[a-z][)）](?:\s|$)", after):
         return False
     if re.match(r"(?:Received|Revised|Accepted|Published)(?:\s+online)?\s*:", before, re.I):
         return False
@@ -563,15 +642,35 @@ def _continues_paragraph(text: str, previous: Evidence, current: Evidence) -> bo
         or _same_sample_family(after_samples, before_samples)
     ):
         return False
-    ending = re.sub(r"(?:\$\^\{[\d\s,\[\]–-]+\}\$|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s*$", "", before).rstrip()
+    citation = r"(?:\$\^\{[\d\s,\[\]–-]+\}\$|\^\{[\d\s,\[\]–-]+\}|\[[\d\s,–-]+\]|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)"
+    ending = re.sub(rf"{citation}\s*$", "", before).rstrip()
+    cited_opening = re.sub(rf"^{citation}\s*", "", after)
+    cited_name = (
+        cited_opening != after and re.search(r"\b(?:on|of|to|for|with|and|or|the|a|an)$", ending, re.I)
+        and re.match(r"[A-Z][a-z]", cited_opening)
+    )
+    cited_author = (
+        cited_opening != after and re.search(r"等人?$", ending)
+        and re.match(r"[\u4e00-\u9fff]", cited_opening)
+    )
+    # 行首数字方括号也可能是列表，仅在明确作者或未完英文对象引导后越过它。
+    opening = cited_opening if cited_name or cited_author else after
     numeric_pair = (
         re.search(r"(?:^|[\s(])[-+−]?(?:\d+(?:\.\d+)?|\.\d+)\s+(?:and|or)$", ending, re.I)
-        and re.match(r"[-+−]?(?:\d+(?:\.\d+)?|\.\d+)(?=[\s,;:%)]|$)", after)
+        and re.match(r"[-+−]?(?:\d+(?:\.\d+)?|\.\d+)(?=[\s,;:%)]|$)", opening)
     )
-    chinese_pair = re.search(r"[\u4e00-\u9fff]$", ending) and re.match(r"[\u4e00-\u9fff]", after)
+    chinese_pair = re.search(r"[\u4e00-\u9fff]$", ending) and re.match(r"[\u4e00-\u9fff]", opening)
+    chinese_value = (
+        re.search(r"(?:为|至|达到)$", ending)
+        and re.match(r"[-+−]?\d+(?:\.\d+)?\s*(?:[%％、，,]|$)", opening)
+    )
+    parenthetical_case = re.match(r"\(case\s+[a-z0-9]+\)\s+[a-z]", opening)
     return bool(
         re.search(r"[A-Za-z0-9$)},\u4e00-\u9fff]$", ending)
-        and (re.match(r"[a-z]|\(\s*[<>≤≥]?\s*\d", after) or numeric_pair or chinese_pair)
+        and (
+            re.match(r"[a-z]|\(\s*[<>≤≥]?\s*\d", opening)
+            or numeric_pair or chinese_pair or chinese_value or cited_name or parenthetical_case
+        )
         and _identifiers(before) == _identifiers(after)
     )
 
