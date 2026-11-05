@@ -22,7 +22,7 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 
 收稿日期、作者简介、基金项目等明确的中文字段单独保留为元信息，英文摘要的明确半句可跨这些字段续接；普通正文中提到日期、作者或项目不触发该结构。
 
-用户明确取消推荐宣传过滤，封面推荐文章、二维码及宣传文字全部继续保留；不新增删除、排除检索或基于关键词的过滤。新批次为 v7，后端仍只有一套当前算法。
+用户明确取消推荐宣传过滤，封面推荐文章、二维码及宣传文字全部继续保留；不新增删除、排除检索或基于关键词的过滤。后端只维护一套当前算法，不输出编号；固定策略与预览识别见[当前实现决定](2026-11-05-paper-single-implementation.md)。
 
 本决定补充[续句的样品冲突范围](2026-11-05-paper-continuation-sample-boundary.md)和[多样本结构边界](2026-11-04-paper-multisample-structure.md)，继续遵循[Paper 分块职责](2026-11-04-paper-chunking-boundary.md)。
 

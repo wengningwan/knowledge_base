@@ -16,7 +16,7 @@ Owner：backend/package/yuxi/knowledge/chunking/paper.py
 
 数值开头仅接受前文以一个数值和 and/or 结尾、后文紧接数值的显式并列形式；其他数字开头继续独立。紧邻表格后的单字母 LaTeX 上标脚注，仅在原表体包含同一上标、同节且原文间隔只有空白时附到表格，保留各段原文范围；正文重组后的相邻不能代替原文紧邻。全角句点只参与标记识别，不替换源文字。
 
-本决定对应 `paper_rules_v5`。[预览](../../../../web/src/utils/chunkPreview.js)按 Paper 版本标记格式及完整上下文前缀识别数据，取消逐个版本枚举；来源指纹与坐标检查继续执行。后端只保留一套最新算法，当前批次及样品边界见[续句的样品冲突范围](2026-11-05-paper-continuation-sample-boundary.md)。本决定补充[多样本结构边界](2026-11-04-paper-multisample-structure.md)，保留[Paper 分块职责](2026-11-04-paper-chunking-boundary.md)。
+[预览](../../../../web/src/utils/chunkPreview.js)按固定策略、既有证据结构及完整上下文前缀识别数据；来源指纹与坐标检查继续执行。后端只保留一套当前算法，策略标记见[当前实现决定](2026-11-05-paper-single-implementation.md)，样品边界见[续句的样品冲突范围](2026-11-05-paper-continuation-sample-boundary.md)。本决定补充[多样本结构边界](2026-11-04-paper-multisample-structure.md)，保留[Paper 分块职责](2026-11-04-paper-chunking-boundary.md)。
 
 ## 替代方案
 

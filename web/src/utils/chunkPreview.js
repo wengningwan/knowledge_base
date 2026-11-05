@@ -18,7 +18,9 @@ export function sortedPreviewChunks(chunks = []) {
 export function chunkPreviewContent(chunk) {
   const content = chunk.content ?? ''
   const metadata = chunk.source_metadata
-  if (!/^paper_rules_v[1-9]\d*$/.test(metadata?.chunker_version || '') || !Array.isArray(metadata.section_path)) return content
+  const isPaper = metadata?.chunk_preset_id === 'paper' ||
+    (!metadata?.chunk_preset_id && Array.isArray(metadata?.evidence_ids) && metadata.evidence_ids.length > 0)
+  if (!isPaper || !Array.isArray(metadata.section_path)) return content
   const prefix = /^论文：[^\n]*\n章节：([^\n]*)\n\n/.exec(content)
   const section = metadata.section_path.join(' > ') || '正文'
   return prefix?.[1] === section ? content.slice(prefix[0].length) : content

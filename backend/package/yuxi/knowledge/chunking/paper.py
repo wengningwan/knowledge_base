@@ -9,7 +9,6 @@ from typing import Any
 from yuxi.knowledge.chunking.ragflow_like.nlp import count_tokens
 from yuxi.knowledge.chunking.source import SourceDocument, source_sha256
 
-PAPER_CHUNKER_VERSION = "paper_rules_v7"
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 CAPTION = re.compile(
     r"^(?:#{1,6}\s+)?(?:\*\*)?(table|figure|fig[.．]?|scheme|表|图)\s*(S?\d+(?:[.-]\d+)*)[.:：、．]?\s*",
@@ -91,7 +90,7 @@ def chunk_paper(
         kinds = {unit.kind for unit in group}
         metadata = {
             "source_sha256": digest,
-            "chunker_version": PAPER_CHUNKER_VERSION,
+            "chunk_preset_id": "paper",
             "section_path": section_path,
             "content_type": next(iter(kinds)) if len(kinds) == 1 else "mixed",
             "evidence_ids": evidence_ids,
