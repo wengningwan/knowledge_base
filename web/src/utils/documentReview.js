@@ -1,3 +1,7 @@
+import katex from 'katex'
+
+import { escapeHtml } from './html.js'
+
 const statusRank = {
   technical_failed: 7, pending: 6, running: 6, unresolved: 5,
   not_checked: 4, machine_corrected: 3, checked: 2, proven_equivalent: 1
@@ -187,4 +191,125 @@ export function compactReviewSegments(parts) {
     const tail = index < parts.length - 1 ? chars.slice(-48).join('') : ''
     return { ...part, text: `${head} … ${tail}` }
   })
+}
+
+const MATH_DELIMITERS = [
+  { opener: '$$', closer: '$$', displayMode: true },
+  { opener: '\\(', closer: '\\)', displayMode: false },
+  { opener: '\\[', closer: '\\]', displayMode: true },
+  { opener: '$', closer: '$', displayMode: false }
+]
+
+const matchesAt = (chars, index, token) =>
+  token.split('').every((char, offset) => chars[index + offset] === char)
+
+const findMathCloser = (chars, from, closer) => {
+  for (let index = from; index < chars.length; index += 1) {
+    if (matchesAt(chars, index, closer)) return index
+    // 反斜杠与后一字符构成转义或 LaTeX 命令，不能参与定界匹配。
+    if (chars[index] === '\\') index += 1
+  }
+  return -1
+}
+
+/** 按码点扫描完整数学定界区间；转义、未闭合与空内容不当公式。 */
+export function mathSpans(text) {
+  const chars = Array.from(String(text ?? ''))
+  const spans = []
+  let index = 0
+  while (index < chars.length) {
+    if (chars[index] === '\\' && chars[index + 1] === '$') { index += 2; continue }
+    const delimiter = MATH_DELIMITERS.find((item) => matchesAt(chars, index, item.opener))
+    if (!delimiter) { index += 1; continue }
+    const closer = findMathCloser(chars, index + delimiter.opener.length, delimiter.closer)
+    if (closer === -1 || closer === index + delimiter.opener.length) {
+      index += delimiter.opener.length
+      continue
+    }
+    const end = closer + delimiter.closer.length
+    spans.push({ start: index, end, displayMode: delimiter.displayMode, opener: delimiter.opener, closer: delimiter.closer })
+    index = end
+  }
+  return spans
+}
+
+const appendSegment = (segments, segment) => {
+  if (!segment.text) return
+  const previous = segments[segments.length - 1]
+  if (previous?.type === segment.type) previous.text += segment.text
+  else segments.push(segment)
+}
+
+/** 将 diff 片段按公式区间对齐：跨定界的片段归并为完整公式段，区间外保持原样。 */
+export function alignReviewMathParts(parts, source) {
+  const sourceText = String(source ?? '')
+  const spans = mathSpans(sourceText)
+  if (!spans.length) return parts.map((part) => ({ ...part }))
+  const chars = Array.from(sourceText)
+  const boundaries = []
+  let total = 0
+  for (const part of parts) {
+    const length = Array.from(part.text).length
+    boundaries.push({ start: total, end: total + length, part })
+    total += length
+  }
+  const segmentsInRange = (from, to) => {
+    const segments = []
+    for (const boundary of boundaries) {
+      const start = Math.max(from, boundary.start)
+      const end = Math.min(to, boundary.end)
+      if (start >= end) continue
+      appendSegment(segments, { type: boundary.part.type, text: chars.slice(start, end).join('') })
+    }
+    return segments
+  }
+  const diffInRange = (from, to) => {
+    let result = 'equal'
+    for (const boundary of boundaries) {
+      if (boundary.start >= to) break
+      if (boundary.end <= from) continue
+      if (boundary.part.type === 'insert') result = 'insert'
+      else if (boundary.part.type === 'delete' && result !== 'insert') result = 'delete'
+    }
+    return result
+  }
+  const output = []
+  let cursor = 0
+  for (const span of spans) {
+    segmentsInRange(cursor, span.start).forEach((segment) => appendSegment(output, segment))
+    output.push({
+      type: 'math',
+      text: chars.slice(span.start, span.end).join(''),
+      latex: chars.slice(span.start + span.opener.length, span.end - span.closer.length).join(''),
+      diff: diffInRange(span.start, span.end),
+      displayMode: span.displayMode
+    })
+    cursor = span.end
+  }
+  segmentsInRange(cursor, total).forEach((segment) => appendSegment(output, segment))
+  return output
+}
+
+/** 将整段文本切分为文字与公式段，供无 diff 的全文展示使用。 */
+export function splitMathSegments(text) {
+  const sourceText = String(text ?? '')
+  if (!sourceText) return []
+  return alignReviewMathParts([{ type: 'equal', text: sourceText }], sourceText)
+}
+
+/** 渲染公式段为 KaTeX HTML。ParseError 由 throwOnError:false 回退红色原文；其余异常
+ * （如深嵌套导致的栈溢出）以转义原文兜底——校对文本是不可信解析产物，单条畸形公式
+ * 只能单段降级，不允许中断整个面板渲染。 */
+export function renderMathHtml(part) {
+  const latex = String(part.latex ?? '')
+  try {
+    return katex.renderToString(latex, {
+      throwOnError: false,
+      trust: false,
+      errorColor: '#cc0000',
+      displayMode: part.displayMode === true
+    })
+  } catch (error) {
+    return `<span class="katex-render-fallback" title="${escapeHtml(String(error?.message ?? ''))}">${escapeHtml(latex)}</span>`
+  }
 }

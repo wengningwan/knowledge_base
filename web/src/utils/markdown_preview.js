@@ -141,6 +141,134 @@ const markdownItFrontmatterCard = (md) => {
   md.renderer.rules.frontmatter_card = (tokens, idx) => renderFrontmatterCard(tokens[idx].meta.data)
 }
 
+// 附着式行内公式：原插件要求 $ 前不能是字母或数字，导致 sp$^{3}$、min$^{-1}$ 等
+// 学术正文常见附着形态整段回退为原文。放宽版仅当 $ 后紧跟 ^、_ 或 \（上标、下标、
+// LaTeX 命令特征）时放行前置字母数字；金额 $5 与插值 ${...} 形态不放宽。
+const ATTACHED_MATH_NEXT_RE = /^[\\^_]$/
+const isWhitespaceChar = (char) => /^\s$/u.test(char)
+const isWordCharacterOrNumber = (char) => /^[\w\d]$/u.test(char)
+
+const isValidInlineDelimRelaxed = (src, pos, adjacentToInlineMath = false) => {
+  const prevChar = src[pos - 1]
+  const char = src[pos]
+  const nextChar = src[pos + 1]
+  if (char !== '$') {
+    return { can_open: false, can_close: false }
+  }
+  let canOpen = false
+  let canClose = false
+  if (
+    prevChar !== '$' && prevChar !== '\\'
+    && (prevChar === undefined || isWhitespaceChar(prevChar) || !isWordCharacterOrNumber(prevChar))
+  ) {
+    canOpen = true
+  } else if (isWordCharacterOrNumber(prevChar) && ATTACHED_MATH_NEXT_RE.test(nextChar)) {
+    canOpen = true
+  } else if (prevChar === '$' && adjacentToInlineMath) {
+    canOpen = true
+  }
+  // 闭定界仅拒绝构成 $$ 的情形（块级/行中块定界识别）；数字、字母、下一公式的
+  // 开定界均允许——$\sim$529.7 eV 紧贴数值、$25^{\circ}$C 紧贴单位、
+  // $^{*}$$^{\dagger}$ 相邻公式都必须正常闭合。金额形态改由配对后的内容
+  // 特征校验拦截（见 inlineMathRelaxed）。
+  if (nextChar !== '$' || src[pos + 2] !== '$') {
+    canClose = true
+  }
+  return { can_open: canOpen, can_close: canClose }
+}
+
+// 金额形态判定：开定界后紧跟数字、且配对内容不含任何 LaTeX 结构特征
+// （命令、上下标、花括号）时视为金额或纯文本（如 "$5 到 $10"），
+// 不作为公式；数值公式以数字开头（$2.38 \times 10^{-3}$）因含特征被放行。
+const MONEY_LIKE_INNER_RE = /^[^\\^_{]*$/u
+
+const isMoneyLikePair = (src, openerPos, closerPos) => {
+  const afterOpener = src[openerPos + 1]
+  if (!/\d/u.test(afterOpener ?? '')) {
+    return false
+  }
+  return MONEY_LIKE_INNER_RE.test(src.slice(openerPos + 1, closerPos))
+}
+
+// 行内数学规则的全量接管版本；查找与产出逻辑与 @vscode/markdown-it-katex 的
+// inlineMath 一致，仅开定界判定换为放宽版。注册在原规则之前，原规则不再被
+// 单个 $ 触发；行中 $$ 与块级 $$ 仍由插件原有规则先行处理，不受影响。
+const inlineMathRelaxed = (state, silent) => {
+  if (state.src[state.pos] !== '$') {
+    return false
+  }
+  const lastToken = state.tokens.at(-1)
+  if (lastToken?.type === 'html_inline' && /^<\w+.+[^/]>$/.test(lastToken.content)) {
+    return false
+  }
+  // 相邻公式（$^{*}$$^{\dagger}$）：当前开定界紧跟上一个行内公式的闭合定界。
+  // 块级/行中块 $$ 由插件原有规则先行消费，到达此处且上一 token 是行内公式时，
+  // prevChar === '$' 只是相邻边界而非块级定界，放行开定界。
+  const adjacentToInlineMath = state.src[state.pos - 1] === '$' && lastToken?.type === 'math_inline'
+  let res = isValidInlineDelimRelaxed(state.src, state.pos, adjacentToInlineMath)
+  if (!res.can_open) {
+    if (!silent) {
+      state.pending += '$'
+    }
+    state.pos += 1
+    return true
+  }
+  const start = state.pos + 1
+  let match = start
+  while ((match = state.src.indexOf('$', match)) !== -1) {
+    // 连续反斜杠为成对转义时，当前 $ 不是闭合定界，继续向后找
+    let pos = match - 1
+    while (state.src[pos] === '\\') {
+      pos -= 1
+    }
+    if ((match - pos) % 2 === 1) {
+      break
+    }
+    match += 1
+  }
+  if (match === -1) {
+    if (!silent) {
+      state.pending += '$'
+    }
+    state.pos = start
+    return true
+  }
+  if (match - start === 0) {
+    if (!silent) {
+      state.pending += '$$'
+    }
+    state.pos = start + 1
+    return true
+  }
+  res = isValidInlineDelimRelaxed(state.src, match)
+  if (!res.can_close) {
+    if (!silent) {
+      state.pending += '$'
+    }
+    state.pos = start
+    return true
+  }
+  // 配对内容是金额/纯文本形态（数字开头且无 LaTeX 特征）时不产出公式
+  if (isMoneyLikePair(state.src, start - 1, match)) {
+    if (!silent) {
+      state.pending += '$'
+    }
+    state.pos = start
+    return true
+  }
+  if (!silent) {
+    const token = state.push('math_inline', 'math', 0)
+    token.markup = '$'
+    token.content = state.src.slice(start, match)
+  }
+  state.pos = match + 1
+  return true
+}
+
+const markdownItRelaxedInlineMath = (md) => {
+  md.inline.ruler.before('math_inline', 'math_inline_relaxed', inlineMathRelaxed)
+}
+
 const rendererCache = new Map()
 const renderedHtmlCache = createMarkdownRenderCache()
 const CODE_FENCE_RE = /(^|\n) {0,3}(```|~~~)/
@@ -196,7 +324,17 @@ export const createMarkdownRenderer = ({ themeName, highlighter }) =>
         }
       : undefined
   })
-    .use(markdownKatexPlugin, { katex, throwOnError: false, errorColor: '#cc0000', trust: false })
+    // 解析正文中的表格以 HTML <table> 存储，块级 HTML 原样输出导致内部 $...$
+    // 不走行内规则；开启插件官方开关让 core 阶段拆分 HTML 块内的数学 token
+    .use(markdownKatexPlugin, {
+      katex,
+      throwOnError: false,
+      errorColor: '#cc0000',
+      trust: false,
+      enableMathBlockInHtml: true,
+      enableMathInlineInHtml: true
+    })
+    .use(markdownItRelaxedInlineMath)
     .use(taskLists, { enabled: false, label: false, labelAfter: false })
     .use(markdownItFrontmatterCard)
 

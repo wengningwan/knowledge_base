@@ -97,7 +97,7 @@ OXR 结果先经过保护区和证据约束的规则处理，包括适用的普�
 
 部署开源 OXR 后，把基地址替换为该服务的地址，例如 `http://oxr:8000/v1`。系统在基地址后追加 `/parse/async` 和 `/parse/async_check`，自托管地址不要再重复添加 `/api` 或完整端点。API Key 为可选字段；也可在 API/worker 环境中设置 `OXR_API_URI`、`OXR_API_KEY`，读取顺序与其他 OCR 配置相同。
 
-系统请求 Markdown 和结构化 JSON，图片使用 base64，公式使用 LaTeX，表格使用 HTML，化学结构优先保留原图。仅发送已核实的 `keep_header_footer=false` 开关，跨页残留由本地有依据的版面规则整理；服务已正确合并的内容保持原结构。官方免费服务与开源自托管部署可能运行不同版本，不能用一个版本的表现推断另一个版本的全部功能。接口契约见 [OXR 官方源码](https://github.com/SoMarkAI/OXR)。
+系统请求 Markdown 和结构化 JSON，图片使用 base64，公式使用 LaTeX，表格使用 HTML，化学结构优先保留原图。`feature_config` 固定发送五个开关：关闭 `enable_image_understanding`（AI 图片描述不得混入正文）与 `keep_header_footer`（页眉页脚按类型归类后在渲染时过滤），开启文字跨页拼接、表格跨页拼接和图内文字识别。服务把跨页续句登记为指针，本地按既有续句语义连接，几何判据仍由本地规则把关；图内文字只保存在插图侧车，不进入正文。官方类型词表（figure、figure_caption、table_caption、equation、reference）在本地映射为既有块类型，未识别的类型退化为 unknown 并按原 PDF 区域保底；服务未返回文字的可定位块同样按区域保留图像证据。官方付费服务与免费/自托管部署能力不同，不能用一个版本的表现推断另一个版本的全部功能。接口契约见 [SoMark 官方文档](https://docs.somark.cn/api-reference/endpoint/sync) 与 [OXR 官方源码](https://github.com/SoMarkAI/OXR)。
 
 解析使用异步提交与查询，在本文件恢复点保存远程任务编号；同一源文件和服务配置匹配时，重试可继续查询已有任务。取消停止本地查询、模型调用和结果发布，OXR 没有已确认的远端取消接口，远端任务可能继续运行。重新解析可改变服务地址或模型，但不会静默改用其他引擎。
 

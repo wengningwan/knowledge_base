@@ -80,19 +80,19 @@
               <p v-if="comparison.kind === 'snapshot' && !hasChanges" class="review-hint">处理前后的文字没有变化。</p>
               <div class="review-text-block">
                 <span class="review-text-label">{{ comparison.kind === 'snapshot' ? '处理前文字' : 'OCR识别文字' }}</span>
-                <p class="review-diff"><template v-for="(part, index) in beforeParts" :key="index"><mark v-if="part.type === 'delete'" class="review-difference">{{ part.text }}</mark><span v-else>{{ part.text }}</span></template><span v-if="!comparison.before" class="review-hint">未识别到文字</span></p>
+                <p class="review-diff"><template v-for="(part, index) in beforeParts" :key="index"><mark v-if="part.type === 'math' && part.diff !== 'equal'" class="review-difference" v-html="part.html" /><span v-else-if="part.type === 'math'" v-html="part.html" /><mark v-else-if="part.type === 'delete'" class="review-difference">{{ part.text }}</mark><span v-else>{{ part.text }}</span></template><span v-if="!comparison.before" class="review-hint">未识别到文字</span></p>
               </div>
               <div v-if="comparison.after !== null" class="review-text-block">
                 <span class="review-text-label">{{ comparison.label }}</span>
-                <p class="review-diff"><template v-for="(part, index) in afterParts" :key="index"><mark v-if="part.type === 'insert'" class="review-difference">{{ part.text }}</mark><span v-else>{{ part.text }}</span></template><span v-if="comparison.after === ''" class="review-hint">内容已移除</span></p>
+                <p class="review-diff"><template v-for="(part, index) in afterParts" :key="index"><mark v-if="part.type === 'math' && part.diff !== 'equal'" class="review-difference" v-html="part.html" /><span v-else-if="part.type === 'math'" v-html="part.html" /><mark v-else-if="part.type === 'insert'" class="review-difference">{{ part.text }}</mark><span v-else>{{ part.text }}</span></template><span v-if="comparison.after === ''" class="review-hint">内容已移除</span></p>
               </div>
               <details class="review-disclosure">
                 <summary>完整上下文</summary>
                 <span class="review-text-label">处理前文字</span>
-                <pre>{{ active.before ?? active.candidates?.ocr ?? '未识别到文字' }}</pre>
+                <p class="review-diff"><template v-for="(part, index) in beforeFullParts" :key="index"><mark v-if="part.type === 'math' && part.diff !== 'equal'" class="review-difference" v-html="part.html" /><span v-else-if="part.type === 'math'" v-html="part.html" /><span v-else>{{ part.text }}</span></template><span v-if="!beforeFullParts.length" class="review-hint">未识别到文字</span></p>
                 <template v-if="typeof active.after === 'string'">
                   <span class="review-text-label">处理后文字</span>
-                  <pre>{{ active.after === '' ? '内容已移除' : active.after }}</pre>
+                  <p class="review-diff"><template v-for="(part, index) in afterFullParts" :key="index"><mark v-if="part.type === 'math' && part.diff !== 'equal'" class="review-difference" v-html="part.html" /><span v-else-if="part.type === 'math'" v-html="part.html" /><span v-else>{{ part.text }}</span></template><span v-if="active.after === ''" class="review-hint">内容已移除</span></p>
                 </template>
               </details>
             </section>
@@ -146,7 +146,7 @@ import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import { knowledgeAssetImageMarkdown } from '@/utils/document_parse_state'
 import {
   groupDocumentReviews, reviewStatusLabel, reviewKindLabel, reviewComparison,
-  diffReviewText, compactReviewSegments
+  diffReviewText, compactReviewSegments, alignReviewMathParts, splitMathSegments, renderMathHtml
 } from '@/utils/documentReview'
 
 const props = defineProps({
@@ -205,9 +205,15 @@ const anchorBlockId = computed({
 const sourceImage = computed(() => knowledgeAssetImageMarkdown(active.value?.source_image, props.kbId, '原文裁图'))
 const comparison = computed(() => active.value ? reviewComparison(active.value) : { before: '', after: null })
 const diff = computed(() => diffReviewText(comparison.value.before, comparison.value.after ?? comparison.value.before))
-const compactParts = computed(() => compactReviewSegments(diff.value.parts))
-const beforeParts = computed(() => compactParts.value.filter((part) => part.type !== 'insert'))
-const afterParts = computed(() => compactParts.value.filter((part) => part.type !== 'delete'))
+const withMathHtml = (parts) => parts.map((part) => (part.type === 'math' ? { ...part, html: renderMathHtml(part) } : part))
+const alignedCompactParts = (removedType) => compactReviewSegments(alignReviewMathParts(
+  diff.value.parts.filter((part) => part.type !== removedType),
+  removedType === 'insert' ? comparison.value.before : comparison.value.after ?? comparison.value.before
+))
+const beforeParts = computed(() => withMathHtml(alignedCompactParts('insert')))
+const afterParts = computed(() => withMathHtml(alignedCompactParts('delete')))
+const beforeFullParts = computed(() => withMathHtml(splitMathSegments(active.value ? active.value.before ?? active.value.candidates?.ocr ?? '' : '')))
+const afterFullParts = computed(() => withMathHtml(splitMathSegments(typeof active.value?.after === 'string' ? active.value.after : '')))
 const hasChanges = computed(() => diff.value.parts.some((part) => part.type !== 'equal'))
 const validPage = (page) => Number.isInteger(page) && page > 0
 const pageLabel = (page) => validPage(page) ? `第 ${page} 页` : '页码未知'
@@ -335,7 +341,10 @@ select { background: var(--gray-0); color: var(--color-text); border: 1px solid 
 .review-target { padding: 12px; background: var(--gray-25); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; }
 .review-target mark, .review-difference { color: var(--color-text); background: var(--color-warning-100); text-decoration: none; }
 .review-text-label { display: block; margin-bottom: 8px; }
-.review-diff, pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.8; margin: 0; }
+.review-diff { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.8; margin: 0; }
+.review-diff :deep(.katex) { font-size: 1.05em; }
+.review-diff :deep(.katex-display) { margin: 0.25rem 0; overflow-x: auto; overflow-y: hidden; }
+.review-diff :deep(.katex-render-fallback) { color: #cc0000; }
 .review-disclosure { font-size: 13px; min-width: 0; }
 .review-disclosure summary { cursor: pointer; color: var(--main-color); padding: 4px 0; }
 .review-editor { display: flex; flex-direction: column; gap: 12px; padding-top: 16px; border-top: 1px solid var(--gray-150); }
@@ -347,7 +356,7 @@ select { background: var(--gray-0); color: var(--color-text); border: 1px solid 
 .review-save:disabled { background: var(--gray-100); border-color: var(--gray-150); color: var(--color-text-tertiary); }
 .review-save-error { color: var(--color-error-700); font-size: 13px; }
 .review-disclosure[open] summary { margin-bottom: 12px; }
-.review-disclosure pre + .review-text-label { margin-top: 12px; }
+.review-disclosure .review-diff + .review-text-label { margin-top: 12px; }
 .review-navigation { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--gray-150); }
 .review-navigation > div { display: flex; gap: 12px; }
 .review-empty { padding: 32px 16px; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center; }
