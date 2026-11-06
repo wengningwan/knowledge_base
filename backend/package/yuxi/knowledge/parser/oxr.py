@@ -18,6 +18,24 @@ from yuxi.knowledge.parser.pdf_structure import normalize_oxr_result
 from yuxi.knowledge.parser.result import ParsedDocument
 
 
+# SoMark 官方 API 的 feature_config 能力开关，仅发送解析链路真实消费的项。
+# keep_header_footer：是否保留页眉页脚文字，官方默认 false。官方不裁剪时仍会返回页眉页脚块，
+# 由 TYPE_MAP 归类后在渲染时过滤。
+# enable_text_cross_page：是否拼接跨页/跨栏的文本段落，官方默认 false。官方只登记续句指针、
+# 不直接合并文本，指针由 _cross_page_target 消费为 continues_previous。
+# enable_table_cross_page：是否把跨页表格合并为完整表格，官方默认 false，合并 HTML 直接进 table 块 content。
+# enable_image_ocr：是否识别图片内文字，官方默认 false，结果进入 figures 侧车，不进正文。
+# enable_image_understanding：是否用 AI 生成图片语义描述，官方默认 true，描述会写进块 content；
+# 必须显式关闭，避免污染"正文只含原文"契约。
+_FEATURE_CONFIG = {
+    "keep_header_footer": False,
+    "enable_text_cross_page": True,
+    "enable_table_cross_page": True,
+    "enable_image_ocr": True,
+    "enable_image_understanding": False,
+}
+
+
 class OXRParser(BaseDocumentProcessor):
     """以任务局部状态执行 OXR 上传、查询和恢复。"""
 
@@ -97,7 +115,7 @@ class OXRParser(BaseDocumentProcessor):
                                 "element_formats": json.dumps(
                                     {"image": "base64", "formula": "latex", "table": "html", "cs": "image"}
                                 ),
-                                "feature_config": json.dumps({"keep_header_footer": False}),
+                                "feature_config": json.dumps(_FEATURE_CONFIG),
                             }
                             body = await self._request(client, "/parse/async", data, files, deadline, control)
                         submitted = body.get("data")

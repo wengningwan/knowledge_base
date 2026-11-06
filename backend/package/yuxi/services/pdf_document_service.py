@@ -88,7 +88,14 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
             if not str(block.get("content") or "").strip():
                 raise ValueError("未知内容既无可用文字也无法定位原文")
             result.diagnostics.append({"kind": "unknown_region_unlocated", "block_id": block["id"], "reason": "保留未知类型原文文字，缺少定位，未猜测原图"})
-        if (kind in {"picture", "chemical_structure"} or kind == "unknown" and block.get("bbox")) and not block.get("asset_id"):
+        # 官方会把部分已知类型块返回为空文字（如 reference、footnote）。这些类型没有走 unknown 保底，
+        # 正文会静默丢内容，因此按原PDF区域留一份可读截图；region_backup 把它排除出插图分析。
+        blank_backup = (
+            not str(block.get("content") or "").strip()
+            and bool(block.get("bbox"))
+            and kind not in {"page_header", "page_footer", "picture", "chemical_structure"}
+        )
+        if (kind in {"picture", "chemical_structure"} or (kind == "unknown" and block.get("bbox")) or blank_backup) and not block.get("asset_id"):
             if not block.get("bbox"):
                 raise ValueError("插图缺少原图或可定位区域")
             asset_id = f"{block['id']}_source"
@@ -96,7 +103,10 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
             result.assets[asset_id] = {"data": data, "mime": "image/png", "page": block["page"], "bbox": block["bbox"], "role": kind}
             original = str(block.get("content") or "").strip() if kind == "unknown" else ""
             block.update(asset_id=asset_id, asset_ids=[asset_id], content=(original + "\n\n" if original else "") + f"![](asset://{asset_id})", format="markdown")
-        if kind in {"picture", "chemical_structure"} or block.get("asset_ids"):
+            if blank_backup:
+                block["region_backup"] = True
+                result.diagnostics.append({"kind": "blank_region_backup", "block_id": block["id"], "reason": "服务未返回该块文字，按原PDF区域保留图像证据"})
+        if not block.get("region_backup") and (kind in {"picture", "chemical_structure"} or block.get("asset_ids")):
             figure = by_figure.get(block["id"], {"id": block["id"]})
             figure.update({key: block.get(key) for key in ("page", "bbox", "asset_id", "asset_ids", "type")})
             figure["image_url"] = f"asset://{block['asset_id']}" if block.get("asset_id") else ""
@@ -153,14 +163,25 @@ def _columns(blocks: list[dict]) -> list[dict]:
 
 
 def _nearby_caption(blocks: list[dict], image: dict) -> str:
-    """图注仅作附属上下文，正文仍由自己的块渲染一次。"""
+    """图注仅作附属上下文，正文仍由自己的块渲染一次。
+
+    题注既可能在目标下方，也可能紧贴上方（表格题注常在表格之上），
+    两条几何带都匹配，取距离最近的一条。
+    """
     box = image.get("bbox")
     if not box:
         return ""
-    candidates = [item for item in blocks if item.get("type") == "caption" and item["page"] == image["page"] and item.get("bbox") and -0.015 <= item["bbox"][1] - box[3] <= 0.12]
+    candidates = []
+    for item in blocks:
+        if item.get("type") != "caption" or item["page"] != image["page"] or not item.get("bbox"):
+            continue
+        for gap in (item["bbox"][1] - box[3], box[1] - item["bbox"][3]):
+            if -0.015 <= gap <= 0.12:
+                candidates.append((abs(gap), item))
+                break
     if not candidates:
         return ""
-    return min(candidates, key=lambda item: abs(item["bbox"][1] - box[3]))["content"]
+    return min(candidates, key=lambda pair: pair[0])[1]["content"]
 
 
 async def _read_service_image(reference: str, base_url: str) -> tuple[bytes, str]:

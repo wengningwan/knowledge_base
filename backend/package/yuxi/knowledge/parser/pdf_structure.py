@@ -23,6 +23,12 @@ TYPE_MAP = {
     "code": "code_block",
     "stamp": "stamp", "pageheader": "page_header", "page_header": "page_header",
     "header": "page_header", "pagefooter": "page_footer", "page_footer": "page_footer", "footer": "page_footer",
+    # SoMark 官方 API 使用另一套类型词表（figure、figure_caption、table_caption、equation、reference 等）。
+    # 未列出的类型会退化为 unknown 并按原图区域保底，因此这里必须覆盖官方词表，
+    # 否则正文文字块会被当成插图追加截图。
+    # reference 归入 text：下游规则校对与复核白名单只认识既有类型，新增类型会让参考文献条目失去原生文字核对。
+    "figure": "picture", "figure_caption": "caption", "table_caption": "caption",
+    "equation": "formula", "reference": "text",
 }
 
 
@@ -51,6 +57,8 @@ def normalize_oxr_result(payload: dict) -> ParsedDocument:
         raise ValueError("OXR 结果缺少 pages 数组")
     result = ParsedDocument(metadata={"oxr": upstream_metadata, "parsed_pages": []})
     used_ids = set()
+    blocks_by_position: dict[tuple[int, int], dict] = {}
+    cross_page_marks: list[tuple[dict, tuple[int, int]]] = []
     order = 0
     for page_index, source_page in enumerate(structure["pages"]):
         if not isinstance(source_page, dict):
@@ -122,12 +130,19 @@ def normalize_oxr_result(payload: dict) -> ParsedDocument:
                 block["paragraph_start"] = True
             if source.get("continues_previous") is True:
                 block["continues_previous"] = True
+            image_ocr = _image_ocr_texts(source)
+            if image_ocr:
+                block["image_ocr"] = image_ocr
+            target = _cross_page_target(source)
+            if target is not None:
+                cross_page_marks.append((block, target))
+            blocks_by_position[(page, idx)] = block
             _extract_images(block, source, result)
             result.blocks.append(block)
             if block_type in {"picture", "table", "chemical_structure", "chemical_equation"} or block.get("asset_ids"):
                 figure = {
                     key: block[key]
-                    for key in ("id", "page", "bbox", "type", "asset_id", "asset_ids", "source_urls")
+                    for key in ("id", "page", "bbox", "type", "asset_id", "asset_ids", "source_urls", "image_ocr")
                     if key in block
                 }
                 figure.update(
@@ -142,6 +157,14 @@ def normalize_oxr_result(payload: dict) -> ParsedDocument:
                 result.figures.append(figure)
             order += 1
     result.metadata["upstream_markdown"] = str(outputs.get("markdown") or "")
+    for marked, target in cross_page_marks:
+        # 官方把跨页/跨栏续句做成指针而非直接合并文本。落到既有 continues_previous 语义上，
+        # 让数字或大写开头的续句（"…(2:1," + "3:1, 4:1…"）也能接上，几何判据仍由 _safe_continuation 把关。
+        continued = blocks_by_position.get(target)
+        if continued is None:
+            result.diagnostics.append({"kind": "cross_page_target_missing", "block_id": marked["id"], "target": list(target)})
+            continue
+        continued["continues_previous"] = True
     result.blocks = restore_reading_flow(result.blocks, result.diagnostics)
     result.markdown = render_document(result.blocks)
     for position, block in enumerate(result.blocks):
@@ -291,6 +314,38 @@ def _title_level(source: dict, content: str, body_font: float | None) -> int:
     if body_font and isinstance(font, (int, float)) and font >= body_font * 1.6:
         return 1
     return 2
+
+
+def _image_ocr_texts(source: dict) -> list[str]:
+    """归一官方图内文字识别结果，只保留有序文字。
+
+    官方每项形如 {"text": "...", "polygon": [[x, y], ...]}。坐标多边形不参与正文渲染，
+    图内文字也只进 figures 侧车，避免把插图里的字当正文。
+    """
+    raw = source.get("image_ocr")
+    if not isinstance(raw, list):
+        return []
+    texts = []
+    for item in raw:
+        value = item.get("text") if isinstance(item, dict) else item
+        if not isinstance(value, str):
+            continue
+        text = " ".join(value.split())
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _cross_page_target(source: dict) -> tuple[int, int] | None:
+    """把官方 text_cross_page 指针归一为 (1 基页码, idx)，指向本块之后的续句块。"""
+    raw = source.get("text_cross_page")
+    if not isinstance(raw, dict):
+        return None
+    page_num, block_idx = raw.get("page_num"), raw.get("block_idx")
+    for value in (page_num, block_idx):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+    return (page_num + 1, block_idx)
 
 
 def _extract_images(block: dict, source: dict, result: ParsedDocument) -> None:
