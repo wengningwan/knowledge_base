@@ -35,6 +35,7 @@ from yuxi.knowledge.utils.sample_question_utils import (
 from yuxi.knowledge.utils.url_fetcher import fetch_url_content
 from yuxi.permissions import (
     ResourcePermission,
+    ResourcePermissionDenied,
     resolve_knowledge_base_permission,
 )
 from yuxi.services.knowledge_folder_service import knowledge_folder_service
@@ -106,6 +107,13 @@ class ConfirmDocumentReviewRequest(BaseModel):
 
 class PendingParseDocumentsRequest(BaseModel):
     params: dict | None = None
+
+
+class RetryExperimentCardsRequest(BaseModel):
+    """失败重试须明确对应的草稿和正文版本。"""
+
+    revision_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class PendingIndexDocumentsRequest(BaseModel):
@@ -1044,6 +1052,50 @@ async def get_document_parse_assets(
         return await knowledge_base.get_file_parse_assets(kb_id, doc_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@knowledge.get("/databases/{kb_id}/documents/{doc_id}/experiment-cards")
+async def get_document_experiment_cards(
+    kb_id: str, doc_id: str, current_user: User = Depends(require_knowledge_base_read),
+):
+    """返回同一文档版本的实验机器草稿及独立任务状态。"""
+    from yuxi.repositories.knowledge_structure_repository import StructureNotFoundError
+    from yuxi.services.knowledge_structure_service import read_experiment_cards
+
+    await _ensure_database_supports_documents(kb_id, "实验卡片查看")
+    try:
+        return await read_experiment_cards(kb_id, doc_id, uid=str(current_user.uid))
+    except StructureNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ResourcePermissionDenied as exc:
+        raise HTTPException(status_code=403, detail="无权读取该知识库的实验卡片") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@knowledge.post("/databases/{kb_id}/documents/{doc_id}/experiment-cards/retry")
+async def retry_document_experiment_cards(
+    kb_id: str, doc_id: str, body: RetryExperimentCardsRequest,
+    current_user: User = Depends(require_knowledge_base_manage),
+):
+    """管理者可以重试当前失败草稿，正常入库自动启动。"""
+    from yuxi.repositories.knowledge_structure_repository import StructureConflictError, StructureNotFoundError
+    from yuxi.services.knowledge_structure_service import retry_experiment_cards
+
+    await _ensure_database_supports_documents(kb_id, "实验卡片重试")
+    try:
+        return await retry_experiment_cards(
+            kb_id, doc_id, uid=str(current_user.uid), revision_id=body.revision_id,
+            expected_source_sha256=body.source_sha256,
+        )
+    except StructureNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except StructureConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ResourcePermissionDenied as exc:
+        raise HTTPException(status_code=403, detail="无权重试该知识库的实验卡片") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @knowledge.post("/databases/{kb_id}/documents/{doc_id}/review-confirmations")

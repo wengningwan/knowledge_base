@@ -914,7 +914,7 @@ const resetParseParams = (processingParams = null) => {
 }
 
 const createDefaultIndexParams = () => ({
-  chunk_preset_id: '',
+  chunk_preset_id: DEFAULT_CHUNK_PRESET_ID,
   chunk_parser_config: {}
 })
 
@@ -1334,7 +1334,7 @@ const resetIndexParams = (processingParams = null) => {
 
   const chunkParserConfig = processingParams.chunk_parser_config
   indexParams.value = {
-    chunk_preset_id: processingParams.chunk_preset_id || '',
+    chunk_preset_id: processingParams.chunk_preset_id || DEFAULT_CHUNK_PRESET_ID,
     chunk_parser_config: isPlainObject(chunkParserConfig) ? { ...chunkParserConfig } : {}
   }
 }
@@ -1357,7 +1357,11 @@ const handleIndexFile = async (record) => {
   indexConfigModalTitle.value = '入库参数配置'
 
   const processingParams = await loadRecordProcessingParams(record)
-  resetIndexParams(processingParams)
+  resetIndexParams(
+    record.status === 'parsed'
+      ? { ...processingParams, chunk_preset_id: DEFAULT_CHUNK_PRESET_ID }
+      : processingParams
+  )
 
   indexConfigModalVisible.value = true
 }
@@ -1453,7 +1457,7 @@ const formatChunkAmount = (file) => `${formatContentCount(file?.chunk_count)} Ch
 
 // 导入工具函数
 import { parseToShanghai } from '@/utils/time'
-import { buildChunkParamsPayload, isPlainObject } from '@/utils/chunkUtils'
+import { buildChunkParamsPayload, DEFAULT_CHUNK_PRESET_ID, isPlainObject } from '@/utils/chunkUtils'
 import { parseDownloadFilename } from '@/utils/file_utils'
 import ChunkParamsConfig from '@/components/ChunkParamsConfig.vue'
 import FileBrowserTable from '@/components/common/FileBrowserTable.vue'

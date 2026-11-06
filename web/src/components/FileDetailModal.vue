@@ -1,7 +1,7 @@
 <template>
   <a-modal
     v-model:open="visible"
-    :width="viewMode === 'review' ? '1200px' : '800px'"
+    :width="['review', 'experiments'].includes(viewMode) ? '1200px' : '800px'"
     :footer="null"
     :closable="false"
     wrap-class-name="file-detail"
@@ -124,6 +124,13 @@
           <p>{{ contentState.error || '暂无分块信息' }}</p>
         </div>
       </div>
+      <ExperimentCardsPanel
+        v-if="viewMode === 'experiments'"
+        :key="`experiments-${file.file_id}`"
+        :kb-id="kbId"
+        :file-id="file.file_id"
+        :can-manage="canManage"
+      />
       <KeepAlive :max="1">
         <DocumentReviewPanel
           v-if="viewMode === 'review'"
@@ -162,13 +169,14 @@ import {
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import FigureAnalysisPanel from '@/components/knowledge/FigureAnalysisPanel.vue'
 import DocumentReviewPanel from '@/components/knowledge/DocumentReviewPanel.vue'
+import ExperimentCardsPanel from '@/components/knowledge/ExperimentCardsPanel.vue'
 import ChunkPreviewPanel from '@/components/knowledge/ChunkPreviewPanel.vue'
 import {
   createDocumentParseLoader, emptyDocumentContent, emptyDocumentAssets, documentMarkdown
 } from '@/utils/document_parse_state'
 import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
 import AgentFilePreview from '@/components/AgentFilePreview.vue'
-import { Download, ChevronDown, FileSearch, FileText, Rows3, Image, ScanText, X } from '@lucide/vue'
+import { Download, ChevronDown, FileSearch, FileText, Rows3, Image, ScanText, FlaskConical, X } from '@lucide/vue'
 
 const props = defineProps({
   open: {
@@ -341,6 +349,7 @@ const availableViewModes = computed(() => {
   if (hasMarkdownPreview.value) modes.push('markdown')
   if (hasChunkPreview.value) modes.push('chunks')
   if (canPreviewParseAssets(file.value)) modes.push('figures', 'review')
+  if (hasMarkdownPreview.value) modes.push('experiments')
   return modes
 })
 const hasAvailableView = computed(() => availableViewModes.value.length > 0)
@@ -364,7 +373,8 @@ const viewModeOptions = computed(() => {
     markdown: makeViewModeOption('Markdown', 'markdown', FileText),
     chunks: makeViewModeOption('Chunks', 'chunks', Rows3),
     figures: makeViewModeOption('图片解析', 'figures', Image),
-    review: makeViewModeOption('校对结果', 'review', ScanText)
+    review: makeViewModeOption('校对结果', 'review', ScanText),
+    experiments: makeViewModeOption('实验卡片', 'experiments', FlaskConical)
   }
   return availableViewModes.value.map((mode) => optionMap[mode])
 })

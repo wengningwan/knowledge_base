@@ -239,6 +239,16 @@ export const documentApi = {
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/parse-assets`)
   },
 
+  /** 读取与当前正文绑定的实验卡片机器草稿。 */
+  getExperimentCards: async (kbId, docId) => {
+    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards`)
+  },
+
+  /** 仅重试指定正文版本的失败或取消任务。 */
+  retryExperimentCards: async (kbId, docId, snapshot) => {
+    return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/retry`, snapshot)
+  },
+
   /** 确认人工核对结果并同步当前 Markdown。 */
   confirmDocumentReview: async (kbId, docId, changes) => {
     return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/review-confirmations`, changes)

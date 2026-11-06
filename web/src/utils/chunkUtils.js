@@ -2,7 +2,7 @@
  * Chunk 工具函数
  */
 
-export const DEFAULT_CHUNK_PRESET_ID = 'general'
+export const DEFAULT_CHUNK_PRESET_ID = 'paper'
 
 export const isPlainObject = (value) =>
   value !== null && typeof value === 'object' && !Array.isArray(value)

@@ -24,7 +24,7 @@ from yuxi.utils.singleton import SingletonMeta
 
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
 BUSINESS_SCHEMA_VERSION = 9
-KNOWLEDGE_SCHEMA_VERSION = 4
+KNOWLEDGE_SCHEMA_VERSION = 5
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
@@ -580,6 +580,15 @@ class PostgresManager(metaclass=SingletonMeta):
         self._check_initialized()
         async with self.async_engine.begin() as conn:
             await conn.execute(text("ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS source_metadata JSONB"))
+
+    async def upgrade_knowledge_schema_v4_to_v5(self) -> None:
+        """仅由迁移进程幂等创建实验草稿、证据与卡片表。"""
+        self._check_initialized()
+        tables = [KnowledgeBase.metadata.tables[name] for name in (
+            "knowledge_structure_revisions", "knowledge_structure_evidence", "knowledge_experiment_cards",
+        )]
+        async with self.async_engine.begin() as conn:
+            await conn.run_sync(lambda connection: KnowledgeBase.metadata.create_all(connection, tables=tables))
 
     async def drop_tables(self):
         """删除所有表（慎用！）"""

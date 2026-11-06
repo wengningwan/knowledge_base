@@ -132,7 +132,7 @@ async def main() -> None:
                 "knowledge",
                 knowledge_version,
                 KNOWLEDGE_SCHEMA_VERSION,
-                upgrade_from=(1, 2, 3),
+                upgrade_from=(1, 2, 3, 4),
             )
 
             if business_version is None:
@@ -156,12 +156,14 @@ async def main() -> None:
                 await pg_manager.create_knowledge_tables()
                 await pg_manager.ensure_knowledge_schema()
                 await pg_manager.record_schema_version("knowledge", KNOWLEDGE_SCHEMA_VERSION)
-            elif knowledge_version in {1, 2, 3}:
+            elif knowledge_version in {1, 2, 3, 4}:
                 if knowledge_version == 1:
                     await pg_manager.upgrade_knowledge_schema_v1_to_v2()
                 if knowledge_version in {1, 2}:
                     await pg_manager.upgrade_knowledge_schema_v2_to_v3()
-                await pg_manager.upgrade_knowledge_schema_v3_to_v4()
+                if knowledge_version in {1, 2, 3}:
+                    await pg_manager.upgrade_knowledge_schema_v3_to_v4()
+                await pg_manager.upgrade_knowledge_schema_v4_to_v5()
                 await pg_manager.record_schema_version("knowledge", KNOWLEDGE_SCHEMA_VERSION)
 
             await _converge_database_state(fail_nonterminal_runs=requires_quiescence)

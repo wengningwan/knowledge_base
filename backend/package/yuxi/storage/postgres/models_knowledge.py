@@ -119,6 +119,53 @@ class KnowledgeChunk(Base):
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
+class KnowledgeStructureRevision(Base):
+    """记录绑定不可变正文的实验卡片抽取版本。"""
+
+    __tablename__ = "knowledge_structure_revisions"
+
+    revision_id = Column(String(64), primary_key=True)
+    kb_id = Column(String(80), ForeignKey("knowledge_bases.kb_id", ondelete="CASCADE"), nullable=False, index=True)
+    file_id = Column(String(64), ForeignKey("knowledge_files.file_id", ondelete="CASCADE"), nullable=False, index=True)
+    task_id = Column(String(64), nullable=False, unique=True)
+    markdown_file = Column(String(1024), nullable=False)
+    parse_assets_file = Column(String(1024))
+    source_sha256 = Column(String(64), nullable=False)
+    model_spec = Column(String(512))
+    operator_id = Column(String(64))
+    schema_version = Column(Integer, nullable=False, default=1)
+    prompt_version = Column(String(64), nullable=False, default="chemical-draft-v1")
+    status = Column(String(32), nullable=False, default="pending")
+    coverage = Column(JSON_VALUE)
+    error_message = Column(Text)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+
+
+class KnowledgeStructureEvidence(Base):
+    """保存结构化字段的逐字原文依据，不依赖分块身份。"""
+
+    __tablename__ = "knowledge_structure_evidence"
+
+    revision_id = Column(
+        String(64), ForeignKey("knowledge_structure_revisions.revision_id", ondelete="CASCADE"), primary_key=True,
+    )
+    evidence_id = Column(String(64), primary_key=True)
+    source = Column(JSON_VALUE, nullable=False)
+
+
+class KnowledgeExperimentCard(Base):
+    """保存尚未经人工确认的样品实验卡片。"""
+
+    __tablename__ = "knowledge_experiment_cards"
+
+    revision_id = Column(
+        String(64), ForeignKey("knowledge_structure_revisions.revision_id", ondelete="CASCADE"), primary_key=True,
+    )
+    card_index = Column(Integer, primary_key=True)
+    content = Column(JSON_VALUE, nullable=False)
+
+
 class KnowledgeGraphEntity(Base):
     """知识图谱实体"""
 
