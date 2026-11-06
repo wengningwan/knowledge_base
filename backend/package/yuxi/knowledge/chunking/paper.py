@@ -665,13 +665,18 @@ def _continues_paragraph(text: str, previous: Evidence, current: Evidence) -> bo
         and re.match(r"[-+−]?\d+(?:\.\d+)?\s*(?:[%％、，,]|$)", opening)
     )
     parenthetical_case = re.match(r"\(case\s+[a-z0-9]+\)\s+[a-z]", opening)
+    hyphenated_word = re.search(r"\b[A-Z]?[a-z]{2,}[-‐‑]$", ending) and re.match(r"[a-z]", opening)
     return bool(
-        re.search(r"[A-Za-z0-9$)},\u4e00-\u9fff]$", ending)
+        _identifiers(before) == _identifiers(after)
         and (
-            re.match(r"[a-z]|\(\s*[<>≤≥]?\s*\d", opening)
-            or numeric_pair or chinese_pair or chinese_value or cited_name or parenthetical_case
+            hyphenated_word or (
+                re.search(r"[A-Za-z0-9$)},\u4e00-\u9fff]$", ending)
+                and (
+                    re.match(r"[a-z]|\(\s*[<>≤≥]?\s*\d", opening)
+                    or numeric_pair or chinese_pair or chinese_value or cited_name or parenthetical_case
+                )
+            )
         )
-        and _identifiers(before) == _identifiers(after)
     )
 
 
