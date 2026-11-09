@@ -108,7 +108,8 @@ async def extract_experiment_cards(
 
     batches = _source_batches(markdown)
     await control.check_cancelled()
-    model = select_model(model_spec, safe_error_logging=True, timeout=180, max_tokens=12000, max_retries=0)
+    # 整体执行时限和取消由 Durable Task 管理，本地推理请求可等待完整响应。
+    model = select_model(model_spec, safe_error_logging=True, timeout=None, max_tokens=12000, max_retries=0)
     source = SourceDocument(markdown, parse_assets)
     facts: dict[str, dict] = {}
     evidence: list[dict] = []
