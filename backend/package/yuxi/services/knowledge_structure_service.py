@@ -1,10 +1,16 @@
-"""在原文入库后自动抽取实验草稿，并提供权限受控的读取与重试。"""
+"""在原文入库后抽取实验草稿，管理读取、审核及重试。"""
 
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 from yuxi.knowledge.chunking.source import source_sha256
+from yuxi.knowledge.experiment_review import (
+    ExperimentReviewRequest,
+    experiment_review_records,
+    validate_experiment_review,
+)
 from yuxi.permissions import ResourcePermission
 from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
 from yuxi.repositories.knowledge_structure_repository import (
@@ -14,6 +20,7 @@ from yuxi.repositories.knowledge_structure_repository import (
 from yuxi.repositories.task_repository import TaskRepository
 from yuxi.services.task_service import TaskContext, tasker
 from yuxi.storage.postgres.manager import pg_manager
+from yuxi.utils.datetime_utils import utc_now
 from yuxi.utils.logging_config import logger
 
 TASK_TYPE = "knowledge_structure"
@@ -68,10 +75,14 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                     "status": "not_generated", "cards": [], "evidence": [],
                     "message": "Paper 分块入库成功后自动生成实验草稿；已有文档可重新入库。",
                 }
+            coverage = dict(revision.coverage or {})
             result = {
                 "status": revision.status, "revision_id": revision.revision_id,
                 "task_id": revision.task_id, "source_sha256": revision.source_sha256,
-                "model_spec": revision.model_spec, "coverage": revision.coverage,
+                "model_spec": revision.model_spec,
+                "coverage": {
+                    key: value for key, value in coverage.items() if key not in {"manual_review", "review_candidates"}
+                },
                 "message": revision.error_message or "", "cards": [], "evidence": [],
                 "review_status": "machine_only",
             }
@@ -84,6 +95,10 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 return result
             if revision.status == "draft":
                 result["cards"], result["evidence"] = await repo.read_result(session, revision)
+                result["review"] = {
+                    "version": coverage.get("manual_review", {}).get("version", 0),
+                    "records": list(experiment_review_records(result["cards"], coverage).values()),
+                }
                 if not result["cards"]:
                     result["message"] = "本次没有组装出带明确出处的实验记录。"
                 elif (revision.coverage or {}).get("source_coverage") == "partial":
@@ -97,6 +112,62 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 else:
                     result.update(status=task.status, progress=task.progress, message=task.message or "等待生成实验草稿")
             return result
+
+
+async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentReviewRequest):
+    """在文档锁与当前正文版本内原子保存单条审核。"""
+    repo = KnowledgeStructureRepository()
+    async with KnowledgeFileRepository().lock_file_operation(kb_id, file_id):
+        async with pg_manager.get_async_session_context() as session:
+            file, _kb = await repo.require_file(
+                session, kb_id=kb_id, file_id=file_id, uid=uid, permission=ResourcePermission.MANAGE, lock=True,
+            )
+            revision = await repo.latest(session, kb_id=kb_id, file_id=file_id)
+            if (
+                revision is None or revision.status != "draft" or revision.revision_id != change.revision_id
+                or revision.source_sha256 != change.source_sha256 or file.markdown_file != revision.markdown_file
+                or file.status not in {"indexed", "done"}
+            ):
+                raise StructureConflictError("实验草稿或正文已更新，请重新打开页面")
+            coverage = dict(revision.coverage or {})
+            review = coverage.get("manual_review", {})
+            if change.version != review.get("version", 0):
+                raise StructureConflictError("已有其他审核修改，请重新打开页面后核对")
+            markdown = await _read_structure_markdown(revision.markdown_file, kb_id=kb_id, file_id=file_id)
+            if source_sha256(markdown) != change.source_sha256:
+                raise StructureConflictError("正文内容已变化，请重新入库")
+            cards, evidence = await repo.read_result(session, revision)
+            records = experiment_review_records(cards, coverage)
+            if change.record_id is not None and change.record_id not in records:
+                raise ValueError("该实验记录不属于当前草稿")
+            if change.fragment_id is not None:
+                if change.record_id is not None or not any(
+                    fact["fact_id"] == change.fragment_id for fact in coverage.get("unassigned_facts", [])
+                ):
+                    raise ValueError("该原文片段不能用于当前记录")
+                if any(record.get("fragment_id") == change.fragment_id for record in records.values()):
+                    raise StructureConflictError("该原文片段已整理，请重新打开页面")
+            if change.action == "exclude":
+                if change.record_id is None:
+                    raise ValueError("请指定要排除的记录")
+                record = {**records[change.record_id], "status": "excluded"}
+            else:
+                if change.fields is None or (change.action == "confirm" and not change.verified):
+                    raise ValueError("请填写字段并完成确认所需的人工核对")
+                validate_experiment_review(change.fields, evidence, confirm=change.action == "confirm")
+                record_id = change.record_id or f"manual-{uuid.uuid4().hex}"
+                record = {
+                    **change.fields.model_dump(), "record_id": record_id,
+                    "status": "confirmed" if change.action == "confirm" else "pending",
+                }
+                fragment_id = change.fragment_id or records.get(record_id, {}).get("fragment_id")
+                if fragment_id is not None:
+                    record["fragment_id"] = fragment_id
+            version = change.version + 1
+            items = dict(review.get("items", {}))
+            items[record["record_id"]] = {"record": record, "operator_id": uid, "updated_at": utc_now().isoformat()}
+            await repo.save_review(session, revision, {"version": version, "items": items})
+    return {"version": version, "record": record}
 
 
 async def retry_experiment_cards(kb_id, file_id, *, uid, revision_id, expected_source_sha256):

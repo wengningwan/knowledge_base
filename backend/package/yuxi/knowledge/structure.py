@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidatorFun
 
 from yuxi.knowledge.chunking.ragflow_like.nlp import count_tokens
 from yuxi.knowledge.chunking.source import SourceDocument
+from yuxi.knowledge.experiment_review import experiment_record_fields
 from yuxi.knowledge.structure_tables import CellPosition, Span, table_cells
 from yuxi.models.chat import ModelRequestError, select_model
 from yuxi.services.pdf_model_execution import PdfModelExecutor, run_pdf_workers
@@ -48,7 +49,7 @@ def _validate_item(value, handler: ValidatorFunctionWrapHandler):
 
 
 FactId = Annotated[str, Field(min_length=1, max_length=32)]
-STRUCTURE_PROMPT_VERSION = "chemical-draft-v6"
+STRUCTURE_PROMPT_VERSION = "chemical-draft-v7"
 _UNIT_SYMBOL = (
     r"(?:°[^\S\r\n]*[CF]|mmol|[µμu]mol|mol|mg|kg|g|[µμu]L|mL|L|h|min|s|MPa|kPa|Pa|bar|K|"
     r"nm|[µμu]m|mm|cm|m|Å|kV|eV|V|wt\.?[^\S\r\n]*%|%)"
@@ -171,6 +172,7 @@ async def extract_experiment_cards(
     cards: dict[str, dict] = {}
     used: set[str] = set()
     record_keys: set[tuple] = set()
+    review_candidates: dict[tuple, dict] = {}
 
     def add_evidence(start: int, end: int) -> str:
         """复用同一原文范围的证据编号。"""
@@ -266,7 +268,9 @@ async def extract_experiment_cards(
             return resolved
 
         rejected_before = rejected_facts
-        accepted, rejected = _materialize_batch(result, resolve, cards, used, record_keys, markdown, add_evidence)
+        accepted, rejected = _materialize_batch(
+            result, resolve, cards, used, record_keys, review_candidates, markdown, add_evidence,
+        )
         rejected_relations += sum(rejected.values())
         for candidate in result.candidates:
             if candidate is None:
@@ -287,17 +291,18 @@ async def extract_experiment_cards(
         for fact in facts.values()
         if fact.kind in {"condition", "result"} and fact.id not in used
     ]
-    if not cards and not unassigned and (incomplete_batches or rejected_facts or rejected_relations):
+    if not cards and not unassigned and not review_candidates and (incomplete_batches or rejected_facts or rejected_relations):
         raise ValueError("实验抽取未获得可核对的记录或候选，请查看 Worker 的实验卡片日志")
     association_incomplete = bool(rejected_relations or (not cards and unassigned))
     partial = bool(incomplete_batches or rejected_facts or association_incomplete)
     await control.check_cancelled()
     await control.set_progress(95, "实验卡片草稿与证据校验完成")
     logger.info(
-        "experiment_cards_validation {} cards={} records={} facts={} candidates={} partial={} incomplete_batches={} "
+        "experiment_cards_validation {} cards={} records={} facts={} candidates={} review_records={} "
+        "partial={} incomplete_batches={} "
         "rejected_facts={} rejected_relations={}",
-        request_context, len(cards), len(record_keys), len(facts), len(unassigned), partial, incomplete_batches,
-        rejected_facts, rejected_relations,
+        request_context, len(cards), len(record_keys), len(facts), len(unassigned), len(review_candidates),
+        partial, incomplete_batches, rejected_facts, rejected_relations,
     )
     return {
         "schema_version": 1,
@@ -317,6 +322,7 @@ async def extract_experiment_cards(
             "association_incomplete": association_incomplete,
             "exhaustive_extraction": False,
             "unassigned_facts": unassigned,
+            "review_candidates": list(review_candidates.values()),
         },
     }
 
@@ -543,6 +549,7 @@ def _materialize_batch(
     cards: dict[str, dict],
     used: set[str],
     record_keys: set[tuple],
+    review_candidates: dict[tuple, dict],
     markdown: str,
     add_evidence: Callable[[int, int], str],
 ) -> tuple[int, Counter[str]]:
@@ -565,25 +572,38 @@ def _materialize_batch(
             section = "preparation_steps"
             fields = {"operation": resolve("operation", proposal.operation)}
         values = [*fields.values(), *conditions]
-        if sample is None or any(value is None for value in values):
-            rejected["missing_evidence"] += 1
-            continue
-        if any(value.source_span != sample.source_span for value in values):
-            rejected["different_source"] += 1
-            continue
-
+        reason = None
         headers = [None] * len(conditions)
-        if sample.table is not None:
+        if sample is None or any(value is None for value in values):
+            reason = "missing_evidence"
+        elif any(value.source_span != sample.source_span for value in values):
+            reason = "different_source"
+        elif sample.table is not None:
             if not is_measurement:
-                rejected["table_preparation"] += 1
-                continue
-            try:
-                headers = _table_measurement_headers(
-                    sample, fields["property"], fields["result"], conditions, fields.get("method"),
+                reason = "table_preparation"
+            else:
+                try:
+                    headers = _table_measurement_headers(
+                        sample, fields["property"], fields["result"], conditions, fields.get("method"),
+                    )
+                except ValueError:
+                    reason = "table_alignment"
+        if reason is not None:
+            rejected[reason] += 1
+            key = (section, sample.id if sample else None, *(value.id if value else None for value in values))
+            known = [value for value in [sample, *values] if value is not None]
+            if len(known) >= 2 and any(fields.values()) and key not in review_candidates and len(review_candidates) < 120:
+                partial = {name: _review_field(value) for name, value in fields.items()}
+                partial["conditions"] = [
+                    {"name": item.name, "value": _review_field(value)}
+                    for item, value in zip(proposal.conditions, conditions, strict=True) if value is not None
+                ]
+                review_candidates[key] = experiment_record_fields(
+                    "measurement" if is_measurement else "preparation", _review_field(sample), partial,
                 )
-            except ValueError:
-                rejected["table_alignment"] += 1
-                continue
+                review_candidates[key]["issue"] = reason
+                used.update(value.id for value in known)
+            continue
 
         record_conditions = []
         for item, value, header in zip(proposal.conditions, conditions, headers, strict=True):
@@ -623,6 +643,13 @@ def _materialize_batch(
         used.update(value.id for value in values)
         accepted += 1
     return accepted, rejected
+
+
+def _review_field(value: _Fact | None) -> dict | None:
+    """仅保留已定位的候选字段。"""
+    if value is None:
+        return None
+    return {"raw_text": value.raw_text, "evidence_ids": value.evidence_ids}
 
 
 def _table_measurement_headers(

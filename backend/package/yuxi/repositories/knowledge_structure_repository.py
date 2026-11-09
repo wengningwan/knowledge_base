@@ -110,6 +110,8 @@ class KnowledgeStructureRepository:
             raise ValueError("实验原文证据标识重复")
         for card in result["cards"]:
             self._check_evidence_refs(card, evidence_ids)
+        for candidate in result["coverage"].get("review_candidates", []):
+            self._check_evidence_refs(candidate, evidence_ids)
         session.add_all(KnowledgeStructureEvidence(
             revision_id=task_id, evidence_id=item["evidence_id"], source=item,
         ) for item in result["evidence"])
@@ -149,6 +151,12 @@ class KnowledgeStructureRepository:
             KnowledgeStructureEvidence.revision_id == revision.revision_id,
         ))).all()
         return [card.content for card in cards], [item.source for item in evidence]
+
+    async def save_review(self, session, revision, review):
+        """在调用者持有文档锁的事务内保存人工记录。"""
+        revision.coverage = {**(revision.coverage or {}), "manual_review": review}
+        revision.updated_at = utc_now()
+        await session.flush()
 
     def _check_evidence_refs(self, value, evidence_ids):
         """拒绝 JSON 中跨版本或不存在的字段引用。"""

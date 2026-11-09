@@ -244,6 +244,11 @@ export const documentApi = {
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards`)
   },
 
+  /** 保存当前草稿的一条人工审核记录。 */
+  saveExperimentReview: async (kbId, docId, change) => {
+    return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/review`, change)
+  },
+
   /** 仅重试指定正文版本的失败或取消任务。 */
   retryExperimentCards: async (kbId, docId, snapshot) => {
     return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/retry`, snapshot)

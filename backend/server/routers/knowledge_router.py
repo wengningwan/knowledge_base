@@ -14,6 +14,7 @@ from starlette.responses import StreamingResponse
 from yuxi.config.options import system_options
 from yuxi.knowledge.base import KBNameConflictError, KBNotFoundError
 from yuxi.knowledge.chunking.ragflow_like.presets import get_chunk_preset_options
+from yuxi.knowledge.experiment_review import ExperimentReviewRequest
 from yuxi.knowledge.graphs.milvus_graph_service import GRAPH_TASK_TYPE, MilvusGraphService
 from yuxi.knowledge.read_models import KnowledgeBaseDetail
 from yuxi.knowledge.parser.capabilities import SUPPORTED_FILE_EXTENSIONS, is_supported_file_extension
@@ -1069,6 +1070,28 @@ async def get_document_experiment_cards(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ResourcePermissionDenied as exc:
         raise HTTPException(status_code=403, detail="无权读取该知识库的实验卡片") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@knowledge.post("/databases/{kb_id}/documents/{doc_id}/experiment-cards/review")
+async def review_document_experiment_record(
+    kb_id: str, doc_id: str, body: ExperimentReviewRequest,
+    current_user: User = Depends(require_knowledge_base_manage),
+):
+    """管理者逐条保存实验记录的人工审核。"""
+    from yuxi.repositories.knowledge_structure_repository import StructureConflictError, StructureNotFoundError
+    from yuxi.services.knowledge_structure_service import save_experiment_review
+
+    await _ensure_database_supports_documents(kb_id, "实验记录审核")
+    try:
+        return await save_experiment_review(kb_id, doc_id, uid=str(current_user.uid), change=body)
+    except StructureNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except StructureConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ResourcePermissionDenied as exc:
+        raise HTTPException(status_code=403, detail="无权审核该知识库的实验记录") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
