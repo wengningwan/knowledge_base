@@ -336,6 +336,22 @@
                 </div>
               </a-form-item>
 
+              <a-form-item v-if="isMilvus" label="知识库聊天模型" name="llm_model_spec">
+                <ModelSelectorComponent
+                  :model_spec="editForm.llm_model_spec"
+                  model-type="chat"
+                  placeholder="选择用于生成实验卡片的本地聊天模型"
+                  clearable
+                  @select-model="editForm.llm_model_spec = $event"
+                />
+                <div class="form-item-help-text">
+                  Paper 入库后使用此模型生成实验卡片。未设置时，卡片任务会失败，原文仍可检索。
+                  列表中没有本地模型时，先到
+                  <RouterLink :to="{ path: '/agent-manage', query: { tab: 'providers' } }">模型供应商</RouterLink>
+                  添加并启用聊天模型。保存后可在文件详情的“实验卡片”中重试失败任务。
+                </div>
+              </a-form-item>
+
               <a-form-item v-if="!isConnector" name="chunk_preset_id">
                 <template #label>
                   <span class="chunk-preset-label">
@@ -457,6 +473,7 @@ import FileSearchModal from '@/components/modals/FileSearchModal.vue'
 import QuerySection from '@/components/QuerySection.vue'
 import SearchConfigPanel from '@/components/SearchConfigPanel.vue'
 import AiTextarea from '@/components/AiTextarea.vue'
+import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
 import ShareConfigForm from '@/components/ShareConfigForm.vue'
 import { databaseApi } from '@/apis/knowledge_api'
 import { departmentApi } from '@/apis/department_api'
@@ -920,6 +937,7 @@ const editShareConfig = ref({
 const editForm = reactive({
   name: '',
   description: '',
+  llm_model_spec: '',
   chunk_preset_id: DEFAULT_CHUNK_PRESET_ID,
   dify_api_url: '',
   dify_token: '',
@@ -1004,6 +1022,7 @@ const showEditModal = () => {
   editModalTab.value = 'basic'
   editForm.name = database.value.name || ''
   editForm.description = database.value.description || ''
+  editForm.llm_model_spec = database.value.llm_model_spec || ''
   editForm.chunk_preset_id =
     database.value.additional_params?.chunk_preset_id || DEFAULT_CHUNK_PRESET_ID
   editForm.dify_api_url = database.value.additional_params?.dify_api_url || ''
@@ -1049,6 +1068,10 @@ const handleEditSubmit = async () => {
       description: editForm.description,
       additional_params: {},
       share_config: editShareConfig.value
+    }
+
+    if (isMilvus.value) {
+      updateData.llm_model_spec = editForm.llm_model_spec || null
     }
 
     if (isDifyKb.value) {

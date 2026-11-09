@@ -135,7 +135,7 @@ async def run_knowledge_structure(context):
             session, task_id=context.task_id, uid=context.payload["operator_id"],
         )
     if not revision.model_spec:
-        raise ValueError("请先在知识库配置本地聊天模型，再重试实验卡片任务")
+        raise ValueError("请在知识库详情 → 配置 → 基础信息 → 知识库聊天模型中选择本地模型并保存，再重试实验卡片任务")
     markdown = await _read_structure_markdown(
         revision.markdown_file, kb_id=revision.kb_id, file_id=revision.file_id,
     )
