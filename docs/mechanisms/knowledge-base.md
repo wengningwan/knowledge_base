@@ -123,11 +123,13 @@ PDF模型执行模块对同端点/模型使用Redis原子计数和持有者续�
 
 `paper` 策略的原文分块和向量入库成功时，[结构化用例](../../backend/package/yuxi/services/knowledge_structure_service.py)在同一 PostgreSQL 事务发布文件 `indexed` 状态和 `knowledge_structure` Task 意图，提交后投递；pending publisher 负责补发。自动入库和单独入库共用这个接续点。其他策略不自动调用实验抽取模型。原文索引与卡片生成是两个阶段，文件 `indexed` 只表示原文可检索。
 
-[抽取模块](../../backend/package/yuxi/knowledge/structure.py)读取冻结版本的 Markdown 全文，按段落、章节与完整表格分批抽取事实，再按论文关联样品、操作、条件和测量。程序给原文块和常见数值编号，校验模型返回的编号或逐字取值，再回填原文及 Unicode 字符范围。关联阶段复用已验证的事实 ID，只附带归属证据块的原文。超出输入上限时明确失败。
+[抽取模块](../../backend/package/yuxi/knowledge/structure.py)从冻结版本的 Markdown 按段落和完整表格分批生成实验记录。模型直接返回带原文引用的制备步骤或测量，程序校验同一原文块中的样品和字段，回填原文及 Unicode 字符范围，再按样品名称合并卡片。明确标记的方法或结果章节存在时，抽取范围排除引言、参考文献和出版附属栏目。超出输入上限时明确失败。设计取舍及验收见[完整实验记录提案](../develop-guides/decisions/proposed/2026-11-09-experiment-record-first-extraction.md)。
+
+结构化批次复用[文档模型请求并发配置](../advanced/document-processing.md#完整复核与模型并发)。Worker 按配置并发请求，按原文批次顺序核验证据和归并卡片。调用日志分别记录等待共享额度的 `queue_ms` 和实际调用的 `duration_ms`。
 
 简单矩形 Markdown 和 HTML 表格使用[单元格坐标](../../backend/package/yuxi/knowledge/structure_tables.py)。表格测量的结果须处在样品标签与指标表头的交点，表格条件须来自同一次测量所在的样品行或列。字段出处保留完整表格和原文单元格。无法校验归属的取值及表格制备事实可在未归属区查看。重新 Paper 入库可将旧抽取版本的草稿更新为当前版本。人工案例见[表格单元格证据提案](../develop-guides/decisions/proposed/2026-11-09-experiment-table-cell-evidence.md)。
 
-知识库须显式配置本地聊天模型。无法核对的事实和关联独立舍弃，超出单次输出条目容量或两次响应仍无法解析时记录对应阶段未完成，其他已核对结果显示为部分草稿。模型缺失、请求失败、抽取异常且无可核对事实时，Task 与对应 revision 明确记录失败，原文索引保留。Worker 的 `experiment_cards_model` 日志逐次记录阶段、模型、耗时、估算输入 token 与供应商实际 token 用量。
+知识库须显式配置本地聊天模型。单条记录失败时其他通过校验的记录仍可入卡，已找到出处的条件和结果留在候选区。单批响应超出容量或连续两次格式错误时标记该批未完成。模型缺失、请求失败、抽取异常且无可核对事实时，Task 与对应 revision 明确记录失败，原文索引保留。Worker 的 `experiment_cards_model` 日志逐次记录阶段、模型、耗时、估算输入 token 与供应商实际 token 用量。批次记录日志包含成型记录数和拒绝原因分类。
 
 机器草稿保存在独立 revision、evidence 与 card 表，成功和失败状态随 Task 终态同事务发布。Task 执行和保存前核对当前操作者权限、文档归属、正文版本与 lease；正文更新后，旧草稿在读取时显示失效。
 

@@ -10,9 +10,8 @@
       <a-alert :type="noticeType" show-icon :message="statusLabel" :description="snapshot.message" />
       <a-progress v-if="active" :percent="Math.round(snapshot.progress || 0)" size="small" />
       <a-button v-if="canRetry" :loading="retrying" @click="retry">重试失败任务</a-button>
-      <p v-if="snapshot.status === 'draft'" class="coverage-note">
-        已生成 {{ snapshot.cards.length }} 张卡片。机器提取可能遗漏或关联错误，请对照原文核对。
-        此版本尚不参与正式问答。
+      <p v-if="snapshot.status === 'draft' && snapshot.cards.length" class="coverage-note">
+        已自动组装 {{ snapshot.cards.length }} 张样品卡，共 {{ recordCount }} 条实验记录。此版本尚不参与正式问答。
       </p>
       <div v-if="snapshot.cards.length" class="experiment-layout">
         <div class="experiment-cards">
@@ -39,9 +38,11 @@
           </section>
         </aside>
       </div>
-      <a-empty v-else-if="snapshot.status === 'draft'" description="尚未形成可关联的实验卡片，请检查下方信息与原文。" />
+      <a-empty v-else-if="snapshot.status === 'draft'"
+        :description="unassigned.length ? '可在下方查看候选值和原文出处。' : '当前草稿没有可查看的实验记录。'"
+      />
       <details v-if="unassigned.length" class="unassigned">
-        <summary>{{ unassigned.length }} 条信息尚未归入卡片</summary>
+        <summary>{{ unassigned.length }} 个待确认的条件或结果</summary>
         <ul>
           <li v-for="(fact, index) in unassigned" :key="index">
             {{ fact.raw_text }}
@@ -81,10 +82,14 @@ let disposed = false
 
 const active = computed(() => ['pending', 'running'].includes(snapshot.value?.status))
 const canRetry = computed(() => props.canManage && ['failed', 'cancelled'].includes(snapshot.value?.status))
-const unassigned = computed(() => snapshot.value?.coverage?.unassigned_facts || [])
+const unassigned = computed(() => (snapshot.value?.coverage?.unassigned_facts || [])
+  .filter((fact) => ['condition', 'result'].includes(fact.kind)))
+const recordCount = computed(() => (snapshot.value?.cards || [])
+  .reduce((total, card) => total + (card.preparation_steps?.length || 0) + (card.measurements?.length || 0), 0))
 const statusLabel = computed(() => ({
   not_generated: '尚未生成实验卡片', pending: '原文已入库，等待生成实验卡片',
-  running: '原文已入库，正在生成实验卡片', draft: '实验草稿已生成，待人工核对',
+  running: '原文已入库，正在生成实验卡片',
+  draft: snapshot.value?.cards.length ? '实验卡片已自动组装' : '本次未形成实验卡片',
   failed: '原文已入库，实验卡片生成失败', cancelled: '实验卡片生成已取消', stale: '实验草稿对应旧正文'
 }[snapshot.value?.status] || '实验卡片状态未知'))
 const noticeType = computed(() => ['failed', 'cancelled', 'stale'].includes(snapshot.value?.status) ? 'warning' : 'info')

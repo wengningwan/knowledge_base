@@ -84,10 +84,12 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 return result
             if revision.status == "draft":
                 result["cards"], result["evidence"] = await repo.read_result(session, revision)
-                if (revision.coverage or {}).get("source_coverage") == "partial":
-                    result["message"] = "部分内容未能完成提取或关联，已保留可核对的草稿和原文出处。"
+                if not result["cards"]:
+                    result["message"] = "本次没有组装出带明确出处的实验记录。"
+                elif (revision.coverage or {}).get("source_coverage") == "partial":
+                    result["message"] = "已保留完成组装的实验记录，部分内容仍缺少完整的取值或归属证据。"
                 else:
-                    result["message"] = "机器生成的实验草稿，尚未经人工核对，不参与正式问答。"
+                    result["message"] = "实验记录已自动组装，可逐项查看原文出处。"
             elif revision.status == "pending":
                 task = await TaskRepository().get_by_id(revision.task_id)
                 if task is None:
@@ -177,6 +179,8 @@ class StructureTaskControl:
     def __init__(self, context):
         """保留 durable Task 的唯一执行上下文。"""
         self.context = context
+        self.task_id = context.task_id
+        self.file_id = context.payload["file_id"]
 
     async def check_cancelled(self):
         """撤权、正文变化或 Task 失权后停止抽取。"""
