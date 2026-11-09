@@ -48,7 +48,7 @@ def _validate_item(value, handler: ValidatorFunctionWrapHandler):
 
 
 FactId = Annotated[str, Field(min_length=1, max_length=32)]
-STRUCTURE_PROMPT_VERSION = "chemical-draft-v5"
+STRUCTURE_PROMPT_VERSION = "chemical-draft-v6"
 _UNIT_SYMBOL = (
     r"(?:°[^\S\r\n]*[CF]|mmol|[µμu]mol|mol|mg|kg|g|[µμu]L|mL|L|h|min|s|MPa|kPa|Pa|bar|K|"
     r"nm|[µμu]m|mm|cm|m|Å|kV|eV|V|wt\.?[^\S\r\n]*%|%)"
@@ -113,11 +113,16 @@ class _MeasurementRef(_StrictModel):
 class _RecordBatch(_StrictModel):
     """按本批原文直接返回已关联记录及少量未归属取值。"""
 
-    preparation_steps: Annotated[list[Annotated[_StepRef | None, WrapValidator(_validate_item)]], Field(max_length=30)]
-    measurements: Annotated[list[Annotated[_MeasurementRef | None, WrapValidator(_validate_item)]], Field(max_length=30)]
-    candidates: Annotated[
-        list[Annotated[_Candidate | None, WrapValidator(_validate_item)]], Field(max_length=20)
-    ] = Field(default_factory=list)
+    # maxItems 引导模型控制输出量。可解析响应的资源边界由正文与入卡容量控制。
+    preparation_steps: list[Annotated[_StepRef | None, WrapValidator(_validate_item)]] = Field(
+        json_schema_extra={"maxItems": 30},
+    )
+    measurements: list[Annotated[_MeasurementRef | None, WrapValidator(_validate_item)]] = Field(
+        json_schema_extra={"maxItems": 30},
+    )
+    candidates: list[Annotated[_Candidate | None, WrapValidator(_validate_item)]] = Field(
+        default_factory=list, json_schema_extra={"maxItems": 20},
+    )
     overflow: bool
 
 
@@ -186,6 +191,7 @@ async def extract_experiment_cards(
         "preparation_steps 每条包含样品、明确操作及该步骤条件；中间体步骤可归入原文明确给出的最终样品。"
         "measurements 每条包含样品、具体指标、实际结果及该次测量的明确条件，方法缺失可省略。"
         "先组装有完整出处的记录。每条记录的样品和其他字段必须来自同一个 source_id。"
+        "能明确提取一条就返回该条，即使同批其他记录无法关联，或只能提取制备、测量中的一种。"
         "同段涉及多个样品时，只采用原文直接说明的对应关系，或按原文明示的 respectively 顺序对应。"
         "不要把另一测试的温度、压力、气体或结果填进当前记录。不同测试分成独立记录。"
         "取值字段填写 source_id，以及 value_id 或 raw_text，二者只填一个。优先引用完整取值编号，"
@@ -220,7 +226,7 @@ async def extract_experiment_cards(
     await run_pdf_workers(enumerate(batches, start=1), request_batch, executor.concurrency)
 
     # 容量与事实编号按原文顺序确定，独立于模型响应顺序。
-    for batch_no in range(1, len(batches) + 1):
+    for batch_no, (_, spans) in enumerate(batches, start=1):
         await control.check_cancelled()
         blocks, values, tables, result = responses[batch_no]
         stage = f"records:{batch_no}/{len(batches)}"
@@ -267,9 +273,13 @@ async def extract_experiment_cards(
                 rejected_facts += 1
             else:
                 resolve(candidate.kind, candidate)
+        batch_span = source.span(spans[0][0], spans[-1][1])
         logger.info(
-            "experiment_cards_validation {} stage={} accepted_records={} rejection_reasons={} rejected_facts={} overflow={}",
-            request_context, stage, accepted, dict(rejected), rejected_facts - rejected_before, result.overflow,
+            "experiment_cards_validation {} stage={} source_lines={}-{} returned_steps={} returned_measurements={} "
+            "returned_candidates={} accepted_records={} rejection_reasons={} rejected_facts={} overflow={}",
+            request_context, stage, batch_span["line_start"], batch_span["line_end"],
+            len(result.preparation_steps), len(result.measurements), len(result.candidates),
+            accepted, dict(rejected), rejected_facts - rejected_before, result.overflow,
         )
 
     unassigned = [

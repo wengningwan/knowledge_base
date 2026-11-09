@@ -131,7 +131,7 @@ PDF模型执行模块对同端点/模型使用Redis原子计数和持有者续�
 
 简单矩形 Markdown 和 HTML 表格使用[单元格坐标](../../backend/package/yuxi/knowledge/structure_tables.py)。表格测量的结果须处在样品标签与指标表头的交点，表格条件须来自同一次测量所在的样品行或列。字段出处保留完整表格和原文单元格。无法校验归属的取值及表格制备事实可在未归属区查看。重新 Paper 入库可将旧抽取版本的草稿更新为当前版本。人工案例见[表格单元格证据提案](../develop-guides/decisions/proposed/2026-11-09-experiment-table-cell-evidence.md)。
 
-知识库须显式配置本地聊天模型。单条记录失败时其他通过校验的记录仍可入卡，已找到出处的条件和结果留在候选区。单批响应超出容量或连续两次格式错误时标记该批未完成。模型缺失、请求失败、抽取异常且无可核对事实时，Task 与对应 revision 明确记录失败，原文索引保留。Worker 的 `experiment_cards_model` 日志逐次记录阶段、模型、耗时、估算输入 token 与供应商实际 token 用量。批次记录日志包含成型记录数和拒绝原因分类。
+知识库须显式配置本地聊天模型。单条记录失败时其他通过校验的记录仍可入卡，已找到出处的条件和结果留在候选区。批次响应在正文上限内按条校验，模型报告省略记录或连续两次响应校验失败时标记该批未完成。模型缺失、请求失败、抽取异常且无可核对事实时，Task 与对应 revision 明确记录失败，原文索引保留。Worker 的 `experiment_cards_model` 日志逐次记录阶段、模型、耗时、估算输入 token 与供应商实际 token 用量。批次记录日志包含原文行范围、模型返回条数、成型记录数和拒绝原因分类。验收见[实验批次响应容量提案](../develop-guides/decisions/proposed/2026-11-09-experiment-batch-output-limits.md)。
 
 机器草稿保存在独立 revision、evidence 与 card 表，成功和失败状态随 Task 终态同事务发布。Task 执行和保存前核对当前操作者权限、文档归属、正文版本与 lease；正文更新后，旧草稿在读取时显示失效。
 
