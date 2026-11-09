@@ -123,8 +123,8 @@ async def extract_experiment_cards(
         "sample 的 raw_text 使用原文最短、可识别的样品标识；不同样品不得合并。"
         "kind=assignment 的引文必须同时包含样品标识及其操作/结果的归属关系，保留必要上下文。"
         "表格的引文必须保留完整表头、单位与目标行，可引用完整表格，不能只引用孤立数值。"
-        "quote 必须是本次 markdown 的连续逐字原文；occurrence 是该 quote 在本次 markdown 中"
-        "从零计数的出现次序（含重叠匹配），不能引用 section_context。"
+        "quote 必须是本次 markdown 的连续逐字原文，不能引用 section_context。"
+        "优先选择只出现一次的完整引文，此时 occurrence 填 0；重复引文使用从零计数的出现次序（含重叠匹配）。"
         "不确定归属的事实仍保留，交给全文关联阶段判断。最多80条事实，不能容纳时 overflow=true。"
         "只输出符合所附 JSON Schema 的 JSON 对象，不输出代码围栏或解释。"
     )
@@ -315,12 +315,17 @@ async def _call_json(model, schema: type[_StrictModel], instruction: str, payloa
 
 
 def _quote_start(text: str, quote: str, occurrence: int) -> int:
-    """在原始片段中逐字定位指定引文，不修补模型证据。"""
-    position = -1
-    for _ in range(occurrence + 1):
-        position = text.find(quote, position + 1)
-        if position < 0:
-            raise ValueError("实验事实引文或出现次序与当前 Markdown 不一致")
+    """直接定位唯一逐字匹配，重复时按模型提供的次序定位。"""
+    position = text.find(quote)
+    if position < 0:
+        raise ValueError("实验事实引文在当前 Markdown 批次中没有逐字匹配")
+    for index in range(occurrence):
+        next_position = text.find(quote, position + 1)
+        if next_position < 0:
+            if index == 0:
+                return position
+            raise ValueError("实验事实引文有多处逐字匹配，模型提供的出现次序超出范围")
+        position = next_position
     return position
 
 

@@ -344,12 +344,6 @@
                   clearable
                   @select-model="editForm.llm_model_spec = $event"
                 />
-                <div class="form-item-help-text">
-                  Paper 入库后使用此模型生成实验卡片。未设置时，卡片任务会失败，原文仍可检索。
-                  列表中没有本地模型时，先到
-                  <RouterLink :to="{ path: '/agent-manage', query: { tab: 'providers' } }">模型供应商</RouterLink>
-                  添加并启用聊天模型。保存后可在文件详情的“实验卡片”中重试失败任务。
-                </div>
               </a-form-item>
 
               <a-form-item v-if="!isConnector" name="chunk_preset_id">
@@ -1537,12 +1531,6 @@ onUnmounted(() => {
   color: var(--gray-500);
   cursor: help;
   font-size: 14px;
-}
-
-.form-item-help-text {
-  margin-left: 8px;
-  color: var(--gray-500);
-  font-size: 12px;
 }
 
 @media (max-width: 1024px) {
