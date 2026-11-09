@@ -48,11 +48,26 @@ def _validate_item(value, handler: ValidatorFunctionWrapHandler):
 
 
 FactId = Annotated[str, Field(min_length=1, max_length=32)]
-STRUCTURE_PROMPT_VERSION = "chemical-draft-v4"
-_QUANTITY = re.compile(
+STRUCTURE_PROMPT_VERSION = "chemical-draft-v5"
+_UNIT_SYMBOL = (
+    r"(?:°[^\S\r\n]*[CF]|mmol|[µμu]mol|mol|mg|kg|g|[µμu]L|mL|L|h|min|s|MPa|kPa|Pa|bar|K|"
+    r"nm|[µμu]m|mm|cm|m|Å|kV|eV|V|wt\.?[^\S\r\n]*%|%)"
+)
+_UNIT_ATOM = rf"(?:{_UNIT_SYMBOL}|\\(?:text|mathrm)\{{[^\S\r\n]*{_UNIT_SYMBOL}[^\S\r\n]*\}})"
+_UNIT_POWER = r"(?:\$\^\{[+−-]?\d+\}\$|\^(?:\{[+−-]?\d+\}|[+−-]?\d+)|[⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+)"
+_UNIT_JOIN = r"[^\S\r\n]*(?:[/·⋅]|\\cdot\b)[^\S\r\n]*"
+_UNIT_CONTINUATION = re.compile(
+    rf"(?:\$\^|\^|{_UNIT_POWER}|{_UNIT_JOIN}|[^\S\r\n]+[A-Za-zµμÅ]+{_UNIT_POWER})"
+)
+_QUANTITY_START = (
     r"(?<![\w.,+−–-])[+−-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+−-]?\d+)?[^\S\r\n]*"
-    r"(?:°[^\S\r\n]*[CF]|mmol|[µμu]mol|mol|mg|kg|g|[µμu]L|mL|L|h|min|s|MPa|kPa|Pa|bar|K|nm|[µμu]m|mm|cm|wt\.?[^\S\r\n]*%|%)"
-    r"(?![\w/%·⋅^])"
+    rf"{_UNIT_ATOM}(?:(?!\w)|(?={_UNIT_POWER}))"
+)
+_QUANTITY_PREFIX = re.compile(_QUANTITY_START)
+_QUANTITY = re.compile(
+    rf"{_QUANTITY_START}(?:{_UNIT_POWER})?"
+    rf"(?:{_UNIT_JOIN}{_UNIT_ATOM}(?:{_UNIT_POWER})?|[^\S\r\n]+{_UNIT_ATOM}{_UNIT_POWER})*"
+    rf"(?![\w%]|{_UNIT_CONTINUATION.pattern})"
 )
 
 
@@ -219,7 +234,9 @@ async def extract_experiment_cards(
             """在当前批次定位字段，并保留可用于卡片或候选的原文证据。"""
             nonlocal rejected_facts
             source_span = blocks.get(ref.source_id)
-            value_span = _fact_value_span(markdown, ref, source_span, values)
+            value_span = _fact_value_span(
+                markdown, ref, source_span, values, complete_quantity=kind in {"condition", "result"},
+            )
             if source_span is None or value_span is None:
                 rejected_facts += 1
                 return None
@@ -329,7 +346,7 @@ def _source_batches(markdown: str) -> tuple[list[tuple[str, list[Span]]], int]:
     heading_pattern = re.compile(r"^(#{1,6})[^\S\r\n]+([^\n\r]+)")
     headings: dict[int, tuple[int, str]] = {}
     for start, end in blocks:
-        if match := heading_pattern.match(markdown, start, end):
+        if match := heading_pattern.match(markdown[start:end]):
             title = re.sub(r"^\d+(?:\.\d+)*[.)、]?\s+", "", match[2]).strip(" #.：:").casefold()
             headings[start] = (len(match[1]), title)
     experiment_heading = re.compile(
@@ -415,9 +432,10 @@ def _batch_input(
 
 
 def _fact_value_span(
-    markdown: str, fact: _ValueRef, source_span: Span | None, values: dict[str, tuple[str, Span, CellPosition | None]]
+    markdown: str, fact: _ValueRef, source_span: Span | None, values: dict[str, tuple[str, Span, CellPosition | None]],
+    *, complete_quantity: bool,
 ) -> tuple[int, int] | None:
-    """仅接受当前块的编号或当前块内的逐字取值。"""
+    """定位原文取值，校验数值字段的显式单位边界。"""
     if source_span is None or (fact.value_id is None) == (fact.raw_text is None):
         return None
     if fact.value_id is not None:
@@ -437,9 +455,23 @@ def _fact_value_span(
     if fact.raw_text[-1].isdigit():
         literal += r"(?!\w|[.,]\d)"
     elif fact.raw_text[-1].isalnum():
-        literal += r"(?!\w)"
-    match = re.compile(literal).search(markdown, start, end)
-    return match.span() if match else None
+        if complete_quantity and _QUANTITY_PREFIX.match(fact.raw_text):
+            literal += rf"(?:(?!\w)|(?={_UNIT_POWER}))"
+        else:
+            literal += r"(?!\w)"
+    pattern = re.compile(literal)
+    match = pattern.search(markdown, start, end)
+    if match is None:
+        return None
+    if complete_quantity and (prefix := _QUANTITY_PREFIX.match(markdown, match.start(), end)):
+        quantity = _QUANTITY.match(markdown, match.start(), end)
+        if quantity is not None and quantity.end() > match.end():
+            return quantity.span() if pattern.search(markdown, match.end(), end) is None else None
+        if quantity is None and (
+            prefix.end() >= match.end() or _UNIT_CONTINUATION.match(markdown, match.end(), end)
+        ):
+            return None
+    return match.span()
 
 
 async def _call_json(

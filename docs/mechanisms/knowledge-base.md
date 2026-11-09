@@ -125,6 +125,8 @@ PDF模型执行模块对同端点/模型使用Redis原子计数和持有者续�
 
 [抽取模块](../../backend/package/yuxi/knowledge/structure.py)从冻结版本的 Markdown 按段落和完整表格分批生成实验记录。模型直接返回带原文引用的制备步骤或测量，程序校验同一原文块中的样品和字段，回填原文及 Unicode 字符范围，再按样品名称合并卡片。明确标记的方法或结果章节存在时，抽取范围排除引言、参考文献和出版附属栏目。超出输入上限时明确失败。设计取舍及验收见[完整实验记录提案](../develop-guides/decisions/proposed/2026-11-09-experiment-record-first-extraction.md)。
 
+正文的数值编号覆盖可识别的完整单位，包括字面的单位指数和复合单位。模型引用可唯一定位的数值前缀时，按原文回填完整取值。单位边界无法确认的短前缀不入卡。设计和人工验收见[原文取值与出处面板提案](../develop-guides/decisions/proposed/2026-11-09-experiment-source-reading-and-unit-spans.md)。
+
 结构化批次复用[文档模型请求并发配置](../advanced/document-processing.md#完整复核与模型并发)。Worker 按配置并发请求，按原文批次顺序核验证据和归并卡片。调用日志分别记录等待共享额度的 `queue_ms` 和实际调用的 `duration_ms`。
 
 简单矩形 Markdown 和 HTML 表格使用[单元格坐标](../../backend/package/yuxi/knowledge/structure_tables.py)。表格测量的结果须处在样品标签与指标表头的交点，表格条件须来自同一次测量所在的样品行或列。字段出处保留完整表格和原文单元格。无法校验归属的取值及表格制备事实可在未归属区查看。重新 Paper 入库可将旧抽取版本的草稿更新为当前版本。人工案例见[表格单元格证据提案](../develop-guides/decisions/proposed/2026-11-09-experiment-table-cell-evidence.md)。
@@ -133,7 +135,7 @@ PDF模型执行模块对同端点/模型使用Redis原子计数和持有者续�
 
 机器草稿保存在独立 revision、evidence 与 card 表，成功和失败状态随 Task 终态同事务发布。Task 执行和保存前核对当前操作者权限、文档归属、正文版本与 lease；正文更新后，旧草稿在读取时显示失效。
 
-文件详情中的“实验卡片”视图展示独立任务进度、卡片、未归属事实和字段出处；read 权限可查看，manage 权限可重试当前失败或取消版本。正常生成无需额外点击。机器草稿尚未经过人工确认，不参与正式问答、条件过滤或跨论文比较；扫描完全部输入不代表事实提取完整，零卡片也不表示没有实验。当前人工验收和负向案例见[实验草稿证据编号提案](../develop-guides/decisions/proposed/2026-11-09-experiment-card-evidence-references.md)。
+文件详情中的“实验卡片”视图展示独立任务进度、卡片数、已组装记录数及待确认取值。卡片和原文出处分别滚动，选择字段后出处显示对应样品和字段。read 权限可查看，manage 权限可重试当前失败或取消版本。正常生成无需额外点击。机器草稿尚未经过人工确认，不参与正式问答、条件过滤或跨论文比较；扫描完全部输入不代表事实提取完整，零卡片也不表示没有实验。当前人工验收和负向案例见[实验草稿证据编号提案](../develop-guides/decisions/proposed/2026-11-09-experiment-card-evidence-references.md)。
 
 管理者手动入库时，实验任务可使用尚有校对待办的已发布正文。上传后自动入库仍由解析结果的校对状态决定是否继续。
 
