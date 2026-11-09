@@ -84,7 +84,10 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 return result
             if revision.status == "draft":
                 result["cards"], result["evidence"] = await repo.read_result(session, revision)
-                result["message"] = "机器生成的实验草稿，尚未经人工核对，不参与正式问答。"
+                if (revision.coverage or {}).get("source_coverage") == "partial":
+                    result["message"] = "部分内容未能完成提取或关联，已保留可核对的草稿和原文出处。"
+                else:
+                    result["message"] = "机器生成的实验草稿，尚未经人工核对，不参与正式问答。"
             elif revision.status == "pending":
                 task = await TaskRepository().get_by_id(revision.task_id)
                 if task is None:
@@ -124,7 +127,7 @@ async def retry_experiment_cards(kb_id, file_id, *, uid, revision_id, expected_s
 
 
 async def run_knowledge_structure(context):
-    """从冻结正文分批抽取，只有有效 lease 可以保存完整草稿。"""
+    """从冻结正文分批抽取，只有有效 lease 可以保存草稿。"""
     from yuxi.knowledge.structure import extract_experiment_cards
 
     repo = KnowledgeStructureRepository()
@@ -143,7 +146,7 @@ async def run_knowledge_structure(context):
         raise ValueError("冻结正文指纹不匹配，停止实验抽取")
     parse_assets = await _read_structure_assets(revision)
     result = await extract_experiment_cards(
-        markdown, model_spec=revision.model_spec, parse_assets=parse_assets, control=control,
+        markdown, task_id=context.task_id, model_spec=revision.model_spec, parse_assets=parse_assets, control=control,
     )
     await control.check_cancelled()
     # 使用现有文件操作锁与 Task lease 事务，排除正文发布与迟到写入。
@@ -195,9 +198,14 @@ async def _create_structure_intent(session, *, file, model_spec, source_hash, op
     if (
         not force and previous is not None and previous.markdown_file == file.markdown_file
         and previous.source_sha256 == source_hash and previous.model_spec == model_spec
-        and previous.status in {"pending", "draft"}
     ):
-        return None
+        if previous.status == "pending":
+            return None
+        if previous.status == "draft":
+            from yuxi.knowledge.structure import STRUCTURE_PROMPT_VERSION
+
+            if previous.prompt_version == STRUCTURE_PROMPT_VERSION:
+                return None
     task = await tasker.create_in_session(
         session, name=f"实验卡片：{file.filename}", task_type=TASK_TYPE,
         payload={"kb_id": file.kb_id, "file_id": file.file_id, "operator_id": operator_id},

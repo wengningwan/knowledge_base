@@ -11,7 +11,7 @@
       <a-progress v-if="active" :percent="Math.round(snapshot.progress || 0)" size="small" />
       <a-button v-if="canRetry" :loading="retrying" @click="retry">重试失败任务</a-button>
       <p v-if="snapshot.status === 'draft'" class="coverage-note">
-        已扫描正文并生成 {{ snapshot.cards.length }} 张卡片。机器提取可能遗漏或关联错误，请对照原文核对。
+        已生成 {{ snapshot.cards.length }} 张卡片。机器提取可能遗漏或关联错误，请对照原文核对。
         此版本尚不参与正式问答。
       </p>
       <div v-if="snapshot.cards.length" class="experiment-layout">

@@ -18,7 +18,7 @@ Owner：backend/package/yuxi/services/knowledge_structure_service.py
 
 ### 本轮开发范围
 
-本轮只交付“Paper 分块原文入库成功 → 自动创建实验结构化任务 → 从同版本 Markdown 全文分批提取并关联 → 保存带逐字出处的机器草稿 → 文件详情查看/失败重试”。不提供人工编辑、确认发布、正式问答消费、数值归一化、跨论文筛选和术语表。所有草稿保持 `machine_only`，不作为已审核科学事实。下文人工确认与问答等设计是后续阶段，不能作为本轮已实现能力。
+本轮只交付“Paper 分块原文入库成功 → 自动创建实验结构化任务 → 从同版本 Markdown 全文分批提取并关联 → 保存带逐字出处的机器草稿 → 文件详情查看/失败重试”。不提供人工编辑、确认发布、正式问答消费、数值归一化、跨论文筛选和术语表。所有草稿保持 `machine_only`，不作为已审核科学事实。下文人工确认与问答等设计是后续阶段，不能作为本轮已实现能力。初版引文定位和失败行为由[证据编号提案](2026-11-09-experiment-card-evidence-references.md)更新。
 
 初版三个实际持久化 Owner 是 `KnowledgeStructureRevision`、`KnowledgeStructureEvidence`、`KnowledgeExperimentCard`，由 knowledge schema 4→5 迁移创建。为缩小范围，本轮不新增文件确认指针或审核修订字段；当前草稿按最新 revision 与当前 Markdown 对象指针/正文指纹共同判定。Task 终态 hook 在同事务将完整结果标为 `draft` 或收敛失败/取消，任务记录清理后仍保留草稿结果或失败原因。初版失败不保留部分模型候选，超限明确失败；完整草稿的未归属事实保存在覆盖摘要中。
 

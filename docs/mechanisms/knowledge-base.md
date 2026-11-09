@@ -123,11 +123,15 @@ PDF模型执行模块对同端点/模型使用Redis原子计数和持有者续�
 
 `paper` 策略的原文分块和向量入库成功时，[结构化用例](../../backend/package/yuxi/services/knowledge_structure_service.py)在同一 PostgreSQL 事务发布文件 `indexed` 状态和 `knowledge_structure` Task 意图，提交后投递；pending publisher 负责补发。自动入库和单独入库共用这个接续点。其他策略不自动调用实验抽取模型。原文索引与卡片生成是两个阶段，文件 `indexed` 只表示原文可检索。
 
-[抽取模块](../../backend/package/yuxi/knowledge/structure.py)读取冻结版本的 Markdown 全文，按段落、章节与完整表格分批抽取事实，再按论文关联样品、操作、条件和测量。科学值由已校验的事实 ID 回填，字段引用逐字引文及 Unicode 字符范围。不会按检索 Top K 缩小论文覆盖范围，也不会将每个检索块作为独立实验。输入、候选和关联输出超限时任务失败，不截断后报告完整。
+[抽取模块](../../backend/package/yuxi/knowledge/structure.py)读取冻结版本的 Markdown 全文，按段落、章节与完整表格分批抽取事实，再按论文关联样品、操作、条件和测量。程序给原文块和常见数值编号，校验模型返回的编号或逐字取值，再回填原文及 Unicode 字符范围。关联阶段复用已验证的事实 ID，只附带归属证据块的原文。超出输入上限时明确失败。
 
-知识库须显式配置本地聊天模型。模型缺失、协议输出不符合固定 schema、引文不匹配或归属无法通过约束时，Task 与对应 revision 明确记录失败，原文索引保留。机器草稿保存在独立 revision、evidence 与 card 表，不占用图谱 `extraction_result`；成功和失败状态随 Task 终态同事务发布。Task 执行和保存前核对当前操作者权限、文档归属、正文版本与 lease；正文更新后，旧草稿在读取时显示失效。
+简单矩形 Markdown 和 HTML 表格使用[单元格坐标](../../backend/package/yuxi/knowledge/structure_tables.py)。表格测量的结果须处在样品标签与指标表头的交点，表格条件须来自同一次测量所在的样品行或列。字段出处保留完整表格和原文单元格。无法校验归属的取值及表格制备事实可在未归属区查看。重新 Paper 入库可将旧抽取版本的草稿更新为当前版本。人工案例见[表格单元格证据提案](../develop-guides/decisions/proposed/2026-11-09-experiment-table-cell-evidence.md)。
 
-文件详情中的“实验卡片”视图展示独立任务进度、卡片、未归属事实和字段出处；read 权限可查看，manage 权限可重试当前失败或取消版本。正常生成无需额外点击。机器草稿尚未经过人工确认，不参与正式问答、条件过滤或跨论文比较；扫描完全部输入不代表事实提取完整，零卡片也不表示没有实验。后续方案及人工负向案例见[实验结构化提案](../develop-guides/decisions/proposed/2026-11-06-chemical-paper-structuring.md)。
+知识库须显式配置本地聊天模型。无法核对的事实和关联独立舍弃，超出单次输出条目容量或两次响应仍无法解析时记录对应阶段未完成，其他已核对结果显示为部分草稿。模型缺失、请求失败、抽取异常且无可核对事实时，Task 与对应 revision 明确记录失败，原文索引保留。Worker 的 `experiment_cards_model` 日志逐次记录阶段、模型、耗时、估算输入 token 与供应商实际 token 用量。
+
+机器草稿保存在独立 revision、evidence 与 card 表，成功和失败状态随 Task 终态同事务发布。Task 执行和保存前核对当前操作者权限、文档归属、正文版本与 lease；正文更新后，旧草稿在读取时显示失效。
+
+文件详情中的“实验卡片”视图展示独立任务进度、卡片、未归属事实和字段出处；read 权限可查看，manage 权限可重试当前失败或取消版本。正常生成无需额外点击。机器草稿尚未经过人工确认，不参与正式问答、条件过滤或跨论文比较；扫描完全部输入不代表事实提取完整，零卡片也不表示没有实验。当前人工验收和负向案例见[实验草稿证据编号提案](../develop-guides/decisions/proposed/2026-11-09-experiment-card-evidence-references.md)。
 
 管理者手动入库时，实验任务可使用尚有校对待办的已发布正文。上传后自动入库仍由解析结果的校对状态决定是否继续。
 
