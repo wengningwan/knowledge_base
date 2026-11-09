@@ -142,8 +142,6 @@ async def run_knowledge_structure(context):
     if source_sha256(markdown) != revision.source_sha256:
         raise ValueError("冻结正文指纹不匹配，停止实验抽取")
     parse_assets = await _read_structure_assets(revision)
-    if (parse_assets or {}).get("metadata", {}).get("review_status") in {"needs_review", "incomplete"}:
-        raise ValueError("正文仍有待校对内容，请先完成校对后重新入库")
     result = await extract_experiment_cards(
         markdown, model_spec=revision.model_spec, parse_assets=parse_assets, control=control,
     )
