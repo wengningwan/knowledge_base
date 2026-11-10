@@ -39,7 +39,7 @@ class ExperimentReviewRequest(BaseModel):
     task_id: str | None = Field(default=None, min_length=1, max_length=256)
     resolution: Literal["unreported", "ignored", "checked"] | None = None
     fields: ExperimentReviewFields | None = None
-    verified: bool = False
+    verified: bool = False  # 接受已打开旧页面的请求，确认只依赖操作及字段校验。
 
 
 def experiment_review_records(cards: list[dict], coverage: dict) -> dict[str, dict]:

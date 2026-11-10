@@ -230,8 +230,6 @@ async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentRevie
             else:
                 if change.fields is None:
                     raise ValueError("请填写实验字段")
-                if change.action == "confirm" and not change.verified:
-                    raise ValueError("确认补录前请完成原文核对")
                 editing = change.action == "save" and (record_id is not None or task is not None)
                 validate_experiment_review(
                     change.fields, evidence, confirm=change.action == "confirm", edit=editing,

@@ -30,7 +30,7 @@
           <header><h3>{{ activeTask.resolution ? outcomeLabels[activeTask.resolution.outcome] : kindLabels[activeTask.kind] }}</h3><span>{{ queue.indexOf(activeTask) + 1 }} / {{ queue.length }}</span></header>
           <p v-if="activeTask.resolution?.outcome === 'checked'" class="correction-outcome">核对状态和所选出处已保存，原文和实验数据保留原值。</p>
           <p class="correction-reason">{{ activeTask.reason }}</p>
-          <a-button v-if="activeTask.kind === 'missing' && !recordingMissing && canManage" :disabled="saving" @click="recordingMissing = true">原文有数据，补充</a-button>
+          <a-button v-if="activeTask.kind === 'missing' && !recordingMissing && canManage" :disabled="saving" @click="recordingMissing = true">填写数据</a-button>
           <div v-if="showRecordFields" class="correction-fields">
             <label>样品<a-auto-complete v-model:value="fields.sample" :options="sampleOptions" :disabled="saving || !canManage" :filter-option="filterSample" placeholder="选择或填写样品名称" /></label>
             <label>指标或操作<a-input v-model:value="fields.metric" :maxlength="1000" :disabled="saving || !canManage" placeholder="待补充" /></label>
@@ -53,7 +53,6 @@
             <a-button v-if="activeTask.kind === 'source'" :loading="saving" :disabled="!selectedSources.length" @click="submit('resolve', 'checked')">{{ activeTask.resolution?.outcome === 'checked' ? '保存核对出处' : '完成核对，保留现状' }}</a-button>
             <a-button v-if="activeTask.kind === 'missing'" :type="recordingMissing ? 'default' : 'primary'" :disabled="saving" @click="submit('resolve', 'unreported')">原文未提供</a-button>
             <a-button :disabled="saving" @click="submit('resolve', 'ignored')">{{ activeTask.record_id ? '排除记录' : '不采用此项' }}</a-button>
-            <button v-if="mode === 'pending'" type="button" class="defer-button" :disabled="saving" @click="deferTask">稍后处理</button>
           </div>
         </section>
       </template>
@@ -141,13 +140,6 @@ function filterSource(input, option) {
   return (option.label + ' ' + (source?.quote || '')).toLowerCase().includes(input.toLowerCase())
 }
 
-/** 暂缓只切换条目，不写入完成回执。 */
-function deferTask() {
-  const index = queue.value.indexOf(activeTask.value)
-  chooseTask(queue.value[(index + 1) % queue.value.length]?.task_id || '')
-  message.info('此项仍保留在待处理中。')
-}
-
 /** 以服务器提交结果推进队列，失败时保留输入。 */
 async function submit(action, resolution) {
   if (saving.value || !props.canManage || !activeTask.value) return
@@ -213,7 +205,6 @@ summary { cursor: pointer; color: var(--color-text-secondary); font-size: 12px; 
 .source-picker .ant-select, .more-fields label { margin-top: 10px; }
 .save-hint { margin-top: 12px; color: var(--color-text-secondary); font-size: 12px; }
 .correction-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
-.defer-button { border: 0; padding: 4px; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
 .correction-finished { grid-column: 2 / -1; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 180px; border: 1px solid var(--gray-150); border-radius: 8px; padding: 20px; }
 button:focus-visible, summary:focus-visible { outline: 2px solid var(--main-color); outline-offset: 2px; }
 button:disabled { cursor: default; opacity: .6; }

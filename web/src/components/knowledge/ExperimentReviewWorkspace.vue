@@ -107,11 +107,10 @@
               />
             </label>
           </div>
-          <a-checkbox v-if="!editor.recordId" v-model:checked="editor.verified" class="section-title" :disabled="saving">已对照出处核对样品、条件及结果</a-checkbox>
           <a-alert v-if="error" type="error" :message="error" show-icon />
           <div class="record-actions">
             <a-button :type="editor.recordId ? 'primary' : 'default'" :loading="saving" @click="save('save')">{{ editor.recordId ? '保存修改' : editorOnly ? '保存待确认' : '保存为待审核' }}</a-button>
-            <a-button v-if="!editor.recordId" type="primary" :loading="saving" :disabled="!editor.verified" @click="save('confirm')">确认本条</a-button>
+            <a-button v-if="!editor.recordId" type="primary" :loading="saving" @click="save('confirm')">确认本条</a-button>
             <a-button
               v-if="editor.recordId && editor.status !== 'excluded'" danger :disabled="saving" @click="save('exclude')"
             >排除</a-button>
@@ -311,7 +310,6 @@ const editRecord = (record, fact) => {
     recordId: record?.record_id || null,
     status: record?.status,
     fragmentId: fact?.fact_id || null,
-    verified: false,
     fields: {
       kind: record?.kind || 'measurement',
       sample: record?.sample ?? (props.editorOnly ? '' : mode.value === 'samples' ? activeSample.value || '' : ''),
@@ -344,8 +342,7 @@ const save = async (action) => {
       action,
       record_id: current.recordId,
       fragment_id: current.fragmentId,
-      fields: action === 'exclude' ? null : { ...current.fields, result: current.fields.kind === 'preparation' ? '' : current.fields.result },
-      verified: current.verified
+      fields: action === 'exclude' ? null : { ...current.fields, result: current.fields.kind === 'preparation' ? '' : current.fields.result }
     })
     if (!record) return
     notice.value = record.status === 'edited' ? '修改已保存。' : action === 'confirm' ? '本条记录已确认。' : action === 'exclude' ? '本条记录已排除。' : '已保存为待审核。'
