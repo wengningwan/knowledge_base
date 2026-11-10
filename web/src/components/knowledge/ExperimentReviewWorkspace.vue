@@ -1,6 +1,6 @@
 <template>
-  <div class="review-workspace">
-    <div class="workspace-toolbar">
+  <div class="review-workspace" :class="{ 'editor-only': editorOnly }">
+    <div v-if="!editorOnly" class="workspace-toolbar">
       <a-segmented v-model:value="mode" :options="views" :disabled="Boolean(editor)" @change="clearSelection" />
       <span class="muted">
         {{ samples.length }} 张样品卡 · {{ usable.length }} 条实验记录
@@ -9,13 +9,13 @@
       </span>
       <a-button v-if="canManage" size="small" :disabled="Boolean(editor)" @click="editRecord()">新增记录</a-button>
     </div>
-    <details v-if="incompleteBatchCount" class="diagnostics">
+    <details v-if="!editorOnly && incompleteBatchCount" class="diagnostics">
       <summary>生成详情</summary>
       <span>{{ incompleteBatchCount }} 批提取未完成</span>
     </details>
     <p v-if="notice" class="review-notice" role="status">{{ notice }}</p>
     <div class="workspace-columns">
-      <nav class="workspace-column directory" :aria-label="mode === 'samples' ? '样品目录' : '审核队列'">
+      <nav v-if="!editorOnly" class="workspace-column directory" :aria-label="mode === 'samples' ? '样品目录' : '审核队列'">
         <template v-if="mode === 'samples'">
           <h3>样品目录</h3>
           <button
@@ -87,7 +87,7 @@
         <template v-if="editor">
           <div class="record-heading">
             <h3>{{ editor.recordId ? '调整实验记录' : '新增实验记录' }}</h3>
-            <a-button size="small" :disabled="saving" @click="editor = null">取消</a-button>
+            <a-button size="small" :disabled="saving" @click="cancelEditor">取消</a-button>
           </div>
           <div class="edit-fields">
             <label>记录类型<a-select v-model:value="editor.fields.kind" :options="kindOptions" :disabled="saving" /></label>
@@ -110,10 +110,10 @@
           <a-checkbox v-model:checked="editor.verified" class="section-title" :disabled="saving">已对照出处核对样品、条件及结果</a-checkbox>
           <a-alert v-if="error" type="error" :message="error" show-icon />
           <div class="record-actions">
-            <a-button :disabled="saving" @click="save('save')">保存为待审核</a-button>
+            <a-button :disabled="saving" @click="save('save')">{{ editorOnly ? '保存待确认' : '保存为待审核' }}</a-button>
             <a-button type="primary" :loading="saving" :disabled="!editor.verified" @click="save('confirm')">确认本条</a-button>
             <a-button
-              v-if="editor.recordId && activeRecord?.status !== 'excluded'" danger :disabled="saving" @click="save('exclude')"
+              v-if="editor.recordId && editor.status !== 'excluded'" danger :disabled="saving" @click="save('exclude')"
             >排除</a-button>
           </div>
         </template>
@@ -167,7 +167,7 @@
             {{ source.evidence_id }} · Markdown 第 {{ source.line_start === source.line_end ? source.line_start : `${source.line_start}–${source.line_end}` }} 行
             <span v-if="source.page"> · PDF 第 {{ source.page }} 页</span>
           </p>
-          <MarkdownPreview :content="source.quote" :highlight-text="highlightText" compact />
+          <MarkdownPreview :content="experimentEvidenceMarkdown(source.quote, sourceRecord)" :highlight-text="highlightText" compact />
         </section>
       </aside>
     </div>
@@ -177,12 +177,15 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
+import { experimentEvidenceMarkdown } from '@/utils/experimentPresentation'
 
 const props = defineProps({
   snapshot: { type: Object, required: true },
   canManage: { type: Boolean, default: false },
-  saveReview: { type: Function, required: true }
+  saveReview: { type: Function, required: true },
+  editorOnly: { type: Boolean, default: false }
 })
+const emit = defineEmits(['saved', 'cancel'])
 
 const kindLabels = { preparation: '制备', measurement: '测量' }
 const statusLabels = { machine: '机器草稿', pending: '待审核', confirmed: '已确认', excluded: '已排除' }
@@ -306,11 +309,12 @@ const editRecord = (record, fact) => {
   if (record) selectedId.value = record.record_id
   editor.value = {
     recordId: record?.record_id || null,
+    status: record?.status,
     fragmentId: fact?.fact_id || null,
     verified: false,
     fields: {
       kind: record?.kind || 'measurement',
-      sample: record?.sample || (mode.value === 'samples' ? activeSample.value : '') || '',
+      sample: record?.sample ?? (props.editorOnly ? '' : mode.value === 'samples' ? activeSample.value || '' : ''),
       metric: record?.metric || '',
       test: record?.test || '',
       conditions: record?.conditions || (fact?.kind === 'condition' ? fact.raw_text : ''),
@@ -320,6 +324,13 @@ const editRecord = (record, fact) => {
   }
   highlightField.value = 'result'
   error.value = ''
+}
+
+/** 弹窗取消交回父工作台，普通审核页保留原交互。 */
+const cancelEditor = () => {
+  if (saving.value) return
+  editor.value = null
+  emit('cancel')
 }
 
 /** 只在服务器提交成功后切换到最新记录状态。 */
@@ -346,12 +357,15 @@ const save = async (action) => {
     }
     clearSelection()
     selectedId.value = record.record_id
+    emit('saved', record)
   } catch (cause) {
     error.value = cause.message || '审核记录保存失败。'
   } finally {
     saving.value = false
   }
 }
+
+defineExpose({ editRecord, saving })
 </script>
 
 <style scoped lang="less">
@@ -363,6 +377,8 @@ const save = async (action) => {
 .review-notice { margin: 0; color: var(--main-color); }
 .workspace-columns { display: grid; flex: 1; min-height: 0; gap: 12px; grid-template-columns: minmax(138px, .8fr) minmax(0, 2.25fr) minmax(0, 1.35fr); }
 .workspace-column { min-width: 0; min-height: 0; padding: 12px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--gray-150); border-radius: 8px; overflow-wrap: anywhere; }
+.editor-only { min-height: 300px; max-height: 75vh; }
+.editor-only .workspace-columns { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 .workspace-column h2, .workspace-column h3, .workspace-column p { margin: 0; }
 .workspace-column h3 { font-size: 14px; }
 .muted, small, dt { color: var(--color-text-secondary); font-size: 12px; }
@@ -410,5 +426,6 @@ dd { margin: 0; }
   .workspace-columns { display: flex; flex: initial; flex-direction: column; }
   .workspace-column { overflow: visible; }
   .directory { overflow: auto; }
+  .editor-only .workspace-columns { display: flex; }
 }
 </style>

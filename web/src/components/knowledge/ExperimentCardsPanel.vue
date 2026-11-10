@@ -10,20 +10,34 @@
     <a-alert v-if="error" type="error" show-icon :message="error" />
     <template v-if="snapshot">
       <a-alert
-        v-if="snapshot.status === 'draft' && snapshot.coverage?.partial_result"
+        v-if="snapshot.status === 'draft' && !snapshot.canonical_available && snapshot.coverage?.partial_result"
         type="warning"
         show-icon
         message="部分完成"
         :description="snapshot.message"
       />
       <a-alert
-        v-else-if="snapshot.canonical_available && !snapshot.review?.records?.length"
+        v-else-if="!snapshot.canonical_available && snapshot.status === 'draft' && !snapshot.review?.records?.length"
         type="info"
         show-icon
         :message="snapshot.message"
       />
+      <template v-if="snapshot.status === 'draft' && snapshot.canonical_available">
+        <a-alert v-if="canonicalError" type="error" show-icon :message="canonicalError">
+          <template #action><a-button size="small" :loading="loading" @click="refresh">重新读取</a-button></template>
+        </a-alert>
+        <a-spin v-else-if="!canonical" tip="正在读取完整结构化数据…" />
+        <CanonicalExperimentWorkspace
+          v-else
+          :key="snapshot.revision_id"
+          :paper="canonical"
+          :snapshot="snapshot"
+          :can-manage="canManage"
+          :save-review="saveReview"
+        />
+      </template>
       <ExperimentReviewWorkspace
-        v-if="snapshot.status === 'draft'"
+        v-else-if="snapshot.status === 'draft'"
         :key="snapshot.revision_id"
         :snapshot="snapshot"
         :can-manage="canManage"
@@ -44,6 +58,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { documentApi } from '@/apis/knowledge_api'
 import ExperimentReviewWorkspace from './ExperimentReviewWorkspace.vue'
+import CanonicalExperimentWorkspace from './CanonicalExperimentWorkspace.vue'
 
 const props = defineProps({
   kbId: { type: [String, Number], required: true },
@@ -55,6 +70,8 @@ const loading = ref(false)
 const retrying = ref(false)
 const downloading = ref(false)
 const error = ref('')
+const canonical = ref(null)
+const canonicalError = ref('')
 let sequence = 0
 let retrySequence = 0
 let timer = null
@@ -77,11 +94,21 @@ const refresh = async () => {
   const fileId = String(props.fileId)
   loading.value = true
   error.value = ''
+  canonicalError.value = ''
   try {
     const result = await documentApi.getExperimentCards(kbId, fileId)
     if (disposed || request !== sequence) return
+    canonical.value = null
     snapshot.value = result
     if (['pending', 'running'].includes(result.status)) timer = setTimeout(refresh, 3000)
+    if (result.status === 'draft' && result.canonical_available) {
+      try {
+        const record = await documentApi.getExperimentJson(kbId, fileId, result.revision_id)
+        if (!disposed && request === sequence) canonical.value = record
+      } catch (cause) {
+        if (!disposed && request === sequence) canonicalError.value = cause.message || '完整结构化数据读取失败，请重新读取。'
+      }
+    }
   } catch (cause) {
     if (!disposed && request === sequence) {
       snapshot.value = null
@@ -157,6 +184,8 @@ const downloadJson = async () => {
 watch(() => [props.kbId, props.fileId], () => {
   retrySequence += 1
   snapshot.value = null
+  canonical.value = null
+  canonicalError.value = ''
   retrying.value = false
   downloading.value = false
   refresh()
