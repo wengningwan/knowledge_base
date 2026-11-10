@@ -127,6 +127,7 @@
           :source-content="contentState.content"
           :source-sha256="contentState.source_sha256"
           :source-error="contentState.error"
+          :kb-id="kbId"
         />
         <div v-if="!contentState.loading && chunkCount === 0" class="empty-content">
           <p>{{ contentState.error || '暂无分块信息' }}</p>

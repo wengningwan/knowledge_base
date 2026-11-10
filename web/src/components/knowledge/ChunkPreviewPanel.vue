@@ -17,12 +17,12 @@
             @click="toggleExpanded(index)"
           >{{ expanded.has(index) ? '收起全文' : '展开全文' }}</button>
         </div>
-        <p v-if="entry.source.section" class="chunk-section">{{ entry.source.section }}</p>
+        <p v-if="entry.source.section" class="chunk-section"><template v-for="(part, partIndex) in entry.sectionSegments" :key="partIndex"><span v-if="part.type === 'math'" v-html="part.html" /><template v-else>{{ part.text }}</template></template></p>
         <div
           :id="`chunk-content-${index}`"
           class="chunk-card-content"
           :class="{ 'is-collapsed': !expanded.has(index) }"
-        >{{ entry.content }}</div>
+        ><template v-for="(part, partIndex) in entry.segments" :key="partIndex"><ChunkKnowledgeImage v-if="part.type === 'image'" :src="part.src" :alt="part.alt" /><span v-else-if="part.type === 'math'" v-html="part.html" /><div v-else-if="part.type === 'table'" class="chunk-card-table" v-html="part.html" /><template v-else>{{ part.text }}</template></template></div>
         <div class="chunk-source">
           <span>{{ entry.source.label }}</span>
           <button
@@ -69,22 +69,39 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import {
-  createChunkSourceDocument, describeChunkSource, chunkSourceWindows, sortedPreviewChunks, chunkPreviewContent
+  createChunkSourceDocument, describeChunkSource, chunkSourceWindows, sortedPreviewChunks, chunkPreviewContent, chunkContentSegments
 } from '@/utils/chunkPreview'
+import { renderMathHtml, splitMathSegments } from '@/utils/documentReview'
+import ChunkKnowledgeImage from './ChunkKnowledgeImage.vue'
 
 const props = defineProps({
   chunks: { type: Array, default: () => [] },
   sourceContent: { type: String, default: '' },
   sourceSha256: { type: String, default: '' },
-  sourceError: { type: String, default: '' }
+  sourceError: { type: String, default: '' },
+  kbId: { type: [String, Number], default: null }
 })
 
 const expanded = ref(new Set())
 const selectedIndex = ref(null)
 const source = computed(() => createChunkSourceDocument(props.sourceContent, props.sourceSha256, props.sourceError))
-const entries = computed(() => sortedPreviewChunks(props.chunks).map((chunk) => ({
-  chunk, content: chunkPreviewContent(chunk), source: describeChunkSource(chunk, source.value)
-})))
+/** 段序列中的公式段渲染为 KaTeX，文字段保持转义原文。 */
+function renderMath(segments) {
+  return segments.map((part) =>
+    part.type === 'math' ? { ...part, html: renderMathHtml(part) } : part)
+}
+/** 正文与章节行切分后各自渲染：公式段 KaTeX，图片段鉴权加载，文字段保持原文转义。 */
+const entries = computed(() => sortedPreviewChunks(props.chunks).map((chunk) => {
+  const content = chunkPreviewContent(chunk)
+  const located = describeChunkSource(chunk, source.value)
+  return {
+    chunk,
+    content,
+    segments: renderMath(chunkContentSegments(content, props.kbId ?? null)),
+    sectionSegments: renderMath(splitMathSegments(located.section)),
+    source: located
+  }
+}))
 const selectedEntry = computed(() => selectedIndex.value === null ? null : entries.value[selectedIndex.value])
 const sourceWindows = computed(() => chunkSourceWindows(selectedEntry.value?.source.spans || [], source.value))
 
@@ -142,6 +159,7 @@ function toggleExpanded(index) {
   &:focus-visible { outline: 2px solid var(--main-color); outline-offset: 3px; }
 }
 .chunk-section { margin: 0 0 8px; color: var(--color-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.chunk-section :deep(.katex) { font-size: 1.05em; }
 .chunk-card-content {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -154,6 +172,40 @@ function toggleExpanded(index) {
     display: -webkit-box;
     -webkit-line-clamp: 4;
     -webkit-box-orient: vertical;
+  }
+
+  :deep(.katex) { font-size: 1.05em; }
+  :deep(.katex-display) { margin: 0.25rem 0; overflow-x: auto; overflow-y: hidden; }
+  :deep(.katex-render-fallback) { color: #cc0000; }
+
+  // 表格按 HTML 常规空白规则折叠，避免继承卡片的 pre-wrap 导致单元格内换行
+  :deep(.chunk-card-table) {
+    white-space: normal;
+    margin: 0.25rem 0;
+    overflow-x: auto;
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--gray-200);
+      color: var(--gray-800);
+      font-weight: 600;
+      text-align: left;
+    }
+
+    td {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--gray-100);
+      color: var(--gray-800);
+      text-align: left;
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
   }
 }
 .chunk-source { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin-top: 12px; color: var(--color-text-secondary); font-size: 12px; overflow-wrap: anywhere; }

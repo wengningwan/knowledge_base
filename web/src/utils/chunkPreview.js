@@ -1,3 +1,11 @@
+import MarkdownIt from 'markdown-it'
+import DOMPurify from 'dompurify'
+import { splitMathSegments } from './documentReview.js'
+import { isKnowledgeImageProxyPath } from './knowledge_images.js'
+
+// 管道表格仅启用表格规则，单元格内容按纯文本转义，不解释其余 markdown 语法
+const pipeTableRenderer = new MarkdownIt('zero').enable('table')
+
 /** 建立当前原文的 Unicode 码点与行索引，供全部分块复用。 */
 export function createChunkSourceDocument(content, sourceSha256 = '', error = '') {
   const text = typeof content === 'string' ? content : ''
@@ -24,6 +32,91 @@ export function chunkPreviewContent(chunk) {
   const prefix = /^论文：[^\n]*\n章节：([^\n]*)\n\n/.exec(content)
   const section = metadata.section_path.join(' > ') || '正文'
   return prefix?.[1] === section ? content.slice(prefix[0].length) : content
+}
+
+/** 将文字段中的知识库图片语法切为图片段，非代理路径语法不当图片。 */
+function splitImageSegments(text, kbId) {
+  const pattern = /!\[([^\]\n]*)\]\(\s*(\/api\/knowledge\/databases\/[^\s)]+\/images\/[^\s)]+)\s*\)/g
+  const segments = []
+  let cursor = 0
+  for (const match of text.matchAll(pattern)) {
+    if (!isKnowledgeImageProxyPath(match[2], kbId)) continue
+    if (match.index > cursor) segments.push({ type: 'text', text: text.slice(cursor, match.index) })
+    segments.push({ type: 'image', alt: match[1], src: match[2], text: match[0] })
+    cursor = match.index + match[0].length
+  }
+  if (cursor < text.length) segments.push({ type: 'text', text: text.slice(cursor) })
+  return segments
+}
+
+/** 判定一行是否为管道表格行：非空且含竖线。 */
+function isPipeRow(line) {
+  return typeof line === 'string' && line.trim() !== '' && line.includes('|')
+}
+
+/** 将文字段中的管道表格按行块切出：表头加分隔行开启，连续表格行成块；渲染不出表格则整体回退文本。 */
+function splitPipeTables(text, segments) {
+  const lines = text.split('\n')
+  let plainStart = 0
+  let index = 0
+  const flush = (end, keepTrailingNewline) => {
+    if (end <= plainStart) return
+    const joined = lines.slice(plainStart, end).join('\n')
+    segments.push({ type: 'text', text: keepTrailingNewline ? `${joined}\n` : joined })
+  }
+  while (index < lines.length) {
+    const isSeparator = index + 1 < lines.length && /^\s{0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(lines[index + 1])
+    if (!isPipeRow(lines[index]) || !isSeparator) {
+      index += 1
+      continue
+    }
+    flush(index, true)
+    let end = index + 2
+    while (end < lines.length && isPipeRow(lines[end])) end += 1
+    const html = sanitizeTable(pipeTableRenderer.render(lines.slice(index, end).join('\n')))
+    if (html.trim().startsWith('<table')) segments.push({ type: 'table', html })
+    else flush(end, end < lines.length)
+    index = end
+    plainStart = index
+  }
+  flush(lines.length, false)
+}
+
+/** 将正文切为文字与表格段：HTML 表格按标签配对切出，其余文字再扫管道表格；未闭合标签不当表格。 */
+function splitTableSegments(text) {
+  const segments = []
+  let cursor = 0
+  for (const match of String(text ?? '').matchAll(/<table\b[\s\S]*?<\/table\s*>/gi)) {
+    if (match.index > cursor) splitPipeTables(text.slice(cursor, match.index), segments)
+    segments.push({ type: 'table', html: sanitizeTable(match[0]) })
+    cursor = match.index + match[0].length
+  }
+  if (cursor < text.length) splitPipeTables(text.slice(cursor), segments)
+  return segments
+}
+
+/** 表格段统一经 DOMPurify 消毒后交给 v-html，移除脚本与事件属性等不可信内容。 */
+function sanitizeTable(html) {
+  return typeof DOMPurify.sanitize === 'function' ? DOMPurify.sanitize(html) : html
+}
+
+/** 分块正文段序列：先切表格（防止表格内公式被拆散），再从文字段切公式与当前库图片。 */
+export function chunkContentSegments(content, kbId = null) {
+  const segments = []
+  for (const part of splitTableSegments(content)) {
+    if (part.type === 'table') {
+      segments.push(part)
+      continue
+    }
+    for (const mathPart of splitMathSegments(part.text)) {
+      if (mathPart.type === 'math') {
+        segments.push(mathPart)
+        continue
+      }
+      segments.push(...splitImageSegments(mathPart.text, kbId))
+    }
+  }
+  return segments
 }
 
 /** 查找字符所属的一基行号。 */
