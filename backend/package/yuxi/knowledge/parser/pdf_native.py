@@ -156,6 +156,40 @@ def review_crop_region(block: dict, targets: list[dict], native: list[dict], blo
         height = median(line[3] - line[1] for line in lines)
     else:
         height = min(.025, max(.006, (box[3] - box[1]) / max(1, len(str(block.get("content", ""))) / 70)))
+    return _crop_with_boundaries(box, block, blocks, height)
+
+
+def wide_crop_region(block: dict, targets: list[dict], native: list[dict], blocks: list[dict],
+                     *, extra_rows: int = 1) -> list[float]:
+    """覆盖目标所在原生行并并入上下邻行，供裁图可读门槛的扩图重渲染。
+
+    与 review_crop_region 的差异：不做跨栏宽度过滤，保证门槛场景一定能
+    拿到含基线上下文的大图；原生行不可用时退化为保守放大。
+    """
+    regions = [target["source_region"]["bbox"] for target in targets]
+    box = [min(item[0] for item in regions), min(item[1] for item in regions),
+           max(item[2] for item in regions), max(item[3] for item in regions)]
+    # 同页全部行参与排序；目标所在行靠相交精确判定，避免初筛提前排除邻行。
+    lines = [line for line in native if line.get("page") == block["page"] and line.get("bbox")]
+    if not lines:
+        return _expand_box(review_crop_region(block, targets, native, blocks), 1.5, 2.0)
+    lines.sort(key=lambda line: (line["bbox"][1] + line["bbox"][3]) / 2)
+    covered = [index for index, line in enumerate(lines)
+               if line["bbox"][1] < box[3] and line["bbox"][3] > box[1]
+               and line["bbox"][0] < box[2] and line["bbox"][2] > box[0]]
+    if not covered:
+        return _expand_box(review_crop_region(block, targets, native, blocks), 1.5, 2.0)
+    first = max(0, min(covered) - extra_rows)
+    last = min(len(lines) - 1, max(covered) + extra_rows)
+    window = [line["bbox"] for line in lines[first:last + 1]]
+    box = [min(box[0], min(line[0] for line in window)), min(box[1], min(line[1] for line in window)),
+           max(box[2], max(line[2] for line in window)), max(box[3], max(line[3] for line in window))]
+    height = median(line["bbox"][3] - line["bbox"][1] for line in lines)
+    return _crop_with_boundaries(box, block, blocks, height)
+
+
+def _crop_with_boundaries(box: list[float], block: dict, blocks: list[dict], height: float) -> list[float]:
+    """区域外扩半行距，并在同页邻栏与图表边界中点止步。"""
     crop = [max(0., box[0] - height * 1.5), max(0., box[1] - height * .6),
             min(1., box[2] + height * 1.5), min(1., box[3] + height * .6)]
     for other in blocks:
@@ -173,6 +207,14 @@ def review_crop_region(block: dict, targets: list[dict], native: list[dict], blo
             elif boundary[1] >= box[3]:
                 crop[3] = min(crop[3], (box[3] + boundary[1]) / 2)
     return crop
+
+
+def _expand_box(bbox: list[float], width_factor: float, height_factor: float) -> list[float]:
+    """以区域中心按倍数放大并 clamp 到页面，用于无原生行时的保守扩图。"""
+    center_x, center_y = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    half_w, half_h = (bbox[2] - bbox[0]) * width_factor / 2, (bbox[3] - bbox[1]) * height_factor / 2
+    return [max(0., center_x - half_w), max(0., center_y - half_h),
+            min(1., center_x + half_w), min(1., center_y + half_h)]
 
 
 def render_pdf_region(file_path: str, page: int, bbox: list, scale: float = 3) -> bytes:

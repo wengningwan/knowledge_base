@@ -30,7 +30,8 @@ async def confirm_document_review(
     attempt_id: str,
     review_revision: str | None,
     source_sha256: str,
-    review_index: int,
+    review_index: int | None,
+    review_indexes: list[int] | None,
     action: str,
     content: str,
     anchor_block_id: str | None,
@@ -80,60 +81,85 @@ async def confirm_document_review(
         ):
             raise ReviewConflictError("正文或校对结果已变化，请重新打开页面后再确认")
         reviews, blocks = sidecar.get("reviews", []), sidecar.get("blocks", [])
-        if not 0 <= review_index < len(reviews):
-            raise ValueError("未找到待确认的校对问题")
-        row = reviews[review_index]
-        target_id = row.get("human_review", {}).get("block_id") or row.get("block_id")
-        block = next(
-            (
+        updated_markdown = markdown
+        if review_indexes is not None:
+            # 批量确认只处理显式集合：复核会改写原因，同一原问题的分片可能分属不同簇，禁止按身份扩展冒认。
+            if action != "keep":
+                raise ValueError("批量确认仅支持保留正文")
+            if any(not isinstance(index, int) or not 0 <= index < len(reviews) for index in review_indexes):
+                raise ValueError("存在超出范围的校对记录")
+            confirmed = [reviews[index] for index in review_indexes if not reviews[index].get("human_review")]
+            if not confirmed:
+                return {
+                    "content_changed": False,
+                    "index_invalidated": False,
+                    "confirmed_count": 0,
+                    "review_revision": metadata.get("human_review_revision"),
+                }
+            for row in confirmed:
+                row["human_review"] = {
+                    "confirmed_by": operator_id,
+                    "confirmed_at": utc_isoformat(utc_now()),
+                    "block_id": row.get("block_id"),
+                }
+        else:
+            if not isinstance(review_index, int) or not 0 <= review_index < len(reviews):
+                raise ValueError("未找到待确认的校对问题")
+            row = reviews[review_index]
+            target_id = row.get("human_review", {}).get("block_id") or row.get("block_id")
+            block = next(
+                (
+                    item
+                    for item in blocks
+                    if target_id is not None
+                    and item.get("id") == target_id
+                    and item.get("type") not in {"page_header", "page_footer"}
+                ),
+                None,
+            )
+            if action not in {"keep", "replace", "insert_after"}:
+                raise ValueError("无效的校对操作")
+            if action != "keep":
+                if not blocks or render_document(blocks) != markdown:
+                    raise ValueError("正文与段落结构不一致，请重新解析后修改")
+                if action == "replace":
+                    if block is None:
+                        raise ValueError("无法定位原段落，请选择明确的补入位置")
+                    block["content"] = content
+                else:
+                    if block is not None or not content.strip():
+                        raise ValueError("补入操作需要一个缺失段落问题和非空正文")
+                    anchor = next((item for item in blocks if item.get("id") == anchor_block_id), None)
+                    if anchor is None and anchor_block_id != "__start__":
+                        raise ValueError("请选择补入正文的位置")
+                    index = blocks.index(anchor) + 1 if anchor else 0
+                    target_id = f"human-{uuid.uuid4().hex}"
+                    blocks.insert(
+                        index,
+                        {
+                            "id": target_id,
+                            "type": "text",
+                            "content": content,
+                            "page": row.get("page"),
+                            "bbox": None,
+                        },
+                    )
+            updated_markdown = render_document(blocks) if action != "keep" else markdown
+            # 人工确认只覆盖当前问题的分片片段；同段其它问题未经核对，不得冒认人工结论。
+            issue_identity = row.get("parent_issue_id") or row.get("id")
+            confirmed = [
                 item
-                for item in blocks
-                if target_id is not None
-                and item.get("id") == target_id
-                and item.get("type") not in {"page_header", "page_footer"}
-            ),
-            None,
-        )
-        if action not in {"keep", "replace", "insert_after"}:
-            raise ValueError("无效的校对操作")
-        if action != "keep":
-            if not blocks or render_document(blocks) != markdown:
-                raise ValueError("正文与段落结构不一致，请重新解析后修改")
-            if action == "replace":
-                if block is None:
-                    raise ValueError("无法定位原段落，请选择明确的补入位置")
-                block["content"] = content
-            else:
-                if block is not None or not content.strip():
-                    raise ValueError("补入操作需要一个缺失段落问题和非空正文")
-                anchor = next((item for item in blocks if item.get("id") == anchor_block_id), None)
-                if anchor is None and anchor_block_id != "__start__":
-                    raise ValueError("请选择补入正文的位置")
-                index = blocks.index(anchor) + 1 if anchor else 0
-                target_id = f"human-{uuid.uuid4().hex}"
-                blocks.insert(
-                    index,
-                    {
-                        "id": target_id,
-                        "type": "text",
-                        "content": content,
-                        "page": row.get("page"),
-                        "bbox": None,
-                    },
-                )
-        updated_markdown = render_document(blocks) if action != "keep" else markdown
+                for item in reviews
+                if block is not None
+                and (item.get("human_review", {}).get("block_id") or item.get("block_id")) == block["id"]
+                and (item.get("parent_issue_id") or item.get("id")) == issue_identity
+            ]
+            if not confirmed:
+                confirmed = [row]
+            receipt = {"confirmed_by": operator_id, "confirmed_at": utc_isoformat(utc_now()), "block_id": target_id}
+            for item in confirmed:
+                item["human_review"] = receipt.copy()
         changed = updated_markdown != markdown
-        confirmed = [
-            item
-            for item in reviews
-            if block is not None
-            and (item.get("human_review", {}).get("block_id") or item.get("block_id")) == block["id"]
-        ]
-        if not confirmed:
-            confirmed = [row]
-        receipt = {"confirmed_by": operator_id, "confirmed_at": utc_isoformat(utc_now()), "block_id": target_id}
-        for item in confirmed:
-            item["human_review"] = receipt.copy()
         remaining = [item for item in reviews if not item.get("human_review")]
         technical = any(
             item.get("status") in {"technical_failed", "pending", "running"} or item.get("protocol_errors")

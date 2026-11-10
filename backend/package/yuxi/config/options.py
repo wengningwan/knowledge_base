@@ -130,6 +130,12 @@ system_options = Option(
                 "default": "",
             },
             {
+                "key": "default_document_review_vision_final_authority",
+                "label": "正文校对视觉终裁与自动处置",
+                "type": "boolean",
+                "default": False,
+            },
+            {
                 "key": "document_model_concurrency",
                 "label": "文档模型请求并发数（每端点与模型共享）",
                 "type": "positive_int",
@@ -446,6 +452,15 @@ def normalize_option_value(field: dict[str, Any], value: Any) -> Any:
         if not all(isinstance(item, str) for item in value):
             raise ValueError("配置值必须是字符串列表")
         return value
+    if field.get("type") == "boolean":
+        if isinstance(value, bool):
+            return value
+        text_value = str(value or "").strip().lower()
+        if text_value in {"true", "1", "yes", "on"}:
+            return True
+        if text_value in {"false", "0", "no", "off", ""}:
+            return False
+        raise ValueError("配置值必须是布尔值")
 
     normalized = str(value or "").strip()
     if field.get("type") == "url" and normalized:

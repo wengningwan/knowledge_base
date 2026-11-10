@@ -1,4 +1,6 @@
 import katex from 'katex'
+// \ce 化学式渲染依赖 mhchem；本模块渲染摘要公式，必须显式声明而不是借 MarkdownPreview 的副作用导入
+import 'katex/contrib/mhchem'
 
 import { escapeHtml } from './html.js'
 
@@ -33,6 +35,63 @@ export function groupDocumentReviews(reviews) {
   })
 }
 
+/** 问题对比指纹：与详情页对比视图同源选取，屏幕呈现一致才可能同簇。 */
+function reviewIssueFingerprint(record) {
+  const normalize = (text) => String(text ?? '').trim().replace(/\s+/g, ' ')
+  const comparison = reviewComparison(record ?? {})
+  return { before: normalize(comparison.before), after: normalize(comparison.after) }
+}
+
+/** 把类型、说明与对比内容全部一致的待确认组聚为一簇；具体内容不同即不同问题，禁止按模板文案冒认合并。 */
+export function clusterDocumentReviewGroups(groups) {
+  const buckets = new Map()
+  for (const group of groups) {
+    if (!(group.attention || group.incomplete)) continue
+    // 簇键对齐详情页可见呈现：reason 是模板文案不能单独定性，缺失/差异文字不同必须拆分；
+    // reason 漂移后同一原问题的分片可能分属不同簇，属预期行为。
+    const primary = group.primary
+    const kind = primary?.kind || ''
+    const reason = String(primary?.reason ?? '').trim().replace(/\s+/g, ' ')
+    const fingerprint = reviewIssueFingerprint(primary)
+    const key = (reason || fingerprint.before || fingerprint.after)
+      ? `${kind}::${reason}::${fingerprint.before}::${fingerprint.after}`
+      : `solo:${group.key}`
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        key, kind,
+        reason: reason || primary?.reason || '',
+        excerpt: fingerprint.before || fingerprint.after || reason || '',
+        groups: [], records: []
+      })
+    }
+    const bucket = buckets.get(key)
+    bucket.groups.push(group)
+    bucket.records.push(...group.records)
+  }
+  return [...buckets.values()].map((bucket) => {
+    const confirmedCount = bucket.records.filter((record) => record.human_review).length
+    const pageDistribution = {}
+    for (const record of bucket.records) {
+      const page = Number.isInteger(record.page) && record.page > 0 ? record.page : '页码未知'
+      pageDistribution[page] = (pageDistribution[page] || 0) + 1
+    }
+    return {
+      ...bucket,
+      count: bucket.records.length - confirmedCount,
+      confirmedCount,
+      critical: bucket.records.some((record) => record.critical),
+      pageDistribution
+    }
+  }).sort((left, right) => right.count - left.count || (left.key < right.key ? -1 : left.key > right.key ? 1 : 0))
+}
+
+/** 生成簇的页码分布摘要，超过三段截断为等 N 页。 */
+export function clusterPageSummary(distribution) {
+  const entries = Object.entries(distribution)
+  const summary = entries.slice(0, 3).map(([page, total]) => `${page === '页码未知' ? '页码未知' : `第${page}页`}×${total}`).join(' · ')
+  return entries.length > 3 ? `${summary} 等${entries.length}页` : summary
+}
+
 /** 明确核对来源，系统回执不能表达为人工确认。 */
 export function reviewStatusLabel(record) {
   if (record.human_review) return '已确认'
@@ -54,6 +113,7 @@ export function reviewKindLabel(kind) {
     critical_mismatch: '关键内容差异', text_mismatch: '文字差异', math_syntax: '公式格式',
     title_hierarchy: '标题层级', missing_region: '疑似正文遗漏', reading_flow: '阅读顺序',
     native_evidence_unavailable: '原文证据缺失', missing_page: '疑似缺页',
+    formula_fragment_cluster: '疑似漏识别公式区域',
     scientific_notation: '科学符号核对',
     date_body_split: '日期与正文', same_line_join: '同行文字', high_risk: '图表与公式',
     weak_reference: '缺少可靠对照'
@@ -312,4 +372,65 @@ export function renderMathHtml(part) {
   } catch (error) {
     return `<span class="katex-render-fallback" title="${escapeHtml(String(error?.message ?? ''))}">${escapeHtml(latex)}</span>`
   }
+}
+
+/** 列表摘要 HTML：文字段折叠空白并转义，公式段整段行内渲染不撕裂；超出预算截断加省略号。
+ * 供问题列表与锚点卡片等小卡片使用；正文区仍走 splitMathSegments + renderMathHtml 管线。 */
+export function renderExcerptHtml(content, maxLength = 120) {
+  const segments = splitMathSegments(String(content ?? '').trim())
+  let used = 0
+  let truncated = false
+  const html = []
+  for (const part of segments) {
+    if (truncated) break
+    if (part.type === 'math') {
+      // 公式整段渲染，源码长度计入预算：截半公式比舍弃更不可读
+      html.push(renderMathHtml({ ...part, displayMode: false }))
+      used += Array.from(part.text).length
+      continue
+    }
+    const chars = Array.from(part.text.replace(/\s+/g, ' '))
+    const remaining = maxLength - used
+    if (chars.length > remaining) {
+      html.push(escapeHtml(chars.slice(0, Math.max(0, remaining)).join('')))
+      truncated = true
+    } else {
+      used += chars.length
+      html.push(escapeHtml(chars.join('')))
+    }
+  }
+  return `${html.join('')}${truncated ? '…' : ''}`
+}
+
+/** 非正文类型锚点只作兜底：公式/图表块内容与补入文字不同构。 */
+const ANCHOR_NON_PROSE_TYPES = new Set(['picture', 'table', 'formula', 'chemical_structure', 'chemical_equation', 'code_block'])
+const ANCHOR_TYPE_LABELS = {
+  text: '正文段落', title: '标题', caption: '图表标题', footnote: '脚注',
+  formula: '公式', picture: '插图', table: '表格', code_block: '代码块'
+}
+
+/** 本页正文上下文块：按页过滤（排除页眉页脚）并按阅读顺序排序。 */
+export function pageContextBlocks(blocks, page) {
+  return (blocks || [])
+    .filter((block) => block.page === page && !['page_header', 'page_footer'].includes(block.type))
+    .sort((first, second) => (first.order ?? 0) - (second.order ?? 0))
+}
+
+/** 推荐补入锚点：与缺失区域版面距离最小的正文块，平局取阅读顺序靠前；
+ * 同页只剩图/表块时兜底推荐，缺 bbox 或无带坐标候选时不推荐。 */
+export function recommendAnchorBlock(blocks, page, bbox) {
+  if (!Array.isArray(bbox) || bbox.length !== 4) return null
+  const candidates = pageContextBlocks(blocks, page)
+    .filter((block) => Array.isArray(block.bbox) && block.bbox.length === 4)
+  if (!candidates.length) return null
+  const distance = (block) => Math.max(block.bbox[1] - bbox[3], bbox[1] - block.bbox[3], 0)
+    + 0.5 * Math.max(block.bbox[0] - bbox[2], bbox[0] - block.bbox[2], 0)
+  const prose = candidates.filter((block) => !ANCHOR_NON_PROSE_TYPES.has(block.type))
+  const pool = prose.length ? prose : candidates
+  return [...pool].sort((first, second) => distance(first) - distance(second) || (first.order ?? 0) - (second.order ?? 0))[0].id
+}
+
+/** 锚点卡片块类型标签，未知类型回退原值。 */
+export function reviewBlockTypeLabel(type) {
+  return ANCHOR_TYPE_LABELS[type] || String(type || '未知类型')
 }

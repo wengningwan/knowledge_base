@@ -78,9 +78,10 @@ def validate_inline_change(before: str, after: str, *, script_evidence: bool = F
     old_damage, new_damage = _math_damage(before), _math_damage(after)
     if any(count > old_damage[kind] for kind, count in new_damage.items()):
         return "introduced_math_damage"
-    old_scripts, new_scripts = _scripts(before), _scripts(after)
-    if not script_evidence and _lost_script_scope(old_scripts, new_scripts):
-        return "script_scope_loss_requires_native_geometry"
+    if not script_evidence and lost_scripts(scripts(before), scripts(after)):
+        script_error = "script_scope_loss_requires_native_geometry"
+    else:
+        script_error = ""
     changes = [entry for entry in difflib.SequenceMatcher(a=before, b=after, autojunk=False).get_opcodes() if entry[0] != "equal"]
     for _, a, b, c, d in changes:
         left, right = before[a:b], after[c:d]
@@ -100,7 +101,8 @@ def validate_inline_change(before: str, after: str, *, script_evidence: bool = F
     if not punctuation_evidence and any(re.findall(punctuation, before[a:b]) != re.findall(punctuation, after[c:d])
                                         for _, a, b, c, d in changes):
         return "punctuation_change_requires_native_evidence"
-    return ""
+    # 脚本作用域错误最后返回：标点/词界等硬破坏优先，豁免路径不得绕过它们。
+    return script_error
 
 
 def _math_end(text: str, start: int) -> int | None:
@@ -140,8 +142,8 @@ def _script_end(text: str, start: int) -> int:
     return len(text)
 
 
-def _scripts(text: str) -> list[tuple[str, str, str]]:
-    """保留脚本角色及完整作用范围，支持已知Unicode和TeX表达。"""
+def scripts(text: str) -> list[tuple[str, str, str]]:
+    """提取文本全部脚本（角色、参数、基字），供作用域守卫与几何保险丝复用。"""
     result = []
     subs = str.maketrans(SUBS, "0123456789+-=()aehijklmnoprstuvx")
     supers = str.maketrans(SUPERS, "0123456789+-=()in")
@@ -157,16 +159,18 @@ def _scripts(text: str) -> list[tuple[str, str, str]]:
     return [(role, value, base) for _, role, value, base in sorted(result)]
 
 
-def _lost_script_scope(old: list, new: list) -> bool:
-    """每个原脚本独立保留其基字及作用范围，新增脚本不能抵消丢失。"""
+def lost_scripts(old: list, new: list) -> list[tuple[str, str, str]]:
+    """返回 old 中未在 new 里保住基字与作用范围的脚本，供几何保险丝逐项裁决。"""
     remaining = list(new)
+    lost = []
     for role, value, base in old:
         matched = next((index for index, (kind, argument, anchor) in enumerate(remaining)
                         if kind == role and anchor == base and _script_argument_size(argument) >= _script_argument_size(value)), None)
         if matched is None:
-            return True
-        remaining.pop(matched)
-    return False
+            lost.append((role, value, base))
+        else:
+            remaining.pop(matched)
+    return lost
 
 
 def _script_argument_size(value: str) -> int:

@@ -103,6 +103,7 @@ def normalize_oxr_result(payload: dict) -> ParsedDocument:
                 content = ""
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False)
+            content = _delimit_formula(block_type, str(source.get("format") or "text"), content)
             bbox = _normalize_bbox(source.get("bbox"), width, height)
             block = {
                 "id": block_id,
@@ -198,9 +199,8 @@ def render_document(blocks: list[dict], urls: dict[str, str] | None = None) -> s
         if kind == "title":
             references = _is_reference_heading(content)
             content = f"{'#' * int(block.get('level', 2))} {content.lstrip('#').strip()}"
-        elif kind in {"formula", "chemical_equation"} and block.get("format", "").lower() in {"latex", "tex"}:
-            if not (content.startswith("$$") or content.startswith(r"\[")):
-                content = f"$$\n{content}\n$$"
+        elif kind in {"formula", "chemical_equation"}:
+            content = _delimit_formula(kind, str(block.get("format") or ""), content)
         elif kind == "code_block" and not content.startswith("```"):
             content = f"```\n{content}\n```"
         boundaries = _reference_boundaries(content) if references and kind == "text" else []
@@ -282,6 +282,14 @@ def restore_reading_flow(blocks: list[dict], diagnostics: list[dict]) -> list[di
                 "reason": "仅渲染时接续同一未完句；跨页或跨栏几何、栏宽与段首共同校验，块原文保持",
             })
     return ordered
+
+
+def _delimit_formula(block_type: str, format_name: str, content: str) -> str:
+    """LaTeX 公式块统一补显示定界：块内容、校对记录与 Markdown 三处同口径。"""
+    if block_type in {"formula", "chemical_equation"} and format_name.lower() in {"latex", "tex"}:
+        if not (content.startswith("$$") or content.startswith(r"\[")):
+            return f"$$\n{content}\n$$"
+    return content
 
 
 def _normalize_bbox(value, width, height) -> list[float] | None:

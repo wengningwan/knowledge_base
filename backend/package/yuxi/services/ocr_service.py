@@ -64,7 +64,9 @@ async def resolve_ocr_task_params(
     image_analysis_model = str(resolved.get("image_analysis_model") or "").strip()
     enrich_pdf = engine_id in {"disable", "oxr_ocr"} and bool(resolved.get("image_prefix"))
     needs_defaults = enrich_pdf and (
-        "image_analysis_model" not in resolved or engine_id == "oxr_ocr" and "document_review_model" not in resolved
+        "image_analysis_model" not in resolved
+        or engine_id == "oxr_ocr"
+        and ("document_review_model" not in resolved or "document_review_vision_final_authority" not in resolved)
     )
     defaults = await system_options.get(db) if needs_defaults else {}
     if enrich_pdf and "image_analysis_model" not in resolved:
@@ -76,8 +78,11 @@ async def resolve_ocr_task_params(
     if engine_id == "oxr_ocr" and enrich_pdf:
         if "document_review_model" not in resolved:
             resolved["document_review_model"] = str(defaults.get("default_document_review_model") or "").strip()
+        if "document_review_vision_final_authority" not in resolved:
+            resolved["document_review_vision_final_authority"] = bool(defaults.get("default_document_review_vision_final_authority"))
     else:
         resolved.pop("document_review_model", None)
+        resolved.pop("document_review_vision_final_authority", None)
 
     if engine_id == "disable":
         kwargs = {}

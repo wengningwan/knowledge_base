@@ -21,7 +21,17 @@
         class="pdf-page-card"
         :data-page-number="pageNum"
       >
-        <canvas :ref="(el) => setCanvasRef(el, pageNum)" class="pdf-canvas" />
+        <div class="pdf-page-surface">
+          <canvas :ref="(el) => setCanvasRef(el, pageNum)" class="pdf-canvas" />
+          <!-- 高亮层按归一化坐标百分比定位，与页面渲染缩放无关 -->
+          <div
+            v-for="(region, index) in highlightRegionsFor(pageNum)"
+            :key="`${pageNum}-${index}`"
+            class="pdf-highlight-region"
+            :style="pdfHighlightStyle(region.bbox)"
+            :aria-label="region.label || '定位高亮区域'"
+          ></div>
+        </div>
         <div class="pdf-page-number-tag">{{ pageNum }} / {{ totalPages }}</div>
       </div>
     </div>
@@ -31,6 +41,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { CircleAlert, LoaderCircle } from '@lucide/vue'
+import { pdfHighlightStyle } from '@/utils/pdfHighlight'
 import { resolvePdfLoadErrorMessage } from '@/utils/pdfPreviewErrors'
 
 const props = defineProps({
@@ -46,6 +57,11 @@ const props = defineProps({
   horizontalPadding: {
     type: Number,
     default: 32
+  },
+  // 高亮区域列表 [{ page, bbox, label? }]，bbox 为 PDFium 归一化坐标；不传则行为与旧版完全一致
+  highlightRegions: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -60,6 +76,10 @@ const pageNotice = computed(() => props.page !== null && !loading.value && total
 
 const canvasMap = new Map()
 const renderTasks = new Map()
+/** 取出落在指定页的合法高亮区域。 */
+const highlightRegionsFor = (pageNum) => props.highlightRegions.filter(
+  (region) => region?.page === pageNum && Array.isArray(region?.bbox) && region.bbox.length === 4
+)
 let pdfjsLibInstance = null
 let currentPdfDoc = null
 let currentLoadingTask = null
@@ -382,6 +402,20 @@ onBeforeUnmount(() => {
   background: #ffffff;
   border-radius: 4px;
   transition: box-shadow 0.2s ease;
+}
+
+.pdf-page-surface {
+  position: relative;
+  max-width: 100%;
+  line-height: 0;
+}
+
+.pdf-highlight-region {
+  position: absolute;
+  border: 2px solid #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  border-radius: 2px;
+  pointer-events: none;
 }
 
 .pdf-page-card:hover {

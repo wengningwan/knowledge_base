@@ -79,12 +79,23 @@ def protected_spans(text: str, *, include_math: bool = False) -> list[tuple[int,
     return spans
 
 
+_STRUCTURE_PATTERN = r" {2,}(?=\r?\n)|\r?\n|^[ \t]*(?:[-+*]|\d+[.)])[ \t]+"
+
+
 def preserves_protected(before: str, after: str) -> bool:
     """要求保护区逐字且按出现次数守恒，拒绝插入新保护内容。"""
-    structures = r" {2,}(?=\r?\n)|\r?\n|^[ \t]*(?:[-+*]|\d+[.)])[ \t]+"
     return (
         Counter(before[start:end] for start, end in protected_spans(before)) == Counter(after[start:end] for start, end in protected_spans(after))
-        and re.findall(structures, before, re.M) == re.findall(structures, after, re.M)
+        and re.findall(_STRUCTURE_PATTERN, before, re.M) == re.findall(_STRUCTURE_PATTERN, after, re.M)
+    )
+
+
+def whitespace_structure_divergence(before: str, after: str) -> bool:
+    """保护内容逐字守恒而换行/缩进等空白结构失衡：差异只在排版结构，
+    代码、链接等保护内容本身并未被触碰。"""
+    return (
+        Counter(before[start:end] for start, end in protected_spans(before)) == Counter(after[start:end] for start, end in protected_spans(after))
+        and re.findall(_STRUCTURE_PATTERN, before, re.M) != re.findall(_STRUCTURE_PATTERN, after, re.M)
     )
 
 
@@ -166,6 +177,127 @@ def clean_prose_whitespace(text: str) -> str:
                 end = index + 1
         index = end
     return "".join(lines)
+
+
+_SUBSCRIPT_TRANSLATION = str.maketrans("₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎", "0123456789+-=()")
+_SUPERSCRIPT_TRANSLATION = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁱⁿ", "0123456789+-=()in")
+_MATH_WRAPPER = re.compile(r"\$\$?(.*?)\$\$?", re.S)
+
+
+def normalized_visible_text(text: str) -> str:
+    """归一化为可比对的可见字符流：剥数学包装、折合上下标与连字、删除全部空白。
+
+    仅用于字符守恒比较；大小写与孤立 ^ _ 保留，避免把数值或符号差异当排印差异。
+    """
+    text = unicodedata.normalize("NFC", str(text))
+    text = _MATH_WRAPPER.sub(lambda match: match[1], text).replace("$", "")
+    text = re.sub(r"[\^_]\{([^{}]*)\}", lambda match: match[1], text)
+    text = text.translate(str.maketrans({"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl", "−": "-", "–": "-", "—": "-"}))
+    text = text.translate(_SUBSCRIPT_TRANSLATION).translate(_SUPERSCRIPT_TRANSLATION)
+    return re.sub(r"\s+", "", text)
+
+
+def visible_surplus(ocr: str, native: str) -> str:
+    """返回 OCR 归一化后比原生文字多出的可见字符排序串；无多出为空。"""
+    surplus = Counter(normalized_visible_text(ocr)) - Counter(normalized_visible_text(native))
+    return "".join(sorted(surplus.elements()))
+
+
+_LATEX_SYMBOL_FOLD = {
+    "dagger": "†", "ddagger": "‡", "S": "§", "P": "¶",
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "varepsilon": "ε",
+    "epsilon": "ε", "zeta": "ζ", "eta": "η", "theta": "θ", "vartheta": "ϑ",
+    "iota": "ι", "kappa": "κ", "lambda": "λ", "mu": "μ", "nu": "ν", "xi": "ξ",
+    "pi": "π", "rho": "ρ", "sigma": "σ", "varsigma": "ς", "tau": "τ",
+    "upsilon": "υ", "phi": "φ", "varphi": "ϕ", "chi": "χ", "psi": "ψ", "omega": "ω",
+    "Gamma": "Γ", "Delta": "Δ", "Theta": "Θ", "Lambda": "Λ", "Xi": "Ξ", "Pi": "Π",
+    "Sigma": "Σ", "Upsilon": "Υ", "Phi": "Φ", "Psi": "Ψ", "Omega": "Ω",
+    "ell": "ℓ", "hbar": "ℏ", "imath": "ı", "jmath": "ȷ",
+    "le": "≤", "leq": "≤", "ge": "≥", "geq": "≥", "ne": "≠", "neq": "≠",
+    "approx": "≈", "sim": "∼", "simeq": "≃", "cong": "≅", "equiv": "≡",
+    "propto": "∝", "infty": "∞", "partial": "∂", "nabla": "∇",
+    "pm": "±", "mp": "∓", "times": "×", "div": "÷", "cdot": "·", "circ": "∘",
+    "ast": "∗", "star": "⋆", "bullet": "•",
+    "to": "→", "rightarrow": "→", "leftarrow": "←", "Rightarrow": "⇒",
+    "Leftarrow": "⇐", "leftrightarrow": "↔", "uparrow": "↑", "downarrow": "↓",
+    "mapsto": "↦", "in": "∈", "notin": "∉", "ni": "∋", "subset": "⊂", "supset": "⊃",
+    "subseteq": "⊆", "supseteq": "⊇", "cup": "∪", "cap": "∩", "emptyset": "∅",
+    "forall": "∀", "exists": "∃", "neg": "¬", "land": "∧", "lor": "∨",
+    "sum": "∑", "prod": "∏", "coprod": "∐", "int": "∫", "iint": "∬", "iiint": "∭",
+    "oint": "∮", "sqrt": "√", "prime": "′",
+    "langle": "⟨", "rangle": "⟩", "lfloor": "⌊", "rfloor": "⌋", "lceil": "⌈", "rceil": "⌉",
+    "angle": "∠", "perp": "⊥", "parallel": "∥", "mid": "∣",
+    "ldots": "…", "dots": "…", "cdots": "⋯", "vdots": "⋮", "ddots": "⋱",
+    "triangle": "△", "bigcirc": "○", "square": "□", "diamond": "◇",
+    "checkmark": "✓", "degree": "°", "textdegree": "°",
+}
+_LATEX_DROP_COMMANDS = (
+    "left", "right", "Bigg", "bigg", "Big", "big", "biggl", "biggr", "Bigl", "Bigr",
+    "bigl", "bigr", "mathrm", "text", "textrm", "textit", "textbf", "texttt", "textsf", "textsc",
+    "mathit", "mathbf", "mathcal", "mathsf", "mathtt", "mathbb", "mathfrak", "mathord",
+    "operatorname", "mathopen", "mathclose", "mbox", "hbox", "displaystyle", "textstyle",
+    "limits", "nolimits", "quad", "qquad", "hspace", "vspace",
+    "rm", "it", "bf", "sf", "tt", "sc", "sl", "cal", "frak", "boldsymbol",
+)
+_LATEX_FOLD_PATTERN = re.compile(
+    r"\\(" + "|".join(re.escape(name) for name in sorted(set(_LATEX_SYMBOL_FOLD) | set(_LATEX_DROP_COMMANDS), key=len, reverse=True)) + r")(?![a-zA-Z])"
+)
+_EQUIVALENT_PUNCTUATION = str.maketrans({
+    "’": "'", "‘": "'", "“": '"', "”": '"',
+    "\u0002": "-", "\u0003": "-",
+    "∼": "~", "～": "~",
+    "•": "●", "∙": "●",
+    "¨": "", "ˆ": "", "˜": "", "ˇ": "", "˘": "", "¯": "", "´": "",
+})
+_GARBLED_EVIDENCE = re.compile(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f]|[ÄÅÇÉÑÖ]{3}")
+_DISPLAY_MATH_COMMAND = re.compile(r"\\(?:begin\{|[dt]?frac|sqrt|left|Bigg|bigg|mathrm|partial|nabla)")
+_MATH_SYMBOL_RUN = re.compile(r"[∂∑∏∫∇∞≪≫≡∝]{2}")
+
+
+def _fold_latex_commands(text: str) -> str:
+    """按已知命令名最长匹配折算 LaTeX 命令；后随字母视为更长命令名，不折算。"""
+    return _LATEX_FOLD_PATTERN.sub(lambda match: _LATEX_SYMBOL_FOLD.get(match[1], ""), text)
+
+
+def fold_equivalent_typography(text: str) -> str:
+    """把已知等价排印折算为统一可见形态，供内容级守恒比较。
+
+    LaTeX 命令须在空白删除前折算（命令边界依赖空白与标点）；直弯引号、波浪
+    形态与原生层缺陷字符随后映射；预组合变音符经 NFD 剥组合符，与基字符加
+    独立变音符形态归一；最后剥数学包装并删除残迹 ^ _ { } 与孤立反斜杠。
+    """
+    text = unicodedata.normalize("NFC", str(text))
+    text = _fold_latex_commands(text)
+    text = text.translate(_EQUIVALENT_PUNCTUATION)
+    decomposed = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return re.sub(r"[{}^_\\]", "", normalized_visible_text(text))
+
+
+def native_evidence_garbled(native: str) -> bool:
+    """原生候选是否为公式乱码或控制字符主导：数学字体 ToUnicode 缺失特征。
+
+    此类原生文字层不能作为字符守恒的 oracle，视觉复核是公式区域的终审。
+    """
+    return bool(_GARBLED_EVIDENCE.search(str(native)))
+
+
+def unresolved_surplus(ocr: str, native: str) -> str:
+    """字符守卫专用：返回需要人工裁决的内容级多出字符，空表示无差异或不可拦。
+
+    原生候选缺失时视觉复核是唯一证据源；公式乱码与数学符号流的原生文字层
+    不能作为字符守恒的 oracle；等价排印折算后守恒及纯标点差异不构成内容
+    差异。三类均以视觉复核结论为准，仅数字、字母词与编号幻觉保留人工核对。
+    """
+    ocr, native = str(ocr), str(native)
+    if not native.strip() or native_evidence_garbled(native):
+        return ""
+    if _DISPLAY_MATH_COMMAND.search(ocr) or _MATH_SYMBOL_RUN.search(native):
+        return ""
+    surplus = visible_surplus(fold_equivalent_typography(ocr), fold_equivalent_typography(native))
+    if surplus and not any(ch.isalnum() for ch in surplus):
+        return ""
+    return surplus
 
 
 def proven_representation_equivalent(left: str, right: str) -> bool:

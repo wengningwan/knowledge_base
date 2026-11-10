@@ -133,6 +133,7 @@
           :source-sha256="contentState.source_sha256"
           :has-indexes="['indexed', 'done', 'error_indexing'].includes(file.status) || chunkCount > 0"
           :save-review="canManage ? saveReview : null"
+          :pdf-url="reviewPdfUrl"
         />
       </KeepAlive>
     </div>
@@ -151,7 +152,7 @@ import { getWorkspaceKnowledgeFileContent } from '@/apis/workspace_api'
 import { getPreviewTypeByPath, normalizePreviewResponse } from '@/utils/file_preview'
 import { parseDownloadFilename } from '@/utils/file_utils'
 import { inlineKnowledgeImages } from '@/utils/markdown_export'
-import { groupDocumentReviews } from '@/utils/documentReview'
+import { clusterDocumentReviewGroups, groupDocumentReviews } from '@/utils/documentReview'
 import {
   canPreviewChunks,
   canPreviewOriginal,
@@ -217,7 +218,9 @@ const saveReview = async (changes) => {
   const result = await documentApi.confirmDocumentReview(kbId, fileId, changes)
   if (!props.open || sequence !== basicRequestSeq || kbId !== String(props.kbId) || fileId !== String(props.fileId)) return
   emit('review-saved')
-  message.success(result.index_invalidated ? '已同步到 Markdown，旧索引已清理，请重新入库。' : '已确认并同步到 Markdown。')
+  message.success(result.content_changed
+    ? (result.index_invalidated ? '已同步到 Markdown，旧索引已清理，请重新入库。' : '已确认并同步到 Markdown。')
+    : '已确认。')
   // 指针已发布，先废弃旧正文，不能因后续信息读取失败继续提供旧版下载。
   await parseLoader.refresh()
   if (!props.open || sequence !== basicRequestSeq) return
@@ -333,6 +336,10 @@ const sourcePreviewFile = computed(() => {
   }
 })
 const hasSourcePreview = computed(() => canPreviewOriginal(file.value))
+/** 校对视图的原文页定位只复用文件详情既有的授权预览路径，不另开访问入口。 */
+const reviewPdfUrl = computed(() =>
+  hasSourcePreview.value && sourcePreviewCandidateType.value === 'pdf' ? sourcePreview.value.url : ''
+)
 const hasMarkdownPreview = computed(() => canPreviewParsed(file.value) || hasContent.value)
 const hasChunkPreview = computed(() => canPreviewChunks(file.value))
 const availableViewModes = computed(() => {
@@ -452,7 +459,10 @@ watch(
 watch(
   [visible, file, viewMode],
   async ([open, currentFile, currentViewMode]) => {
-    if (!open || !currentFile || !hasSourcePreview.value || currentViewMode !== 'source') {
+    // 校对面板的原文页定位复用同一授权预览路径：PDF 文件的校对视图也需预载源预览
+    const needsSourcePreview = open && currentFile && hasSourcePreview.value &&
+      (currentViewMode === 'source' || (currentViewMode === 'review' && sourcePreviewCandidateType.value === 'pdf'))
+    if (!needsSourcePreview) {
       if (!open || !hasSourcePreview.value) {
         resetSourcePreview()
       }
@@ -472,7 +482,12 @@ const chunkCount = computed(
 )
 const viewInfoText = computed(() => {
   if (viewMode.value === 'figures') return assetsState.value.loading ? '' : `${assetsState.value.figures.length} 张图片`
-  if (viewMode.value === 'review') return assetsState.value.loading ? '' : `${groupDocumentReviews(assetsState.value.reviews).length} 个问题`
+  if (viewMode.value === 'review') {
+    if (assetsState.value.loading) return ''
+    // 统计改簇口径：重复问题归并后待确认按类计数，处数为簇内未确认总数。
+    const clusters = clusterDocumentReviewGroups(groupDocumentReviews(assetsState.value.reviews))
+    return `待确认 ${clusters.length} 类 · 共 ${clusters.reduce((total, cluster) => total + cluster.count, 0)} 处`
+  }
   if (viewMode.value === 'chunks') {
     if (contentState.value.loading) return ''
     return `${chunkCount.value} 个片段`

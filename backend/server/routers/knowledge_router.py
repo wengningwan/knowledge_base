@@ -4,12 +4,12 @@ import os
 import textwrap
 import time
 import traceback
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from starlette.responses import StreamingResponse
 from yuxi.config.options import system_options
 from yuxi.knowledge.base import KBNameConflictError, KBNotFoundError
@@ -93,15 +93,30 @@ class ParseDocumentsRequest(BaseModel):
 
 
 class ConfirmDocumentReviewRequest(BaseModel):
-    """携带当前快照及人工明确选择的正文操作。"""
+    """携带当前快照及人工明确选择的正文操作；单条与批量恰好提供一种定位。"""
 
     attempt_id: str = Field(pattern=r"^[A-Za-z0-9_-]+$", max_length=128)
     review_revision: str | None = Field(default=None, max_length=128)
     source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    review_index: int = Field(ge=0)
+    review_index: int | None = Field(default=None, ge=0)
+    review_indexes: list[Annotated[int, Field(ge=0)]] | None = Field(default=None, max_length=5000)
     action: Literal["keep", "replace", "insert_after"]
     content: str = Field(default="", max_length=200_000)
     anchor_block_id: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _confirm_target_is_exclusive(self):
+        """结构契约在路由层一次判全：定位互斥、批量非空无重复、批量仅保留正文。"""
+        if (self.review_index is None) == (self.review_indexes is None):
+            raise ValueError("review_index 与 review_indexes 必须恰好提供一个")
+        if self.review_indexes is not None:
+            if not self.review_indexes:
+                raise ValueError("review_indexes 不能为空列表")
+            if len(set(self.review_indexes)) != len(self.review_indexes):
+                raise ValueError("review_indexes 含重复项")
+            if self.action != "keep" or self.content or self.anchor_block_id:
+                raise ValueError("批量确认仅支持保留正文（keep），不接受正文修改参数")
+        return self
 
 
 class PendingParseDocumentsRequest(BaseModel):

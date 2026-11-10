@@ -35,6 +35,24 @@
     </div>
 
     <div class="settings-panel">
+      <div class="settings-switch-row">
+        <div class="setting-label">{{ items?.default_document_review_vision_final_authority?.des || '正文校对视觉终裁与自动处置' }}</div>
+        <a-switch
+          :checked="Boolean(configStore.config?.default_document_review_vision_final_authority)"
+          checked-children="自动应用"
+          un-checked-children="人工确认"
+          @change="configStore.setConfigValue('default_document_review_vision_final_authority', $event)"
+        />
+      </div>
+      <p class="section-description">
+        开启后：排版级差异（标点/空白，内容不变）自动放行；替换型修正在 PDF 直读字符层证真后自动应用；
+        无证据的模型修改自动保留 OCR 现状不占人工；引用标记误插自动清理；结构类差异按影响分级保留
+        （公式碎片簇转人工）；模型确认无差异但文字层证出唯一误插内容时自动删除；技术失败自动重试一轮。
+        关闭则以上全部转人工确认。默认关闭，保持人工确认闭环。
+      </p>
+    </div>
+
+    <div class="settings-panel">
       <div class="setting-label">文档模型请求并发数（每端点与模型共享）</div>
       <a-input-number v-model:value="modelConcurrency" :min="1" :precision="0" :disabled="savingConcurrency" />
       <a-button :loading="savingConcurrency" @click="saveConcurrency">保存</a-button>
@@ -246,6 +264,13 @@ onMounted(loadConfigOptions)
   color: var(--color-text-secondary);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.settings-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .option-list {
