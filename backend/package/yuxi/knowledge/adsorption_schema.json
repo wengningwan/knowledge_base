@@ -200,7 +200,7 @@
         "document_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "provenance_scope": {"type": "string"},
         "pdf_page": {"type": "integer", "minimum": 1},
-        "printed_page": {"type": "integer", "minimum": 1},
+        "printed_page": {"type": ["integer", "null"], "minimum": 1},
         "section": {"type": "string"},
         "location": {"type": "string"},
         "quote_raw": {"type": "string"},

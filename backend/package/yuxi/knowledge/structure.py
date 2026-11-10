@@ -99,7 +99,8 @@ async def extract_adsorption_record(
     registry, registry_notices = await extract(
         "registry",
         ("document", "chemical_entities", "material_identities", "sample_batches", "sample_states", "synthesis_routes"),
-        "document_id 使用输入编号，pdf_page_to_printed_page 返回空对象。pages 使用论文印刷页范围。"
+        "document_id 使用输入编号，pdf_page_to_printed_page 返回空对象。"
+        "pages 保留原文的期刊页范围或文章编号，未报告时返回空字符串，不按 PDF 页数猜测。"
         "可从 pdf_first_page 读取题录。日期使用 YYYY-MM-DD，doi 保留原文 DOI 编号。"
         "为不同材料、样品状态、路线、操作和试剂使用建立互不重复的编号。"
         "表格中的每个已命名样品独立登记，制备路线按步骤和顺序拆分。"
@@ -115,12 +116,12 @@ async def extract_adsorption_record(
     ))
     if not document["title"].strip() or any(_compact(document[key]) not in first_page for key in ("title", "doi")):
         raise ValueError("规范 JSON 的论文标题或 DOI 无法在原 PDF 首页核对")
-    printed_pages = _printed_pages(document, pages, page_labels)
+    printed_pages = _printed_pages(document, pages, page_labels, notices)
     document["pdf_page_to_printed_page"] = printed_pages
     record["evidence"] = [
         {
             "evidence_id": ref, "document_id": document_id, "provenance_scope": "this_work",
-            "pdf_page": item["page"], "printed_page": printed_pages[str(item["page"])],
+            "pdf_page": item["page"], "printed_page": printed_pages.get(str(item["page"])),
             "section": item["section"], "location": item["location"],
             "quote_raw": item["quote"], "extraction_origin": item["origin"],
         }
@@ -220,10 +221,11 @@ async def extract_adsorption_record(
         if "record_id" in item:
             used.add(item["record_id"])
     record["evidence"] = [item for item in record["evidence"] if item["evidence_id"] in used]
-    record["validation_issues"].extend(
-        {"issue_id": f"issue:filtered:{uuid4().hex}", "severity": "warning", "issue_type": kind, "message": message}
-        for kind, message in notices
-    )
+    for kind, message in notices:
+        scope = "pagination" if kind in {"printed_page_conflict", "unverified_printed_pages"} else "filtered"
+        record["validation_issues"].append({
+            "issue_id": f"issue:{scope}:{uuid4().hex}", "severity": "warning", "issue_type": kind, "message": message,
+        })
     partial_result = partial_source or bool(notices)
     record["quality_summary"] = _quality_summary(record, partial_result=partial_result)
     validate_shape(record, output_schema())
@@ -337,8 +339,8 @@ def _pdf_pages(content: bytes) -> tuple[list[str], dict[str, int]]:
     return [page.extract_text() for page in pdf.pages], labels
 
 
-def _printed_pages(document: dict, pages: list[str], labels: dict[str, int]) -> dict[str, int]:
-    """只使用 PDF 页标或首页明确覆盖整份 PDF 的连续期刊页范围。"""
+def _printed_pages(document: dict, pages: list[str], labels: dict[str, int], notices: list[Notice]) -> dict[str, int]:
+    """保留可核对的数字印刷页码，并报告冲突或缺失的映射。"""
     page_range = re.fullmatch(r"\s*(\d+)\s*[-–—]\s*(\d+)\s*", document["pages"])
     if page_range and pages:
         first, last = map(int, page_range.groups())
@@ -350,9 +352,16 @@ def _printed_pages(document: dict, pages: list[str], labels: dict[str, int]) -> 
             inferred = {str(i): first + i - 1 for i in range(1, len(pages) + 1)}
             if not any(inferred.get(key) != value for key, value in labels.items()):
                 return inferred
-    if len(labels) == len(pages) and labels:
-        return labels
-    raise ValueError("原 PDF 缺少可核对的印刷页标或完整期刊页范围，无法生成规范 JSON")
+            notices.append((
+                "printed_page_conflict", "PDF 页标与首页期刊页范围不一致，已保留明确页标，不按该范围补齐印刷页码。",
+            ))
+    missing = len(pages) - len(labels)
+    if missing:
+        notices.append((
+            "unverified_printed_pages",
+            f"原 PDF 有 {missing} 页缺少可核对的数字印刷页码，相关 printed_page 为 null，请按 PDF 页码核对出处。",
+        ))
+    return labels
 
 
 def _source_index(markdown: str, sections, assets: dict | None, pages: list[str]) -> dict[str, dict]:

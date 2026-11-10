@@ -10,7 +10,7 @@ from importlib.resources import files
 from jsonschema import Draft202012Validator
 
 STRUCTURE_VERSION = 2
-STRUCTURE_PROMPT_VERSION = "adsorption-canonical-v2"
+STRUCTURE_PROMPT_VERSION = "adsorption-canonical-v3"
 REGISTRIES = {
     "evidence": "evidence_id",
     "chemical_entities": "entity_id",

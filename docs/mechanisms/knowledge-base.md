@@ -123,7 +123,7 @@ PDF模型执行模块对同端点/模型使用Redis原子计数和持有者续�
 
 PDF 使用 `paper` 策略完成分块和向量入库时，[结构化用例](../../backend/package/yuxi/services/knowledge_structure_service.py)在同一 PostgreSQL 事务发布文件 `indexed` 状态和 `knowledge_structure` Task 意图，提交后投递；pending publisher 负责补发。自动入库和单独入库共用这个接续点。原文索引与卡片生成是两个阶段，文件 `indexed` 只表示原文可检索。
 
-[抽取模块](../../backend/package/yuxi/knowledge/structure.py)从冻结 Markdown 和原 PDF 生成 `adsorption-separation-canonical` 机器 JSON。模型按论文和样品登记、实验和曲线、观测、缺失和冲突分阶段提取。程序从同次解析块或与原件逐字对应的正文回填出处和 PDF 页码。印刷页码使用原件页标或与原件首面一致且覆盖全文的期刊页范围。原文无法定位时，覆盖范围记为部分。图像曲线点保持未提取。
+[抽取模块](../../backend/package/yuxi/knowledge/structure.py)从冻结 Markdown 和原 PDF 生成 `adsorption-separation-canonical` 机器 JSON。模型按论文和样品登记、实验和曲线、观测、缺失和冲突分阶段提取。程序从同次解析块或与原件逐字对应的正文回填出处和 PDF 物理页码。印刷页码使用原件数字页标或与原件首面一致、覆盖全文且与页标无冲突的期刊页范围。缺少可核对的数字印刷页码时，映射仅保留已知页标，证据的 `printed_page` 为 `null`，并在 `validation_issues` 中记录缺失说明；范围与页标冲突时记录冲突，保留明确页标。原文无法定位或存在未知印刷页码时，结果标记为部分完成。图像曲线点保持未提取。页码取舍及人工验收见[印刷页码提案](../develop-guides/decisions/proposed/2026-11-10-experiment-optional-printed-pages.md)。
 
 [JSON Schema](../../backend/package/yuxi/knowledge/adsorption_schema.json)约束根字段、嵌套字段、数据类型和允许的记录变体。阶段响应无法读取时重试一次。个别记录格式、出处或引用有问题时，保留可核对的记录，剔除有问题的记录及缺少依赖的条目，并将原因写入 `validation_issues`。同条观测的独立结果可以分别保留。最终 JSON 校验完整字段契约和引用关系。题录或 PDF 页码无法核对、模型请求失败、无法形成合法 JSON 或没有有效观测及制备步骤时，Task 和 revision 明确失败，原文索引保留。模型请求通过[文档模型共享额度](../advanced/document-processing.md#完整复核与模型并发)准入，记录请求阶段、等待时间、耗时和供应商用量。
 

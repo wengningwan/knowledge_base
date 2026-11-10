@@ -7,7 +7,7 @@
     <a-alert v-if="error" type="error" show-icon :message="error" />
     <template v-if="snapshot">
       <a-alert
-        v-if="snapshot.status === 'draft' && !snapshot.canonical_available && snapshot.coverage?.partial_result"
+        v-if="snapshot.status === 'draft' && snapshot.coverage?.partial_result"
         type="warning"
         show-icon
         message="部分完成"

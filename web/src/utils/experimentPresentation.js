@@ -40,6 +40,7 @@ const labels = {
   atmosphere: '气氛', atmosphere_streams: '气体与流量', endpoint: '终点',
   repeat_qualifier: '重复次数', temperature_qualifier: '温度描述', pressure_qualifier: '压力描述',
   invalid_record_shape: '记录格式问题', invalid_record_reference: '编号引用问题',
+  printed_page_conflict: '印刷页码有冲突', unverified_printed_pages: '印刷页码未核对',
   unverified_observation: '观测需要核对', ambiguous_peak_assignment: '峰归属有疑点',
   comparison_basis_mismatch: '比较基准不同', interpretation_scope_tension: '解释范围有差异',
   sign_convention_ambiguity: '符号定义有疑点', suspected_unit_error: '单位疑点'
