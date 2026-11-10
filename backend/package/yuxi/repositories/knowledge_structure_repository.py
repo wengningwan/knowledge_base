@@ -6,6 +6,7 @@ import asyncio
 
 from sqlalchemy import select
 
+from yuxi.knowledge.adsorption_contract import STRUCTURE_PROMPT_VERSION, STRUCTURE_VERSION
 from yuxi.permissions import ResourcePermission, require_knowledge_base_permission
 from yuxi.storage.postgres.models_business import User
 from yuxi.storage.postgres.models_knowledge import (
@@ -76,7 +77,7 @@ class KnowledgeStructureRepository:
             revision_id=task_id, task_id=task_id, kb_id=file.kb_id, file_id=file.file_id,
             markdown_file=file.markdown_file, parse_assets_file=file.parse_assets_file,
             source_sha256=source_sha256, model_spec=model_spec, operator_id=operator_id,
-            status="pending", schema_version=1, prompt_version="chemical-draft-v1",
+            status="pending", schema_version=STRUCTURE_VERSION, prompt_version=STRUCTURE_PROMPT_VERSION,
         )
         session.add(record)
         await session.flush()
@@ -118,7 +119,7 @@ class KnowledgeStructureRepository:
         session.add_all(KnowledgeExperimentCard(
             revision_id=task_id, card_index=index, content=card,
         ) for index, card in enumerate(result["cards"]))
-        revision.coverage = result["coverage"]
+        revision.coverage = {**result["coverage"], "canonical": result["canonical"]}
         revision.schema_version = result["schema_version"]
         revision.prompt_version = result["prompt_version"]
         revision.updated_at = utc_now()
@@ -129,7 +130,11 @@ class KnowledgeStructureRepository:
         revision, _file = await self.require_input(
             session, task_id=task.id, uid=task.payload["operator_id"], lock=True,
         )
-        if result.get("revision_id") != revision.revision_id or revision.coverage is None:
+        if (
+            result.get("revision_id") != revision.revision_id
+            or revision.schema_version != STRUCTURE_VERSION
+            or not (revision.coverage or {}).get("canonical")
+        ):
             raise ValueError("实验任务没有保存完整抽取结果")
         revision.status = "draft"
         revision.updated_at = utc_now()

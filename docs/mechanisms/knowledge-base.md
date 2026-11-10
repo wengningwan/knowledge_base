@@ -121,27 +121,19 @@ PDF模型执行模块对同端点/模型使用Redis原子计数和持有者续�
 
 ## 实验卡片机器草稿
 
-`paper` 策略的原文分块和向量入库成功时，[结构化用例](../../backend/package/yuxi/services/knowledge_structure_service.py)在同一 PostgreSQL 事务发布文件 `indexed` 状态和 `knowledge_structure` Task 意图，提交后投递；pending publisher 负责补发。自动入库和单独入库共用这个接续点。其他策略不自动调用实验抽取模型。原文索引与卡片生成是两个阶段，文件 `indexed` 只表示原文可检索。
+PDF 使用 `paper` 策略完成分块和向量入库时，[结构化用例](../../backend/package/yuxi/services/knowledge_structure_service.py)在同一 PostgreSQL 事务发布文件 `indexed` 状态和 `knowledge_structure` Task 意图，提交后投递；pending publisher 负责补发。自动入库和单独入库共用这个接续点。原文索引与卡片生成是两个阶段，文件 `indexed` 只表示原文可检索。
 
-[抽取模块](../../backend/package/yuxi/knowledge/structure.py)从冻结版本的 Markdown 按段落和完整表格分批生成实验记录。模型直接返回带原文引用的制备步骤或测量，程序校验同一原文块中的样品和字段，回填原文及 Unicode 字符范围，再按样品名称合并卡片。明确标记的方法或结果章节存在时，抽取范围排除引言、参考文献和出版附属栏目。超出输入上限时明确失败。设计取舍及验收见[完整实验记录提案](../develop-guides/decisions/proposed/2026-11-09-experiment-record-first-extraction.md)。
+[抽取模块](../../backend/package/yuxi/knowledge/structure.py)从冻结 Markdown 和原 PDF 生成 `adsorption-separation-canonical` 机器 JSON。模型按论文和样品登记、实验和曲线、观测、缺失和冲突分阶段提取。程序从同次解析块或与原件逐字对应的正文回填出处和 PDF 页码。印刷页码使用原件页标或与原件首面一致且覆盖全文的期刊页范围。原文无法定位时，覆盖范围记为部分。图像曲线点保持未提取。
 
-正文的数值编号覆盖可识别的完整单位，包括字面的单位指数和复合单位。模型引用可唯一定位的数值前缀时，按原文回填完整取值。单位边界无法确认的短前缀不入卡。设计和人工验收见[原文取值与出处面板提案](../develop-guides/decisions/proposed/2026-11-09-experiment-source-reading-and-unit-spans.md)。
+[JSON Schema](../../backend/package/yuxi/knowledge/adsorption_schema.json)约束根字段、嵌套字段、数据类型和允许的记录变体。阶段响应无法读取时重试一次。个别记录格式、出处或引用有问题时，保留可核对的记录，剔除有问题的记录及缺少依赖的条目，并将原因写入 `validation_issues`。同条观测的独立结果可以分别保留。最终 JSON 校验完整字段契约和引用关系。题录或 PDF 页码无法核对、模型请求失败、无法形成合法 JSON 或没有有效观测及制备步骤时，Task 和 revision 明确失败，原文索引保留。模型请求通过[文档模型共享额度](../advanced/document-processing.md#完整复核与模型并发)准入，记录请求阶段、等待时间、耗时和供应商用量。
 
-结构化批次复用[文档模型请求并发配置](../advanced/document-processing.md#完整复核与模型并发)。Worker 按配置并发请求，按原文批次顺序核验证据和归并卡片。调用日志分别记录等待共享额度的 `queue_ms` 和实际调用的 `duration_ms`。
-
-简单矩形 Markdown 和 HTML 表格使用[单元格坐标](../../backend/package/yuxi/knowledge/structure_tables.py)。表格测量的结果须处在样品标签与指标表头的交点，表格条件须来自同一次测量所在的样品行或列。字段出处保留完整表格和原文单元格。无法校验归属的取值及表格制备事实可在未归属区查看。重新 Paper 入库可将旧抽取版本的草稿更新为当前版本。人工案例见[表格单元格证据提案](../develop-guides/decisions/proposed/2026-11-09-experiment-table-cell-evidence.md)。
-
-知识库须显式配置本地聊天模型。单条记录失败时其他通过校验的记录仍可入卡，已找到出处的条件和结果留在候选区。批次响应在正文上限内按条校验，模型报告省略记录或连续两次响应校验失败时标记该批未完成。模型缺失、请求失败、抽取异常且无可核对事实时，Task 与对应 revision 明确记录失败，原文索引保留。Worker 的 `experiment_cards_model` 日志逐次记录阶段、模型、耗时、估算输入 token 与供应商实际 token 用量。批次记录日志包含原文行范围、模型返回条数、成型记录数和拒绝原因分类。验收见[实验批次响应容量提案](../develop-guides/decisions/proposed/2026-11-09-experiment-batch-output-limits.md)。
-
-机器草稿保存在独立 revision、evidence 与 card 表，成功和失败状态随 Task 终态同事务发布。Task 执行和保存前核对当前操作者权限、文档归属、正文版本与 lease；正文更新后，旧草稿在读取时显示失效。
-
-文件详情中的“实验卡片”包含样品卡和逐条审核两个视图。样品卡按样品展示制备和测量记录，审核队列保留带字段上下文的候选记录和独立的未归属片段。选择记录后，右侧出处单独滚动，并可用黄色标记引文中的结果、指标、样品或方法。
+机器 JSON 与样品卡和原文证据随同一 revision 保存，Task 终态发布后才能读取。Task 执行和保存核对操作者权限、文档归属、正文版本与 lease。文件详情的“实验卡片”提供“下载结构化 JSON”。结果覆盖不完整或有候选被剔除时，页面显示“部分完成”并提供下载。下载读取当前已发布版本的 JSON 根对象，校验请求的 revision 和正文指纹。样品卡和出处由机器 JSON 及冻结正文投影，选择卡片记录可定位原文。
 
 read 权限可查看，manage 权限可新增、修改、确认和排除单条记录，也可重试当前失败或取消版本。人工审核随当前正文版本保存，原机器记录独立保留。确认要求从当前草稿选择出处，人工核对后提交，并校验样品及操作或结果能在所选引文中定位。实验卡片审核用于文件详情中的数据整理，正式问答接入属于独立流程。验收及负向案例见[逐条审核工作台提案](../develop-guides/decisions/proposed/2026-11-09-experiment-record-review-workspace.md)。
 
 管理者手动入库时，实验任务可使用尚有校对待办的已发布正文。上传后自动入库仍由解析结果的校对状态决定是否继续。
 
-knowledge schema 4→5 只由 `storage-migrator` 创建三个结构化表。已有文件不会批量补抽，使用 Paper 重新入库后自动生成；正文未变化且同模型已有进行中任务或完整草稿时复用，不重复调用模型。部署电脑仍需回读 PostgreSQL、Task、对应 Markdown 和页面，验证真实模型、权限、取消、失联与并发语义。
+knowledge schema 4→5 只由 `storage-migrator` 创建三个结构化表。旧卡片仍可查看与审核。已有 PDF 使用 Paper 重新入库生成当前版本，正文和模型一致的进行中任务或当前格式草稿可以复用。其他文件类型保留原文索引。部署电脑仍需回读 PostgreSQL、Task、对应 Markdown 和下载 JSON，验证模型输出、权限、取消与版本冲突。
 
 ## Agent 如何看到知识库
 

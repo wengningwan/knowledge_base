@@ -1,9 +1,27 @@
 <template>
   <div class="experiment-panel" :class="{ 'is-draft': snapshot?.status === 'draft' }">
-    <div class="experiment-toolbar">实验卡片</div>
+    <div class="experiment-toolbar">
+      <span>实验卡片</span>
+      <a-button v-if="snapshot?.canonical_available" size="small" :loading="downloading" @click="downloadJson">
+        下载结构化 JSON
+      </a-button>
+    </div>
     <a-spin v-if="loading && !snapshot" tip="正在读取实验卡片…" />
     <a-alert v-if="error" type="error" show-icon :message="error" />
     <template v-if="snapshot">
+      <a-alert
+        v-if="snapshot.status === 'draft' && snapshot.coverage?.partial_result"
+        type="warning"
+        show-icon
+        message="部分完成"
+        :description="snapshot.message"
+      />
+      <a-alert
+        v-else-if="snapshot.canonical_available && !snapshot.review?.records?.length"
+        type="info"
+        show-icon
+        :message="snapshot.message"
+      />
       <ExperimentReviewWorkspace
         v-if="snapshot.status === 'draft'"
         :key="snapshot.revision_id"
@@ -35,6 +53,7 @@ const props = defineProps({
 const snapshot = ref(null)
 const loading = ref(false)
 const retrying = ref(false)
+const downloading = ref(false)
 const error = ref('')
 let sequence = 0
 let retrySequence = 0
@@ -113,10 +132,33 @@ const retry = async () => {
   }
 }
 
+/** 下载与当前页面同版本的规范 JSON。 */
+const downloadJson = async () => {
+  const revisionId = snapshot.value.revision_id
+  downloading.value = true
+  error.value = ''
+  try {
+    const record = await documentApi.getExperimentJson(String(props.kbId), String(props.fileId), revisionId)
+    if (disposed || snapshot.value?.revision_id !== revisionId) return
+    const blob = new Blob([JSON.stringify(record, null, 2) + '\n'], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `adsorption-${props.fileId}.json`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (cause) {
+    if (!disposed && snapshot.value?.revision_id === revisionId) error.value = cause.message || '结构化 JSON 下载失败。'
+  } finally {
+    if (!disposed && snapshot.value?.revision_id === revisionId) downloading.value = false
+  }
+}
+
 watch(() => [props.kbId, props.fileId], () => {
   retrySequence += 1
   snapshot.value = null
   retrying.value = false
+  downloading.value = false
   refresh()
 }, { immediate: true })
 
@@ -131,6 +173,6 @@ onBeforeUnmount(() => {
 <style scoped lang="less">
 .experiment-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: auto; padding: 16px; color: var(--color-text); }
 .experiment-panel.is-draft { overflow: hidden; }
-.experiment-toolbar { flex-shrink: 0; margin-bottom: 12px; font-weight: 600; }
+.experiment-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; font-weight: 600; }
 .experiment-panel > :deep(.ant-alert) { margin-bottom: 12px; }
 </style>

@@ -18,6 +18,10 @@ class PdfModelUnavailable(Exception):
     """配置或共享准入不可用，调用方保留未完成状态。"""
 
 
+class InvalidPdfModelResponse(ValueError):
+    """供应商返回了不可作为文本读取的响应。"""
+
+
 @dataclass(frozen=True)
 class PdfModelResponse:
     """模型文本和服务报告用量，内容校验之前即可计量。"""
@@ -174,7 +178,7 @@ class PdfModelExecutor:
                 call_s = time.monotonic() - started
                 logger.info(f"{prefix} response_received output_chars={len(content) if isinstance(content, str) else 0} usage={json.dumps(usage, sort_keys=True)} call_s={call_s:.2f}")
                 if not isinstance(content, str):
-                    raise ValueError("invalid_response_content")
+                    raise InvalidPdfModelResponse("invalid_response_content")
                 return PdfModelResponse(content, usage, request_id, queue_s, call_s)
             except BaseException as exc:
                 self.failed_requests += 1

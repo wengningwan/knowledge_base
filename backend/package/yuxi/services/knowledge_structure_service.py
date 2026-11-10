@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+from yuxi.knowledge.adsorption_contract import STRUCTURE_PROMPT_VERSION, STRUCTURE_VERSION, output_schema
 from yuxi.knowledge.chunking.source import source_sha256
 from yuxi.knowledge.experiment_review import (
     ExperimentReviewRequest,
@@ -16,6 +17,7 @@ from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
 from yuxi.repositories.knowledge_structure_repository import (
     KnowledgeStructureRepository,
     StructureConflictError,
+    StructureNotFoundError,
 )
 from yuxi.repositories.task_repository import TaskRepository
 from yuxi.services.task_service import TaskContext, tasker
@@ -73,7 +75,10 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
             if revision is None:
                 return {
                     "status": "not_generated", "cards": [], "evidence": [],
-                    "message": "Paper 分块入库成功后自动生成实验草稿；已有文档可重新入库。",
+                    "message": (
+                        "Paper 分块入库成功后自动生成实验草稿；已有文档可重新入库。"
+                        if _is_pdf_file(file) else "规范实验 JSON 需要可核对页码的 PDF 原件。"
+                    ),
                 }
             coverage = dict(revision.coverage or {})
             result = {
@@ -81,7 +86,8 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 "task_id": revision.task_id, "source_sha256": revision.source_sha256,
                 "model_spec": revision.model_spec,
                 "coverage": {
-                    key: value for key, value in coverage.items() if key not in {"manual_review", "review_candidates"}
+                    key: value for key, value in coverage.items()
+                    if key not in {"manual_review", "review_candidates", "canonical"}
                 },
                 "message": revision.error_message or "", "cards": [], "evidence": [],
                 "review_status": "machine_only",
@@ -95,12 +101,22 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 return result
             if revision.status == "draft":
                 result["cards"], result["evidence"] = await repo.read_result(session, revision)
+                result["canonical_available"] = revision.schema_version == STRUCTURE_VERSION and "canonical" in coverage
                 result["review"] = {
                     "version": coverage.get("manual_review", {}).get("version", 0),
                     "records": list(experiment_review_records(result["cards"], coverage).values()),
                 }
-                if not result["cards"]:
-                    result["message"] = "本次没有组装出带明确出处的实验记录。"
+                if coverage.get("partial_result"):
+                    count = coverage.get("validation_notice_count", 0)
+                    result["message"] = (
+                        f"已保留可核对的记录。下载 JSON 可查看 {count} 条校验说明。"
+                        if count else "已保留可核对的记录。部分正文无法定位到 PDF 页码。"
+                    )
+                elif not result["cards"]:
+                    result["message"] = (
+                        "已生成可下载的结构化 JSON，当前结果未归入样品卡。"
+                        if result["canonical_available"] else "本次没有组装出带明确出处的实验记录。"
+                    )
                 elif (revision.coverage or {}).get("source_coverage") == "partial":
                     result["message"] = "已保留完成组装的实验记录，部分内容仍缺少完整的取值或归属证据。"
                 else:
@@ -112,6 +128,28 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 else:
                     result.update(status=task.status, progress=task.progress, message=task.message or "等待生成实验草稿")
             return result
+
+
+async def read_experiment_json(kb_id, file_id, *, uid, revision_id):
+    """只下载与当前冻结正文一致、已完成发布的规范 JSON。"""
+    repo = KnowledgeStructureRepository()
+    async with KnowledgeFileRepository().lock_file_operation(kb_id, file_id):
+        async with pg_manager.get_async_session_context() as session:
+            file, _kb = await repo.require_file(
+                session, kb_id=kb_id, file_id=file_id, uid=uid, permission=ResourcePermission.READ,
+            )
+            revision = await repo.latest(session, kb_id=kb_id, file_id=file_id)
+            if revision is None or revision.status != "draft" or revision.schema_version != STRUCTURE_VERSION:
+                raise StructureNotFoundError("当前文档还没有可下载的规范 JSON")
+            if revision.revision_id != revision_id or file.markdown_file != revision.markdown_file:
+                raise StructureConflictError("实验草稿或正文已更新，请刷新后下载")
+            markdown = await _read_structure_markdown(revision.markdown_file, kb_id=kb_id, file_id=file_id)
+            if source_sha256(markdown) != revision.source_sha256:
+                raise StructureConflictError("正文内容已变化，请重新入库")
+            canonical = (revision.coverage or {}).get("canonical")
+            if not isinstance(canonical, dict):
+                raise StructureNotFoundError("当前文档还没有可下载的规范 JSON")
+            return {field: canonical[field] for field in output_schema()["required"]}
 
 
 async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentReviewRequest):
@@ -188,6 +226,8 @@ async def retry_experiment_cards(kb_id, file_id, *, uid, revision_id, expected_s
                 raise StructureConflictError("实验草稿或正文已变化，请刷新后重试")
             if file.status != "indexed":
                 raise StructureConflictError("请等待原文入库成功后重试")
+            if not _is_pdf_file(file):
+                raise ValueError("规范实验 JSON 需要可核对页码的 PDF 原件")
             markdown = await _read_structure_markdown(file.markdown_file, kb_id=kb_id, file_id=file_id)
             if source_sha256(markdown) != expected_source_sha256:
                 raise StructureConflictError("正文内容已变化，请重新入库")
@@ -201,7 +241,8 @@ async def retry_experiment_cards(kb_id, file_id, *, uid, revision_id, expected_s
 
 async def run_knowledge_structure(context):
     """从冻结正文分批抽取，只有有效 lease 可以保存草稿。"""
-    from yuxi.knowledge.structure import extract_experiment_cards
+    from yuxi.knowledge.runtime import knowledge_base
+    from yuxi.knowledge.structure import extract_adsorption_record
 
     repo = KnowledgeStructureRepository()
     control = StructureTaskControl(context)
@@ -218,8 +259,13 @@ async def run_knowledge_structure(context):
     if source_sha256(markdown) != revision.source_sha256:
         raise ValueError("冻结正文指纹不匹配，停止实验抽取")
     parse_assets = await _read_structure_assets(revision)
-    result = await extract_experiment_cards(
-        markdown, task_id=context.task_id, model_spec=revision.model_spec, parse_assets=parse_assets, control=control,
+    original = await knowledge_base.get_file_download(revision.kb_id, revision.file_id)
+    if b"%PDF-" not in original["content"][:1024]:
+        raise ValueError("规范吸附分离 JSON 需要 PDF 原件及可核对的期刊页码")
+    await control.check_cancelled()
+    result = await extract_adsorption_record(
+        markdown, pdf_content=original["content"], file_id=revision.file_id,
+        model_spec=revision.model_spec, parse_assets=parse_assets, control=control,
     )
     await control.check_cancelled()
     # 使用现有文件操作锁与 Task lease 事务，排除正文发布与迟到写入。
@@ -268,6 +314,8 @@ class StructureTaskControl:
 
 async def _create_structure_intent(session, *, file, model_spec, source_hash, operator_id, force=False):
     """在文件行锁内复用同版本结果，或原子创建新 Task 和草稿。"""
+    if not _is_pdf_file(file):
+        return None
     repo = KnowledgeStructureRepository()
     previous = await repo.latest(session, kb_id=file.kb_id, file_id=file.file_id)
     if (
@@ -276,11 +324,11 @@ async def _create_structure_intent(session, *, file, model_spec, source_hash, op
     ):
         if previous.status == "pending":
             return None
-        if previous.status == "draft":
-            from yuxi.knowledge.structure import STRUCTURE_PROMPT_VERSION
-
-            if previous.prompt_version == STRUCTURE_PROMPT_VERSION:
-                return None
+        if (
+            previous.status == "draft" and previous.schema_version == STRUCTURE_VERSION
+            and previous.prompt_version == STRUCTURE_PROMPT_VERSION
+        ):
+            return None
     task = await tasker.create_in_session(
         session, name=f"实验卡片：{file.filename}", task_type=TASK_TYPE,
         payload={"kb_id": file.kb_id, "file_id": file.file_id, "operator_id": operator_id},
@@ -290,6 +338,11 @@ async def _create_structure_intent(session, *, file, model_spec, source_hash, op
         source_sha256=source_hash, operator_id=operator_id,
     )
     return task
+
+
+def _is_pdf_file(file) -> bool:
+    """用知识文件登记的类型判断是否可安排 PDF 结构化任务。"""
+    return file.file_type == "pdf" or (not file.file_type and file.filename.lower().endswith(".pdf"))
 
 
 async def _publish_structure_task(task):

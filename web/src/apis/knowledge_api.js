@@ -244,6 +244,12 @@ export const documentApi = {
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards`)
   },
 
+  /** 读取指定草稿版本的规范机器 JSON。 */
+  getExperimentJson: async (kbId, docId, revisionId) => {
+    const query = buildQuery({ revision_id: revisionId })
+    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/json?${query}`)
+  },
+
   /** 保存当前草稿的一条人工审核记录。 */
   saveExperimentReview: async (kbId, docId, change) => {
     return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/review`, change)

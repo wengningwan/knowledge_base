@@ -2,12 +2,16 @@
   <div class="review-workspace">
     <div class="workspace-toolbar">
       <a-segmented v-model:value="mode" :options="views" :disabled="Boolean(editor)" @change="clearSelection" />
-      <span class="muted">{{ samples.length }} 张样品卡 · {{ usable.length }} 条实验记录 · {{ pending.length }} 条待核对</span>
+      <span class="muted">
+        {{ samples.length }} 张样品卡 · {{ usable.length }} 条实验记录
+        <template v-if="pending.length || !rejectedProposalCount"> · {{ pending.length }} 条待审核</template>
+        <template v-if="rejectedProposalCount"> · {{ rejectedProposalCount }} 条提案未通过校验</template>
+      </span>
       <a-button v-if="canManage" size="small" :disabled="Boolean(editor)" @click="editRecord()">新增记录</a-button>
     </div>
-    <details v-if="diagnostics.length" class="diagnostics">
+    <details v-if="incompleteBatchCount" class="diagnostics">
       <summary>生成详情</summary>
-      <span>{{ diagnostics.join(' · ') }}</span>
+      <span>{{ incompleteBatchCount }} 批提取未完成</span>
     </details>
     <p v-if="notice" class="review-notice" role="status">{{ notice }}</p>
     <div class="workspace-columns">
@@ -25,22 +29,23 @@
         <template v-else>
           <h3>审核队列</h3>
           <a-segmented v-model:value="queueMode" :options="queueOptions" :disabled="Boolean(editor)" @change="clearSelection" />
-          <a-select v-model:value="sampleFilter" :options="sampleOptions" :disabled="Boolean(editor)" aria-label="筛选样品" />
-          <a-select v-if="queueMode === 'pending'" v-model:value="issueFilter" :options="issueOptions" :disabled="Boolean(editor)" aria-label="筛选问题" />
+          <template v-if="queueRecords.length">
+            <a-select v-model:value="sampleFilter" :options="sampleOptions" :disabled="Boolean(editor)" aria-label="筛选样品" />
+            <a-select v-if="queueMode === 'pending'" v-model:value="issueFilter" :options="issueOptions" :disabled="Boolean(editor)" aria-label="筛选问题" />
+          </template>
           <button
             v-for="record in queue" :key="record.record_id" type="button" :disabled="Boolean(editor)"
-            :aria-pressed="record.record_id === activeRecord?.record_id" @click="chooseRecord(record)"
+            :aria-pressed="!fragment && record.record_id === activeRecord?.record_id" @click="chooseRecord(record)"
           >
             {{ record.sample || '样品待确定' }}
             <small>{{ record.metric || '指标待确定' }}</small>
           </button>
-          <p v-if="!queue.length" class="muted">当前筛选下没有记录。</p>
-          <details v-if="fragments.length && queueMode === 'pending'" class="fragments">
+          <details v-if="fragments.length && queueMode === 'pending'" :open="!pending.length" class="fragments">
             <summary>未归属片段 · {{ fragments.length }}</summary>
             <div v-for="fact in fragments" :key="fact.fact_id" class="fragment">
               <span>{{ fact.raw_text }}</span>
               <div class="fragment-actions">
-                <a-button type="link" size="small" :disabled="Boolean(editor)" @click="chooseFragment(fact)">出处</a-button>
+                <a-button type="link" size="small" :disabled="Boolean(editor)" @click="chooseFragment(fact)">查看出处</a-button>
                 <a-button v-if="canManage" type="link" size="small" :disabled="Boolean(editor)" @click="editRecord(null, fact)">整理为记录</a-button>
               </div>
             </div>
@@ -55,17 +60,25 @@
           <h3 class="section-title">实验记录</h3>
           <div class="record-table">
             <table>
-              <thead><tr><th>类别</th><th>操作或指标</th><th>测试条件</th><th>结果</th><th>出处</th></tr></thead>
+              <thead><tr><th class="record-kind">类别</th><th>操作或指标</th><th>测试条件</th><th>结果</th></tr></thead>
               <tbody>
                 <tr
                   v-for="record in sampleRecords" :key="record.record_id"
                   :class="{ selected: activeRecord?.record_id === record.record_id }"
                 >
-                  <td>{{ kindLabels[record.kind] }}</td>
-                  <td><strong>{{ record.metric || '待补充' }}</strong><small v-if="record.test">{{ record.test }}</small></td>
+                  <td class="record-kind">{{ kindLabels[record.kind] }}</td>
+                  <td class="record-metric">
+                    <button
+                      type="button" class="record-source" title="查看原文出处"
+                      :aria-pressed="activeRecord?.record_id === record.record_id"
+                      @click="chooseRecord(record, record.metric ? 'metric' : 'result')"
+                    >
+                      <strong>{{ record.metric || '待补充' }}</strong>
+                      <small v-if="record.test">{{ record.test }}</small>
+                    </button>
+                  </td>
                   <td>{{ record.conditions || '未记录' }}</td>
                   <td>{{ record.result || '—' }}</td>
-                  <td><a-button type="link" size="small" :disabled="Boolean(editor)" @click="chooseRecord(record)">查看出处</a-button></td>
                 </tr>
               </tbody>
             </table>
@@ -97,12 +110,18 @@
           <a-checkbox v-model:checked="editor.verified" class="section-title" :disabled="saving">已对照出处核对样品、条件及结果</a-checkbox>
           <a-alert v-if="error" type="error" :message="error" show-icon />
           <div class="record-actions">
-            <a-button :disabled="saving" @click="save('save')">保存为待核对</a-button>
+            <a-button :disabled="saving" @click="save('save')">保存为待审核</a-button>
             <a-button type="primary" :loading="saving" :disabled="!editor.verified" @click="save('confirm')">确认本条</a-button>
             <a-button
               v-if="editor.recordId && activeRecord?.status !== 'excluded'" danger :disabled="saving" @click="save('exclude')"
             >排除</a-button>
           </div>
+        </template>
+        <template v-else-if="fragment">
+          <h3>未归属片段</h3>
+          <p class="section-title">{{ fragment.raw_text }}</p>
+          <p v-if="canManage" class="muted section-title">先看右侧原文。能确定样品和实验内容时，可把这个片段整理为一条记录。</p>
+          <a-button v-if="canManage" size="small" class="section-title" @click="editRecord(null, fragment)">整理为记录</a-button>
         </template>
         <template v-else-if="activeRecord">
           <div class="record-heading">
@@ -117,9 +136,23 @@
             <div v-if="activeRecord.kind === 'measurement'"><dt>结果</dt><dd>{{ activeRecord.result || '待补充' }}</dd></div>
           </dl>
           <p v-if="activeRecord.issue" class="muted">{{ issueLabels[activeRecord.issue] }}</p>
+          <p v-if="canManage && activeRecord.status === 'pending'" class="muted section-title">
+            对照右侧原文，点「调整数据」补全、确认或排除这条记录。
+          </p>
           <a-button v-if="canManage" size="small" class="section-title" @click="editRecord(activeRecord)">调整数据</a-button>
         </template>
-        <p v-else-if="!activeSample || mode === 'review'" class="muted">从目录选择实验记录，或在待核对区整理原文片段。</p>
+        <template v-else-if="mode === 'review'">
+          <h3 v-if="queueRecords.length">没有符合筛选条件的记录</h3>
+          <h3 v-else-if="queueMode === 'processed'">暂无已处理记录</h3>
+          <template v-else>
+            <h3>当前没有待审核记录</h3>
+            <p v-if="fragments.length" class="muted section-title">
+              左侧还有 {{ fragments.length }} 个未归属片段，是尚未整理成实验记录的零散条件或结果。点「查看出处」对照原文。
+              <template v-if="canManage">能确定归属和含义的，可以点「整理为记录」。</template>
+            </p>
+          </template>
+        </template>
+        <p v-else class="muted">当前没有可查看的实验记录。</p>
       </section>
 
       <aside ref="evidenceScroll" class="workspace-column evidence-column" aria-label="原文出处">
@@ -128,7 +161,7 @@
           {{ activeRecord?.status === 'pending' || editor ? '拟归属样品' : '归属样品' }} <strong>{{ sourceSample }}</strong>
         </p>
         <a-segmented v-if="highlightOptions.length > 1 && sources.length" v-model:value="highlightField" :options="highlightOptions" size="small" />
-        <div v-if="!sources.length" class="muted section-title">选择记录或在编辑区添加出处。</div>
+        <div v-if="!sources.length" class="muted section-title">{{ editor ? '请在编辑区选择出处。' : '选择有出处的记录或片段后，这里会显示原文。' }}</div>
         <section v-for="source in sources" :key="source.evidence_id" class="source">
           <p class="muted">
             {{ source.evidence_id }} · Markdown 第 {{ source.line_start === source.line_end ? source.line_start : `${source.line_start}–${source.line_end}` }} 行
@@ -152,14 +185,14 @@ const props = defineProps({
 })
 
 const kindLabels = { preparation: '制备', measurement: '测量' }
-const statusLabels = { machine: '机器草稿', pending: '待核对', confirmed: '已确认', excluded: '已排除' }
+const statusLabels = { machine: '机器草稿', pending: '待审核', confirmed: '已确认', excluded: '已排除' }
 const issueLabels = {
   missing_evidence: '部分字段缺少可定位出处',
   different_source: '需要核对不同原文位置间的归属',
   table_preparation: '需要人工核对表格制备步骤',
   table_alignment: '样品或指标与表格行列未对齐'
 }
-const views = [{ label: '样品卡', value: 'samples' }, { label: '逐条审核', value: 'review' }]
+const views = [{ label: '样品卡', value: 'samples' }, { label: '待审核', value: 'review' }]
 const kindOptions = Object.entries(kindLabels).map(([value, label]) => ({ value, label }))
 const highlightLabels = { result: '结果', metric: '指标或操作', sample: '样品', test: '方法' }
 const records = computed(() => props.snapshot.review?.records || [])
@@ -182,7 +215,7 @@ const evidenceScroll = ref(null)
 const recordScroll = ref(null)
 
 const queueOptions = computed(() => [
-  { label: `待核对 ${pending.value.length}`, value: 'pending' },
+  { label: `待审核 ${pending.value.length}`, value: 'pending' },
   { label: `已处理 ${processed.value.length}`, value: 'processed' }
 ])
 const samples = computed(() => [...new Set(usable.value.map((record) => record.sample).filter(Boolean))])
@@ -206,13 +239,8 @@ const fragments = computed(() => {
   const used = new Set(records.value.map((record) => record.fragment_id).filter(Boolean))
   return (props.snapshot.coverage?.unassigned_facts || []).filter((fact) => !used.has(fact.fact_id))
 })
-const diagnostics = computed(() => {
-  const coverage = props.snapshot.coverage || {}
-  const details = []
-  if (coverage.rejected_relation_count) details.push(`${coverage.rejected_relation_count} 条模型提案未通过校验`)
-  if (coverage.incomplete_batches?.length) details.push(`${coverage.incomplete_batches.length} 批提取未完成`)
-  return details
-})
+const rejectedProposalCount = computed(() => props.snapshot.coverage?.rejected_relation_count || 0)
+const incompleteBatchCount = computed(() => props.snapshot.coverage?.incomplete_batches?.length || 0)
 const allSources = computed(() => [...(props.snapshot.evidence || [])].sort((left, right) =>
   left.line_start - right.line_start || left.line_end - right.line_end
 ))
@@ -258,11 +286,11 @@ const chooseSample = (sample) => {
   selectedSample.value = sample
 }
 
-const chooseRecord = (record) => {
+const chooseRecord = (record, field = 'result') => {
   editor.value = null
   fragment.value = null
   selectedId.value = record.record_id
-  highlightField.value = 'result'
+  highlightField.value = field
   error.value = ''
 }
 
@@ -309,7 +337,7 @@ const save = async (action) => {
       verified: current.verified
     })
     if (!record) return
-    notice.value = action === 'confirm' ? '本条记录已确认。' : action === 'exclude' ? '本条记录已排除。' : '已保存为待核对。'
+    notice.value = action === 'confirm' ? '本条记录已确认。' : action === 'exclude' ? '本条记录已排除。' : '已保存为待审核。'
     if (action === 'save') {
       mode.value = 'review'
       queueMode.value = 'pending'
@@ -350,6 +378,21 @@ small { display: block; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 7px 4px; text-align: start; vertical-align: top; border-bottom: 1px solid var(--gray-150); }
 th { font-size: 12px; white-space: nowrap; }
+.record-kind { width: 3.5rem; padding-inline: 8px; white-space: nowrap; }
+.record-metric { padding: 0; }
+.record-source {
+  display: block;
+  width: 100%;
+  padding: 7px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--main-color);
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.record-source:hover strong, .record-source:focus-visible strong { text-decoration: underline; }
 .record-heading { margin: 12px 0 8px; justify-content: space-between; }
 .record-facts, .edit-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
 dd { margin: 0; }

@@ -10,6 +10,7 @@ type CellPosition = tuple[int, int]
 _HTML_TABLE_TAG = re.compile(r"</?(?:table|thead|tbody|tfoot|tr|th|td)\b", re.I)
 _PIPE_DIVIDER = re.compile(r"\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*")
 _FOOTNOTE = re.compile(r"\[\^|[†‡]|\d\s*\*|<sup\b", re.I)
+_UNIT_POWER = re.compile(r"(?<=[A-Za-zµμÅ])\s*<sup\b[^>]*>\s*[+−-]?\d+\s*</sup\s*>", re.I)
 
 
 def table_cells(text: str, start: int, end: int) -> list[list[Span]] | None:
@@ -23,7 +24,7 @@ def table_cells(text: str, start: int, end: int) -> list[list[Span]] | None:
         return None
     if len(rows) < 2 or len(rows[0]) < 2 or any(len(row) != len(rows[0]) for row in rows):
         return []
-    if _FOOTNOTE.search(block):
+    if _FOOTNOTE.search(_UNIT_POWER.sub("", block)):
         return []
     return [[(start + left, start + right) for left, right in row] for row in rows]
 

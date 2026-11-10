@@ -1074,6 +1074,28 @@ async def get_document_experiment_cards(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@knowledge.get("/databases/{kb_id}/documents/{doc_id}/experiment-cards/json")
+async def download_document_experiment_json(
+    kb_id: str, doc_id: str, revision_id: str = Query(pattern=r"^[a-f0-9]{32}$"),
+    current_user: User = Depends(require_knowledge_base_read),
+):
+    """下载无外层包装的规范实验 JSON。"""
+    from yuxi.repositories.knowledge_structure_repository import StructureConflictError, StructureNotFoundError
+    from yuxi.services.knowledge_structure_service import read_experiment_json
+
+    await _ensure_database_supports_documents(kb_id, "实验 JSON 下载")
+    try:
+        return await read_experiment_json(kb_id, doc_id, uid=str(current_user.uid), revision_id=revision_id)
+    except StructureNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except StructureConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ResourcePermissionDenied as exc:
+        raise HTTPException(status_code=403, detail="无权读取该知识库的实验 JSON") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @knowledge.post("/databases/{kb_id}/documents/{doc_id}/experiment-cards/review")
 async def review_document_experiment_record(
     kb_id: str, doc_id: str, body: ExperimentReviewRequest,
