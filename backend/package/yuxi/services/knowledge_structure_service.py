@@ -253,6 +253,7 @@ async def run_knowledge_structure(context):
         )
     if not revision.model_spec:
         raise ValueError("请在知识库详情 → 配置 → 基础信息 → 知识库聊天模型中选择本地模型并保存，再重试实验卡片任务")
+    await control.set_progress(5, "读取冻结正文和 PDF 证据")
     markdown = await _read_structure_markdown(
         revision.markdown_file, kb_id=revision.kb_id, file_id=revision.file_id,
     )
@@ -308,8 +309,9 @@ class StructureTaskControl:
             )
 
     async def set_progress(self, progress, message):
-        """将阶段进度交给现有 Task 状态拥有者。"""
+        """同步 Task 和 Worker 日志中的真实阶段进度。"""
         await self.context.set_progress(progress, message)
+        logger.info("[knowledge_structure] task_id={} progress={}% {}", self.task_id, progress, message)
 
 
 async def _create_structure_intent(session, *, file, model_spec, source_hash, operator_id, force=False):

@@ -9,10 +9,12 @@ import re
 import unicodedata
 from collections import defaultdict
 from io import BytesIO
+from time import monotonic
 from uuid import uuid4
 
 from pypdf import PdfReader
 
+from yuxi.config.options import document_model_concurrency_policy
 from yuxi.knowledge.adsorption_contract import (
     REGISTRIES,
     STRUCTURE_PROMPT_VERSION,
@@ -30,8 +32,9 @@ from yuxi.knowledge.adsorption_review import filter_observation_values, project_
 from yuxi.knowledge.chunking.source import SourceDocument
 from yuxi.knowledge.structure_tables import Span
 from yuxi.models.chat import select_model
-from yuxi.services.pdf_model_execution import InvalidPdfModelResponse, PdfModelExecutor
+from yuxi.services.pdf_model_execution import InvalidPdfModelResponse, PdfModelExecutor, run_pdf_workers
 from yuxi.utils.datetime_utils import utc_now
+from yuxi.utils.logging_config import logger
 
 _OBSERVATION_GROUPS = (
     ("textural_properties", "qualitative_characterization", "spectral_peak_assignments",
@@ -84,19 +87,16 @@ async def extract_adsorption_record(
         if stage == "registry":
             payload["pdf_first_page"] = pages[0][:16_000]
         try:
-            result, stage_notices = await _request_stage(
+            return await _request_stage(
                 executor, control, stage, stage_schema(fields, observation_types), instruction, payload,
             )
         except _StageOutputError as error:
             if "document" in fields:
                 raise
-            notices.append(("unreadable_stage", str(error)))
-            return {field: [] for field in fields}
-        notices.extend(stage_notices)
-        return result
+            return {field: [] for field in fields}, [("unreadable_stage", str(error))]
 
     await control.set_progress(10, "抽取论文、化学实体、样品和制备路线")
-    record.update(await extract(
+    registry, registry_notices = await extract(
         "registry",
         ("document", "chemical_entities", "material_identities", "sample_batches", "sample_states", "synthesis_routes"),
         "document_id 使用输入编号，pdf_page_to_printed_page 返回空对象。pages 使用论文印刷页范围。"
@@ -104,7 +104,9 @@ async def extract_adsorption_record(
         "为不同材料、样品状态、路线、操作和试剂使用建立互不重复的编号。"
         "表格中的每个已命名样品独立登记，制备路线按步骤和顺序拆分。"
         "引用正文中对应的样品、原料及制备出处。",
-    ))
+    )
+    record.update(registry)
+    notices.extend(registry_notices)
     if record["document"]["document_id"] != document_id:
         raise ValueError("规范 JSON 的论文编号不属于当前文档")
     document = record["document"]
@@ -126,18 +128,28 @@ async def extract_adsorption_record(
     ]
 
     await control.set_progress(30, "抽取实验、条件和曲线登记")
-    record.update(await extract(
+    runs, run_notices = await extract(
         "runs", ("experiment_runs", "series_sets"),
         "分别登记测量、拟合、预测、推导和计算，不把推导结果当作实测。"
         "实验与曲线编号双向一致。曲线没有可见数表时 data_points 为 null，不估读曲线。",
         catalog=_catalog(record, "chemical_entities", "material_identities", "sample_states"),
-    ))
+    )
+    record.update(runs)
+    notices.extend(run_notices)
 
     observation_catalog = _catalog(
         record, "chemical_entities", "sample_states", "experiment_runs", "series_sets",
     )
-    for index, observation_types in enumerate(_OBSERVATION_GROUPS, start=1):
-        await control.set_progress(40 + index * 10, f"抽取实验观测 {index}/{len(_OBSERVATION_GROUPS)}")
+    group_count = len(_OBSERVATION_GROUPS)
+    async with document_model_concurrency_policy() as configured_concurrency:
+        concurrency = min(group_count, configured_concurrency)
+    await control.set_progress(40, f"抽取实验观测 0/{group_count} 组，并发上限 {concurrency}")
+    observation_results = {}
+    progress_lock = asyncio.Lock()
+
+    async def extract_observation_group(item):
+        """并发提取独立观测组，串行记录已处理组数。"""
+        index, observation_types = item
         result = await extract(
             f"observations-{index}", ("observations",),
             f"本阶段只提取这些观测类型：{', '.join(observation_types)}。"
@@ -150,11 +162,22 @@ async def extract_adsorption_record(
             "不同实验、样品、气体和条件的结果分开。",
             catalog=observation_catalog, observation_types=observation_types,
         )
+        async with progress_lock:
+            observation_results[index] = result
+            processed = len(observation_results)
+            await control.set_progress(
+                40 + processed * 10, f"已处理实验观测 {processed}/{group_count} 组，最近结束第 {index} 组",
+            )
+
+    await run_pdf_workers(enumerate(_OBSERVATION_GROUPS, 1), extract_observation_group, concurrency)
+    for index in range(1, group_count + 1):
+        result, group_notices = observation_results[index]
         record["observations"].extend(result["observations"])
+        notices.extend(group_notices)
     filter_record_references(record, notices)
 
     await control.set_progress(80, "核对机制、未报告信息和冲突")
-    record.update(await extract(
+    quality, quality_notices = await extract(
         "quality", ("mechanism_claims", "missing_information", "validation_issues"),
         "机制结论区分作者解释、背景资料与直接观测。指出缺失和冲突，引用已登记的编号。"
         "图像中未得到可引用数值的必填字段写入 missing_information，关联对应实验或曲线。"
@@ -163,7 +186,9 @@ async def extract_adsorption_record(
             record, "chemical_entities", "sample_states", "synthesis_routes", "experiment_runs",
             "series_sets", "observations",
         ),
-    ))
+    )
+    record.update(quality)
+    notices.extend(quality_notices)
     filter_record_references(record, notices)
     measurement_values = filter_observation_values(record, sources, markdown, notices)
     _record_missing_figure_values(record)
@@ -232,7 +257,7 @@ async def _request_stage(executor, control, stage, schema, instruction, payload)
     for attempt in (1, 2):
         await control.check_cancelled()
         try:
-            response = await executor.request(data, system_prompt=system, batch_id=stage, attempt=attempt)
+            response = await _await_model_response(executor, control, stage, attempt, data, system)
         except InvalidPdfModelResponse:
             content = None
         else:
@@ -257,6 +282,25 @@ async def _request_stage(executor, control, stage, schema, instruction, payload)
             problem = str(error)
         system += f"\n上次响应失败（{problem}），请按 Schema 重新生成本阶段的完整 JSON。"
     raise _StageOutputError(f"规范 JSON 的 {stage} 阶段两次校验失败。{problem}")
+
+
+async def _await_model_response(executor, control, stage, attempt, data, system):
+    """等待期间报告真实耗时，退出时等待模型请求释放额度。"""
+    request = asyncio.create_task(executor.request(data, system_prompt=system, batch_id=stage, attempt=attempt))
+    started = monotonic()
+    try:
+        while True:
+            done, _ = await asyncio.wait({request}, timeout=60)
+            if done:
+                return request.result()
+            logger.info(
+                "[knowledge_structure] task_id={} batch_id={} attempt={} model_pending elapsed_s={:.0f}",
+                control.task_id, stage, attempt, monotonic() - started,
+            )
+    finally:
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
 
 
 def _unique_object(pairs):
