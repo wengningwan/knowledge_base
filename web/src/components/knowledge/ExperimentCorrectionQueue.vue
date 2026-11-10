@@ -30,7 +30,6 @@
           <header><h3>{{ activeTask.resolution ? outcomeLabels[activeTask.resolution.outcome] : kindLabels[activeTask.kind] }}</h3><span>{{ queue.indexOf(activeTask) + 1 }} / {{ queue.length }}</span></header>
           <p v-if="activeTask.resolution?.outcome === 'checked'" class="correction-outcome">核对状态和所选出处已保存，原文和实验数据保留原值。</p>
           <p class="correction-reason">{{ activeTask.reason }}</p>
-          <a-button v-if="activeTask.kind === 'missing' && !recordingMissing && canManage" :disabled="saving" @click="recordingMissing = true">填写数据</a-button>
           <div v-if="showRecordFields" class="correction-fields">
             <label>样品<a-auto-complete v-model:value="fields.sample" :options="sampleOptions" :disabled="saving || !canManage" :filter-option="filterSample" placeholder="选择或填写样品名称" /></label>
             <label>指标或操作<a-input v-model:value="fields.metric" :maxlength="1000" :disabled="saving || !canManage" placeholder="待补充" /></label>
@@ -49,6 +48,7 @@
           <a-alert v-if="error" type="error" :message="error" show-icon />
           <p v-if="canManage && showRecordFields && !readyToSave" class="save-hint">补齐样品、指标或操作{{ fields.kind === 'measurement' ? '、结果' : '' }}，并选择出处后即可保存。</p>
           <div v-if="canManage" class="correction-actions">
+            <a-button v-if="activeTask.kind === 'missing' && !recordingMissing" :disabled="saving" @click="recordingMissing = true">填写数据</a-button>
             <a-button v-if="showRecordFields" type="primary" :loading="saving" :disabled="!readyToSave" @click="submit('save')">{{ activeTask.resolution ? '保存修改' : '保存并下一条' }}</a-button>
             <a-button v-if="activeTask.kind === 'source'" :loading="saving" :disabled="!selectedSources.length" @click="submit('resolve', 'checked')">{{ activeTask.resolution?.outcome === 'checked' ? '保存核对出处' : '完成核对，保留现状' }}</a-button>
             <a-button v-if="activeTask.kind === 'missing'" :type="recordingMissing ? 'default' : 'primary'" :disabled="saving" @click="submit('resolve', 'unreported')">原文未提供</a-button>

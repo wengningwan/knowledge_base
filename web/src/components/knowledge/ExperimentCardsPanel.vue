@@ -7,14 +7,7 @@
     <a-alert v-if="error" type="error" show-icon :message="error" />
     <template v-if="snapshot">
       <a-alert
-        v-if="snapshot.status === 'draft' && snapshot.coverage?.partial_result"
-        type="warning"
-        show-icon
-        message="部分完成"
-        :description="partialDescription"
-      />
-      <a-alert
-        v-else-if="!snapshot.canonical_available && snapshot.status === 'draft' && !snapshot.review?.records?.length"
+        v-if="!snapshot.canonical_available && snapshot.status === 'draft' && !snapshot.review?.records?.length"
         type="info"
         show-icon
         :message="snapshot.message"
@@ -74,11 +67,6 @@ let timer = null
 let disposed = false
 
 const active = computed(() => ['pending', 'running'].includes(snapshot.value?.status))
-const partialDescription = computed(() => {
-  const remaining = (snapshot.value?.review?.tasks || []).filter(task => !task.resolution).length
-  return remaining ? '已保留可用数据，还有 ' + remaining + ' 项待人工校对。' :
-    '已保留可用数据，当前没有可处理的人工待办。'
-})
 const canonicalRevisionId = computed(() => snapshot.value?.canonical_available ? snapshot.value.revision_id : '')
 const canRetry = computed(() => props.canManage && ['failed', 'cancelled'].includes(snapshot.value?.status))
 const statusLabel = computed(() => ({
