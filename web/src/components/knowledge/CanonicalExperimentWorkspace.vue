@@ -161,12 +161,12 @@
               <div v-if="inspection.sources.length > 1" class="button-group">
                 <button v-for="source in inspection.sources" :key="source.evidence_id" type="button" class="small-button" :aria-pressed="activeSource?.evidence_id === source.evidence_id" @click="sourceId = source.evidence_id">{{ sourceLabel(source) }}</button>
               </div>
-              <section v-if="activeSource" class="source-content">
+              <p v-if="inspection.record?.kind === 'measurement' && (!activeSource || sourceHasHighlight === false)" class="empty" role="status">未定位到这条结果的原文出处。请核对数值及所选出处。</p>
+              <section v-if="activeSource" v-show="inspection.record?.kind !== 'measurement' || sourceHasHighlight !== false" class="source-content">
                 <p class="source-location"><strong>{{ sourceLabel(activeSource) }}</strong><span v-if="activeSource.printed_page"> · 期刊第 {{ activeSource.printed_page }} 页</span><small>{{ activeSource.location }}</small></p>
-                <p v-if="inspection.record?.result && sourceHasHighlight === false" class="source-unlocated" role="status">当前出处未能定位到这条结果，请切换出处或对照原文核对。</p>
                 <MarkdownPreview :key="(inspection.record?.record_id || '') + ':' + activeSource.evidence_id" :content="activePreview.content" :highlight-text="activePreview.table ? '' : inspection.record?.result || ''" compact @rendered="onSourceRendered" />
               </section>
-              <p v-else class="empty">这条记录未关联可展示的原文出处，可在结构字段中查看完整内容。</p>
+              <p v-else-if="inspection.record?.kind !== 'measurement'" class="empty">这条记录未关联可展示的原文出处，可在结构字段中查看完整内容。</p>
             </template>
           </template>
           <p v-else class="empty">选择一条记录后查看原文和结构字段。</p>
@@ -303,7 +303,7 @@ const inspection = computed(() => {
   return { sources: [] }
 })
 const activeSource = computed(() => inspection.value.sources.find(source => source.evidence_id === sourceId.value) ||
-  preferredSource(inspection.value.sources, inspection.value.record))
+  preferredSource(inspection.value.sources))
 const activePreview = computed(() => experimentEvidencePreview(activeSource.value?.quote, inspection.value.record))
 
 watch([() => activePreview.value.content, () => activeSource.value?.evidence_id, () => inspection.value.record?.record_id], () => {
@@ -311,9 +311,15 @@ watch([() => activePreview.value.content, () => activeSource.value?.evidence_id,
 })
 
 /** 默认出处和结果行页码共同使用可定位的原表。 */
-function preferredSource(sources, record) {
-  return sources.find(source => experimentEvidenceMatches(source.quote, record)) ||
-    sources.find(source => /^\s*<table\b/i.test(source.quote)) || sources[0]
+function preferredSource(sources) {
+  return sources.find(source => /^\s*<table\b/i.test(source.quote)) || sources[0]
+}
+
+/** 测量记录只展示包含当前结果的片段，保留原记录的完整关联。 */
+function recordSources(record) {
+  const sources = record.evidence_ids.map(id => sourceMap.value.get(id)).filter(Boolean)
+  return record.kind === 'measurement'
+    ? sources.filter(source => experimentEvidenceMatches(source.quote, record)) : sources
 }
 
 /** 根据当前预览的实际高亮反馈定位状态。 */
@@ -355,7 +361,7 @@ function stepRecord(operation) {
 /** 审核结果和机器原稿分别读取，选择后始终跟随服务端的新值。 */
 function recordInspection(record) {
   return { recordId: record.record_id, object: record, record, sample: record.sample,
-    heading: metricTitle(record), sources: record.evidence_ids.map(id => sourceMap.value.get(id)).filter(Boolean) }
+    heading: metricTitle(record), sources: recordSources(record) }
 }
 
 /** 规范记录的出处只使用同一份规范 JSON 中的证据。 */
@@ -531,8 +537,8 @@ function recordResult(record) {
 
 /** 当前记录的页码来自它关联的证据。 */
 function recordPage(record) {
-  const sources = record.evidence_ids.map(id => sourceMap.value.get(id)).filter(Boolean)
-  const source = preferredSource(sources, record)
+  const source = preferredSource(recordSources(record))
+  if (!source && record.kind === 'measurement') return '未定位出处'
   return source?.page ? 'PDF ' + source.page + ' 页' : '查看出处'
 }
 
@@ -663,7 +669,6 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--main-colo
 .record-status { margin-top: 6px !important; color: var(--main-color); font-size: 12px; }
 .source-content { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--gray-150); }
 .source-location { margin-bottom: 8px !important; font-size: 12px; }
-.source-unlocated { margin-bottom: 8px !important; color: var(--color-text-secondary); font-size: 12px; }
 .source-content :deep(mark), .source-content :deep(.markdown-text-highlight) { color: inherit; background: var(--color-warning-100); }
 .source-content :deep(table) { font-size: 12px; }
 .field-content { padding: 10px; }

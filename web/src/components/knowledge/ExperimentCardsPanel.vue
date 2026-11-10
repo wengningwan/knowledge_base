@@ -77,7 +77,7 @@ const active = computed(() => ['pending', 'running'].includes(snapshot.value?.st
 const partialDescription = computed(() => {
   const remaining = (snapshot.value?.review?.tasks || []).filter(task => !task.resolution).length
   return remaining ? '已保留可用数据，还有 ' + remaining + ' 项待人工校对。' :
-    '当前没有可处理的人工待办，提取技术说明保留在人工校对页。'
+    '已保留可用数据，当前没有可处理的人工待办。'
 })
 const canonicalRevisionId = computed(() => snapshot.value?.canonical_available ? snapshot.value.revision_id : '')
 const canRetry = computed(() => props.canManage && ['failed', 'cancelled'].includes(snapshot.value?.status))

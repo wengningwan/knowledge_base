@@ -1,13 +1,11 @@
 <template>
   <section class="correction-workspace" aria-label="人工校对">
     <header class="correction-heading">
-      <div><h2>人工校对</h2><p>对照原文，只处理模型没有确定的内容。</p></div>
       <div class="queue-filters" aria-label="处理进度">
         <button type="button" :disabled="saving" :aria-pressed="mode === 'pending'" @click="changeMode('pending')">待处理 <strong>{{ pending.length }}</strong></button>
         <button type="button" :disabled="saving" :aria-pressed="mode === 'processed'" @click="changeMode('processed')">已处理 <strong>{{ processed.length }}</strong></button>
       </div>
     </header>
-    <p v-if="notice" class="queue-notice" role="status">{{ notice }}</p>
     <div class="correction-columns">
       <nav class="correction-list" aria-label="校对待办">
         <button v-for="task in queue" :key="task.task_id" type="button" :disabled="saving" :aria-pressed="activeTask?.task_id === task.task_id" @click="chooseTask(task.task_id)">
@@ -30,6 +28,7 @@
         </section>
         <section class="correction-editor" aria-label="处理当前待办">
           <header><h3>{{ activeTask.resolution ? outcomeLabels[activeTask.resolution.outcome] : kindLabels[activeTask.kind] }}</h3><span>{{ queue.indexOf(activeTask) + 1 }} / {{ queue.length }}</span></header>
+          <p v-if="activeTask.resolution?.outcome === 'checked'" class="correction-outcome">核对状态和所选出处已保存，原文和实验数据保留原值。</p>
           <p class="correction-reason">{{ activeTask.reason }}</p>
           <a-button v-if="activeTask.kind === 'missing' && !recordingMissing && canManage" :disabled="saving" @click="recordingMissing = true">原文有数据，补充</a-button>
           <div v-if="showRecordFields" class="correction-fields">
@@ -51,12 +50,11 @@
           <p v-if="canManage && showRecordFields && !readyToSave" class="save-hint">补齐样品、指标或操作{{ fields.kind === 'measurement' ? '、结果' : '' }}，并选择出处后即可保存。</p>
           <div v-if="canManage" class="correction-actions">
             <a-button v-if="showRecordFields" type="primary" :loading="saving" :disabled="!readyToSave" @click="submit('save')">{{ activeTask.resolution ? '保存修改' : '保存并下一条' }}</a-button>
-            <a-button v-if="activeTask.kind === 'source'" :loading="saving" :disabled="!selectedSources.length" @click="submit('resolve', 'checked')">已核对，无需修改</a-button>
+            <a-button v-if="activeTask.kind === 'source'" :loading="saving" :disabled="!selectedSources.length" @click="submit('resolve', 'checked')">{{ activeTask.resolution?.outcome === 'checked' ? '保存核对出处' : '完成核对，保留现状' }}</a-button>
             <a-button v-if="activeTask.kind === 'missing'" :type="recordingMissing ? 'default' : 'primary'" :disabled="saving" @click="submit('resolve', 'unreported')">原文未提供</a-button>
             <a-button :disabled="saving" @click="submit('resolve', 'ignored')">{{ activeTask.record_id ? '排除记录' : '不采用此项' }}</a-button>
             <button v-if="mode === 'pending'" type="button" class="defer-button" :disabled="saving" @click="deferTask">稍后处理</button>
           </div>
-          <details v-if="activeTask.detail" class="technical-detail"><summary>查看提取说明</summary><p>{{ activeTask.detail }}</p></details>
         </section>
       </template>
       <section v-else class="correction-finished">
@@ -64,16 +62,12 @@
         <p>{{ mode === 'pending' ? '已处理项可随时打开查看和修改。' : '保存数据、保持缺失或不采用后，可在这里回看。' }}</p>
       </section>
     </div>
-    <details v-if="diagnostics.length" class="extraction-diagnostics">
-      <summary>提取技术说明 · {{ diagnostics.length }} 条</summary>
-      <p>这里保留程序报错和页码说明，不计入人工待办。旧版本若只保留报错、没有候选内容，需要重新以 Paper 入库生成可校对数据。</p>
-      <p v-for="item in diagnostics" :key="item.issue_id">{{ item.message }}</p>
-    </details>
   </section>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import { experimentEvidenceMarkdown, experimentLabel } from '@/utils/experimentPresentation'
 
@@ -84,7 +78,7 @@ const props = defineProps({
   saveReview: { type: Function, required: true }
 })
 const kindLabels = { candidate: '确认提取结果', missing: '确认资料缺口', source: '核对原文疑点' }
-const outcomeLabels = { saved: '已保存数据', unreported: '原文未提供', ignored: '已不采用', checked: '已核对' }
+const outcomeLabels = { saved: '已保存数据', unreported: '原文未提供', ignored: '已不采用', checked: '已核对，保留现状' }
 const kindOptions = [{ value: 'measurement', label: '测量结果' }, { value: 'preparation', label: '制备操作' }]
 const mode = ref('pending')
 const selectedId = ref('')
@@ -92,7 +86,6 @@ const fields = ref({ evidence_ids: [] })
 const drafts = new Map()
 const saving = ref(false)
 const error = ref('')
-const notice = ref('')
 const recordingMissing = ref(false)
 const tasks = computed(() => props.snapshot.review?.tasks || [])
 const pending = computed(() => tasks.value.filter(task => !task.resolution))
@@ -112,7 +105,6 @@ const sourceOptions = computed(() => (props.snapshot.evidence || []).map(source 
   value: source.evidence_id,
   label: (source.page ? 'PDF 第 ' + source.page + ' 页 · ' : '') + source.quote.replace(/<[^>]*>/g, ' ').slice(0, 110)
 })))
-const diagnostics = computed(() => props.paper.validation_issues.filter(item => item.issue_id.startsWith('issue:')))
 
 watch(activeTask, task => {
   error.value = ''
@@ -153,7 +145,7 @@ function filterSource(input, option) {
 function deferTask() {
   const index = queue.value.indexOf(activeTask.value)
   chooseTask(queue.value[(index + 1) % queue.value.length]?.task_id || '')
-  notice.value = '此项仍保留在待处理中。'
+  message.info('此项仍保留在待处理中。')
 }
 
 /** 以服务器提交结果推进队列，失败时保留输入。 */
@@ -172,7 +164,11 @@ async function submit(action, resolution) {
     if (!result) return
     drafts.delete(task.task_id)
     selectedId.value = nextId
-    notice.value = action === 'save' ? '数据已保存。' : outcomeLabels[resolution] + '。'
+    let successText = action === 'save' ? '数据已保存。' : outcomeLabels[resolution] + '。'
+    if (resolution === 'checked') {
+      successText = task.resolution ? '核对状态和出处已更新，数据保持原值。' : '已移到「已处理」，原文和实验数据保持原值。'
+    }
+    message.success(successText)
   } catch (cause) {
     error.value = cause.message || '保存失败，请重试。'
   } finally {
@@ -183,15 +179,14 @@ async function submit(action, resolution) {
 
 <style scoped lang="less">
 .correction-workspace { display: flex; flex: 1; flex-direction: column; min-height: 0; color: var(--color-text); }
-.correction-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0 14px; }
-h2, h3, p { margin: 0; }
-h2 { font-size: 20px; } h3 { font-size: 14px; }
-.correction-heading p, .correction-finished p { margin-top: 5px; color: var(--color-text-secondary); }
+.correction-heading { display: flex; justify-content: flex-end; padding: 10px 0 14px; }
+h3, p { margin: 0; }
+h3 { font-size: 14px; }
+.correction-finished p { margin-top: 5px; color: var(--color-text-secondary); }
 .queue-filters { display: flex; gap: 5px; padding: 4px; border-radius: 7px; background: var(--gray-50); }
 .queue-filters button { padding: 6px 10px; border: 0; border-radius: 4px; background: transparent; color: var(--color-text-secondary); cursor: pointer; white-space: nowrap; }
 .queue-filters button[aria-pressed='true'] { color: var(--main-color); background: var(--gray-0); }
 .queue-filters strong { margin-left: 8px; }
-.queue-notice { margin-bottom: 8px; color: var(--main-color); }
 .correction-columns { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(150px, .7fr) minmax(0, 1.6fr) minmax(285px, 1.3fr); gap: 12px; }
 .correction-list, .correction-source, .correction-editor { min-height: 0; min-width: 0; overflow: auto; border: 1px solid var(--gray-150); border-radius: 8px; background: var(--gray-0); }
 .correction-list { padding: 5px; }
@@ -208,6 +203,7 @@ header > span { color: var(--color-text-secondary); font-size: 12px; }
 .correction-quote :deep(table) { font-size: 12px; }
 .source-empty, .queue-empty { padding: 18px 6px; color: var(--color-text-secondary); }
 .correction-reason { padding: 12px 0; line-height: 1.65; }
+.correction-outcome { margin-top: 12px; color: var(--main-color); font-size: 12px; }
 .correction-fields, .more-fields { display: flex; flex-direction: column; gap: 12px; }
 label { display: flex; flex-direction: column; gap: 5px; color: var(--color-text-secondary); font-size: 12px; }
 .result-field :deep(input) { font-weight: 600; }
@@ -218,16 +214,12 @@ summary { cursor: pointer; color: var(--color-text-secondary); font-size: 12px; 
 .save-hint { margin-top: 12px; color: var(--color-text-secondary); font-size: 12px; }
 .correction-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
 .defer-button { border: 0; padding: 4px; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
-.technical-detail p { padding-top: 8px; font-size: 12px; color: var(--color-text-secondary); }
-.extraction-diagnostics { max-height: 170px; overflow: auto; flex-shrink: 0; border-top: 1px solid var(--gray-150); padding-top: 10px; }
-.extraction-diagnostics p { margin-top: 8px; color: var(--color-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .correction-finished { grid-column: 2 / -1; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 180px; border: 1px solid var(--gray-150); border-radius: 8px; padding: 20px; }
 button:focus-visible, summary:focus-visible { outline: 2px solid var(--main-color); outline-offset: 2px; }
 button:disabled { cursor: default; opacity: .6; }
 @media (max-width: 1000px) { .correction-columns { grid-template-columns: minmax(130px, .65fr) minmax(0, 1.2fr) minmax(245px, 1.2fr); gap: 8px; } }
 @media (max-width: 760px) {
   .correction-workspace { overflow: auto; }
-  .correction-heading { flex-wrap: wrap; }
   .correction-columns { display: flex; flex-direction: column; flex: none; }
   .correction-list { display: flex; overflow: auto; max-height: 150px; flex-shrink: 0; }
   .correction-list > button { min-width: 165px; }

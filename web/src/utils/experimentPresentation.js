@@ -1,4 +1,7 @@
+import DOMPurify from 'dompurify'
 import { splitMathSegments, renderMathHtml } from '@/utils/documentReview'
+import { highlightMarkdownText } from '@/utils/markdown_highlight'
+import { createMarkdownRenderer } from '@/utils/markdown_preview'
 
 export const experimentFields = {
   schema_id: '格式标识', schema_version: '格式版本', record_id: '记录编号',
@@ -134,10 +137,12 @@ const tableMetricAliases = {
   'textural.pore_volume.total': ['Pore volume', 'Total pore volume', 'V_total'],
   'raman.I_D/I_G': ['I_D/I_G']
 }
+const evidenceMarkdownRenderer = createMarkdownRenderer({ themeName: 'github-light' })
 
 /** 表头与审核指标的括号单位不参与名称匹配。 */
 function tableMetricName(value) {
-  return evidenceText(value).replace(/\([^()]*\)$/, '').replace(/%$/, '')
+  return evidenceText(value).replace(/%$/, '')
+    .replace(/^(.+)\([^()]*\)$/, '$1').replace(/^\(([^()]+)\)$/, '$1')
 }
 
 /** 后端投影的中文指标和单位后缀对应同一个规范指标。 */
@@ -190,11 +195,18 @@ function locateTableResult(table, record) {
   return matches.length === 1 ? matches[0] : null
 }
 
-/** 选择出处时只核对交点，不提前渲染所有引文的公式。 */
+/** 表格核对唯一交点，正文复用逐字高亮定位当前结果。 */
 export function experimentEvidenceMatches(quote, record) {
-  if (!/^\s*<table\b/i.test(quote || '')) return false
-  const table = new DOMParser().parseFromString(quote, 'text/html').querySelector('table')
-  return Boolean(locateTableResult(table, record))
+  if (!quote || !record?.result) return false
+  if (/^\s*<table\b/i.test(quote)) {
+    const table = new DOMParser().parseFromString(quote, 'text/html').querySelector('table')
+    return Boolean(locateTableResult(table, record))
+  }
+  const content = experimentEvidencePreview(quote, record).content
+  const html = DOMPurify.sanitize(evidenceMarkdownRenderer.render(content))
+  const body = new DOMParser().parseFromString(html, 'text/html').body
+  highlightMarkdownText(body, record.result)
+  return Boolean(body.querySelector('mark'))
 }
 
 /** 原表保留顺序和文字，定位结果与高亮共用交点规则。 */
