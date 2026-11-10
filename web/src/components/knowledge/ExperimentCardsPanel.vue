@@ -2,9 +2,6 @@
   <div class="experiment-panel" :class="{ 'is-draft': snapshot?.status === 'draft' }">
     <div class="experiment-toolbar">
       <span>实验卡片</span>
-      <a-button v-if="snapshot?.canonical_available" size="small" :loading="downloading" @click="downloadJson">
-        下载结构化 JSON
-      </a-button>
     </div>
     <a-spin v-if="loading && !snapshot" tip="正在读取实验卡片…" />
     <a-alert v-if="error" type="error" show-icon :message="error" />
@@ -68,7 +65,6 @@ const props = defineProps({
 const snapshot = ref(null)
 const loading = ref(false)
 const retrying = ref(false)
-const downloading = ref(false)
 const error = ref('')
 const canonical = ref(null)
 const canonicalError = ref('')
@@ -78,6 +74,7 @@ let timer = null
 let disposed = false
 
 const active = computed(() => ['pending', 'running'].includes(snapshot.value?.status))
+const canonicalRevisionId = computed(() => snapshot.value?.canonical_available ? snapshot.value.revision_id : '')
 const canRetry = computed(() => props.canManage && ['failed', 'cancelled'].includes(snapshot.value?.status))
 const statusLabel = computed(() => ({
   not_generated: '尚未生成实验卡片', pending: '原文已入库，等待生成实验卡片',
@@ -159,35 +156,12 @@ const retry = async () => {
   }
 }
 
-/** 下载与当前页面同版本的规范 JSON。 */
-const downloadJson = async () => {
-  const revisionId = snapshot.value.revision_id
-  downloading.value = true
-  error.value = ''
-  try {
-    const record = await documentApi.getExperimentJson(String(props.kbId), String(props.fileId), revisionId)
-    if (disposed || snapshot.value?.revision_id !== revisionId) return
-    const blob = new Blob([JSON.stringify(record, null, 2) + '\n'], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `adsorption-${props.fileId}.json`
-    link.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
-  } catch (cause) {
-    if (!disposed && snapshot.value?.revision_id === revisionId) error.value = cause.message || '结构化 JSON 下载失败。'
-  } finally {
-    if (!disposed && snapshot.value?.revision_id === revisionId) downloading.value = false
-  }
-}
-
 watch(() => [props.kbId, props.fileId], () => {
   retrySequence += 1
   snapshot.value = null
   canonical.value = null
   canonicalError.value = ''
   retrying.value = false
-  downloading.value = false
   refresh()
 }, { immediate: true })
 
@@ -197,6 +171,8 @@ onBeforeUnmount(() => {
   retrySequence += 1
   clearTimeout(timer)
 })
+
+defineExpose({ canonicalRevisionId })
 </script>
 
 <style scoped lang="less">

@@ -32,10 +32,6 @@
           </button>
           <p v-if="!paper.experiment_runs.length" class="empty">当前没有实验登记。</p>
         </template>
-        <template v-else-if="view === 'materials'">
-          <h3>制备与材料</h3>
-          <button v-for="key in materialFields" :key="key" type="button" :aria-pressed="materialField === key" @click="chooseMaterialField(key)">{{ experimentLabel(key) }} <small>{{ paper[key].length }} 条</small></button>
-        </template>
         <template v-else-if="view === 'review'">
           <h3>核对与补录</h3>
           <button v-for="(category, key) in reviewCategories" :key="key" type="button" :aria-pressed="reviewCategory === key" @click="chooseReviewCategory(key)">
@@ -134,21 +130,6 @@
           </button>
           <p v-if="!runObservations.length" class="empty">这个实验没有关联观测。</p>
         </template>
-        <template v-else-if="view === 'materials'">
-          <header class="pane-heading"><h2>{{ experimentLabel(materialField) }}</h2></header>
-          <button v-for="(item, index) in paper[materialField]" :key="index" type="button" class="record-button" @click="chooseMaterial(item, index)">
-            <strong>{{ item.reported_name || item.reported_family_name || '记录 ' + (index + 1) }}</strong>
-            <small>{{ item.entity_class || item.material_class || '' }}</small>
-          </button>
-          <p v-if="!paper[materialField].length" class="empty">当前没有这类材料记录。</p>
-          <template v-if="materialField === 'synthesis_routes' && activeMaterial">
-            <h3 class="section-heading">制备步骤</h3>
-            <label v-if="materialSamples.length" class="route-sample">查看样品 <a-select :value="materialSample?.reported_name" :options="materialSamples.map(sample => ({ value: sample.reported_name, label: sample.reported_name }))" @change="chooseRouteSample" /></label>
-            <button v-for="operation in activeMaterial.operations" :key="operation.operation_id" type="button" class="step-row" @click="chooseCanonical(operation, experimentLabel(operation.operation_type), materialSample?.reported_name)">
-              <span class="step-number">{{ operation.sequence }}</span><span><strong>{{ experimentLabel(operation.operation_type) }}</strong><small>{{ reagentText(operation, materialSample || null) }}</small><small><ExperimentText :text="experimentStepConditions(operation, materialSample)" /></small></span>
-            </button>
-          </template>
-        </template>
         <template v-else-if="view === 'review'">
           <header class="pane-heading">
             <h2>{{ currentReviewCategory.label }}</h2>
@@ -231,18 +212,15 @@ const props = defineProps({
   saveReview: { type: Function, required: true }
 })
 
-const views = { samples: '样品与结果', runs: '实验与曲线', materials: '制备与材料', review: '核对与补录', json: '原始 JSON' }
+const views = { samples: '样品与结果', runs: '实验与曲线', review: '核对与补录', json: '原始 JSON' }
 const statusLabels = { machine: '机器草稿', pending: '待确认', confirmed: '已人工确认', excluded: '已排除' }
 const categoryLabels = { character: '材料性质', adsorption: '吸附与选择性', breakthrough: '穿透与计算' }
-const materialFields = ['synthesis_routes', 'material_identities', 'chemical_entities', 'sample_batches']
 const view = ref('samples')
 const selectedSample = ref('')
 const sampleMode = ref('results')
 const filter = ref('')
 const selectedRun = ref('')
 const expandedMethod = ref('')
-const materialField = ref('synthesis_routes')
-const materialIndex = ref(0)
 const reviewCategory = ref('pending')
 const jsonField = ref('')
 const jsonMode = ref('code')
@@ -270,9 +248,6 @@ const sampleRoute = computed(() => props.paper.synthesis_routes.find(route => ro
 const sampleMeasurements = computed(() => usable.value.filter(record => record.kind === 'measurement' && record.sample === activeSampleName.value))
 const availableCategories = computed(() => [...new Set(sampleMeasurements.value.map(record => experimentCategory(record.test)))].map(key => ({ key, label: categoryLabels[key] })))
 const activeRun = computed(() => props.paper.experiment_runs.find(run => run.run_id === selectedRun.value) || props.paper.experiment_runs[0])
-const activeMaterial = computed(() => props.paper[materialField.value][materialIndex.value])
-const materialSamples = computed(() => props.paper.sample_states.filter(sample => activeMaterial.value?.target_sample_state_ids?.includes(sample.sample_state_id)))
-const materialSample = computed(() => materialSamples.value.find(sample => sample.reported_name === activeSampleName.value) || materialSamples.value[0])
 const jsonValue = computed(() => jsonField.value ? props.paper[jsonField.value] : props.paper)
 const counts = computed(() => [
   ['样品', 'sample_states'], ['实验', 'experiment_runs'], ['观测', 'observations'], ['曲线', 'series_sets'], ['证据', 'evidence']
@@ -346,7 +321,6 @@ const inspection = computed(() => {
     return activeSample.value ? canonicalInspection(activeSample.value, '样品信息') : { sources: [] }
   }
   if (view.value === 'runs' && activeRun.value) return canonicalInspection(activeRun.value, runTitle(activeRun.value))
-  if (view.value === 'materials' && activeMaterial.value) return canonicalInspection(activeMaterial.value, experimentLabel(materialField.value))
   if (view.value === 'review' && currentReviewCategory.value.items[0]) return reviewInspection(currentReviewCategory.value.items[0])
   return { sources: [] }
 })
@@ -433,12 +407,6 @@ function chooseSample(name, navigate = false) {
   resetSelection()
 }
 
-/** 路线预览切换样品后重新计算批次条件。 */
-function chooseRouteSample(name) {
-  selectedSample.value = name
-  resetSelection()
-}
-
 /** 样品内的制备和测量保持同一页签。 */
 function chooseSampleMode(mode) {
   sampleMode.value = mode
@@ -468,29 +436,14 @@ function chooseStep(operation) {
 }
 
 /** 选择结构化记录时保留全量对象。 */
-function chooseCanonical(object, heading, sample) {
-  const detail = canonicalInspection(object, heading)
-  if (sample) detail.sample = sample
-  select(detail)
+function chooseCanonical(object, heading) {
+  select(canonicalInspection(object, heading))
 }
 
 /** 实验目录切换后默认查看该次实验。 */
 function chooseRun(run) {
   selectedRun.value = run.run_id
   resetSelection()
-}
-
-/** 材料分类切换使用该分类首条记录。 */
-function chooseMaterialField(key) {
-  materialField.value = key
-  materialIndex.value = 0
-  resetSelection()
-}
-
-/** 材料记录与其路线步骤在同一区域展示。 */
-function chooseMaterial(item, index) {
-  materialIndex.value = index
-  chooseCanonical(item, item.reported_name || item.reported_family_name || experimentLabel(materialField.value))
 }
 
 /** 审核分类切换后显示该分类的第一条说明。 */
@@ -649,10 +602,10 @@ function chemicalName(id) {
 }
 
 /** 用料比例读取当前样品批次，避免套用其他样品。 */
-function reagentText(operation, sample = activeSample.value) {
+function reagentText(operation) {
   return (operation.reagent_uses || []).map(usage => {
     const amount = usage.amount || usage.concentration
-    const ratio = usage.ratio?.per_sample_values?.[sample?.sample_batch_id]
+    const ratio = usage.ratio?.per_sample_values?.[activeSample.value?.sample_batch_id]
     return [chemicalName(usage.entity_id), amount && experimentValue(amount), ratio != null && '用量比 ' + ratio].filter(Boolean).join(' ')
   }).join(' · ')
 }
@@ -721,8 +674,6 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--main-colo
 .step-number { flex-shrink: 0; color: var(--main-color); font-weight: 600; }
 .record-button { display: block; width: 100%; padding: 12px; border: 0; border-bottom: 1px solid var(--gray-150); background: transparent; color: var(--color-text); text-align: left; cursor: pointer; }
 .section-heading { padding: 12px; border-bottom: 1px solid var(--gray-150); }
-.route-sample { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
-.route-sample .ant-select { min-width: 140px; }
 .empty { padding: 16px 12px; color: var(--color-text-secondary); }
 .inspector { padding: 12px; }
 .inspector-heading { justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid var(--gray-150); }
