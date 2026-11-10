@@ -10,7 +10,7 @@ from importlib.resources import files
 from jsonschema import Draft202012Validator
 
 STRUCTURE_VERSION = 2
-STRUCTURE_PROMPT_VERSION = "adsorption-canonical-v3"
+STRUCTURE_PROMPT_VERSION = "adsorption-canonical-v6"
 REGISTRIES = {
     "evidence": "evidence_id",
     "chemical_entities": "entity_id",
@@ -27,7 +27,7 @@ REGISTRIES = {
 }
 _BATCH_MAPS = {"temperature_by_sample", "per_sample_values"}
 _CHEMICAL_MAPS = {"kinetic_diameter_angstrom", "polarizability_raw"}
-_DYNAMIC_MAPS = _BATCH_MAPS | _CHEMICAL_MAPS | {"pdf_page_to_printed_page"}
+_DYNAMIC_MAPS = _BATCH_MAPS | _CHEMICAL_MAPS | {"pdf_page_to_printed_page", "factor_assignments"}
 _REFERENCE_ALIASES = {
     "carbon_source_entity_id": "entity_id", "numerator_entity_id": "entity_id",
     "denominator_entity_id": "entity_id", "preferential_component_entity_id": "entity_id",
@@ -35,11 +35,12 @@ _REFERENCE_ALIASES = {
     "input_sample_state_id": "sample_state_id", "output_sample_state_id": "sample_state_id",
     "preparation_route_id": "route_id", "input_run_id": "run_id", "source_run_id": "run_id",
     "source_model_run_id": "run_id", "supported_by_observation_id": "observation_id",
-    "input_intermediate_id": "intermediate_id",
+    "input_intermediate_id": "intermediate_id", "output_intermediate_id": "intermediate_id",
+    "species_entity_id": "entity_id",
 }
 _TYPED_REFERENCES = set(REGISTRIES.values()) | {"document_id", "intermediate_id"}
 _INDEPENDENT_MEMBERS = {"observations": "results", "synthesis_routes": "operations"}
-type Notice = tuple[str, str]
+type Notice = tuple[str, str] | tuple[str, str, dict]
 type RecordPosition = tuple[str, int]
 
 
@@ -129,14 +130,18 @@ def filter_stage_records(value: dict, schema: dict, stage: str, source_ids: set[
                         else:
                             notices.append((
                                 "invalid_member", f"{location}的 {child_field} 第 {member_index} 项格式或出处错误。",
+                                {"collection": name, "record": {**item, child_field: [member]}},
                             ))
                     item = {**item, child_field: kept}
             if not validator.is_valid(item):
-                notices.append(("invalid_record_shape", f"{location}缺少字段、含多余字段或类型错误。"))
+                notices.append(("invalid_record_shape", f"{location}缺少字段、含多余字段或类型错误。",
+                                {"collection": name, "record": item}))
             elif evidence_references(item) - source_ids:
-                notices.append(("invalid_evidence_reference", f"{location}引用了无法定位的原文块。"))
+                notices.append(("invalid_evidence_reference", f"{location}引用了无法定位的原文块。",
+                                {"collection": name, "record": item}))
             elif name == "observations" and not item["observation_id"].startswith(f"obs:{stage}:"):
-                notices.append(("invalid_observation_id", f"{location}的编号不属于当前观测阶段。"))
+                notices.append(("invalid_observation_id", f"{location}的编号不属于当前观测阶段。",
+                                {"collection": name, "record": item}))
             else:
                 result[name].append(item)
     return result, notices
@@ -150,7 +155,8 @@ def filter_record_references(record: dict, notices: list[Notice]) -> None:
         if not problems and len(notices) == notice_count:
             break
         for (collection, index), reason in problems.items():
-            notices.append(("invalid_record_reference", f"{collection} 第 {index + 1} 条已剔除。{reason}"))
+            notices.append(("invalid_record_reference", f"{collection} 第 {index + 1} 条已剔除。{reason}",
+                            {"collection": collection, "record": record[collection][index]}))
         for collection in REGISTRIES:
             record[collection] = [
                 item for index, item in enumerate(record[collection]) if (collection, index) not in problems
@@ -204,10 +210,14 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
                     step_position = (*position, step_index)
                     register("operation_id", operation["operation_id"], step_position)
                     if intermediate := operation.get("output_intermediate_id"):
-                        register("intermediate_id", intermediate, step_position)
+                        if intermediate in ids["sample_state_id"]:
+                            # 同一物料已由样品登记拥有身份，制备产物只引用该状态。
+                            ids["intermediate_id"].add(intermediate)
+                        else:
+                            register("intermediate_id", intermediate, step_position)
                     for reagent in operation.get("reagent_uses", []):
                         register("reagent_use_id", reagent["reagent_use_id"], step_position)
-    for positions in owners.values():
+    for value, positions in owners.items():
         if len(positions) > 1:
             if positions.count(None) > 1:
                 raise ValueError("规范 JSON 的文档或原文编号重复")
@@ -217,9 +227,10 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
                 if notices is not None and len(position) == 3:
                     duplicate_steps[position[:2]].add(position[2])
                 else:
-                    problems[position[:2]] = "记录编号重复，无法确定归属。"
+                    problems[position[:2]] = f"记录编号重复（{value}），无法确定归属。"
     formulas = {item.get("formula_ascii") for item in record["chemical_entities"]} - {None}
     series_runs = {run["run_id"] for run in record["experiment_runs"] if "series_set_ids" in run}
+    runs = {run["run_id"]: run for run in record["experiment_runs"]}
     for collection in REGISTRIES:
         for index, item in enumerate(record[collection]):
             position = (collection, index)
@@ -228,6 +239,24 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
             if collection == "series_sets" and item["run_id"] not in series_runs:
                 problems[position] = "对应实验没有可登记该曲线的字段。"
                 continue
+            if collection == "observations" and item["observation_type"] in {
+                "kinetic_selectivity", "diffusion_time_constant",
+            }:
+                run = runs.get(item["run_id"], {})
+                if run.get("run_type") != "adsorption_kinetics" or item["sample_state_id"] not in run.get(
+                    "sample_state_ids", [],
+                ):
+                    problems[position] = "动力学观测没有关联包含当前样品的动力学实验。"
+                    continue
+                species = set(run.get("species_entity_ids", []))
+                if "entity_id" in item:
+                    observed_species = {item["entity_id"]}
+                else:
+                    pair = item["ordered_species_pair"]
+                    observed_species = {pair["numerator_entity_id"], pair["denominator_entity_id"]}
+                if species and not observed_species <= species:
+                    problems[position] = "动力学观测的气体不属于所关联实验声明的物种。"
+                    continue
             child_field = _INDEPENDENT_MEMBERS.get(collection)
             if notices is not None and child_field and isinstance(item.get(child_field), list):
                 kept = []
@@ -240,6 +269,7 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
                         notices.append((
                             "invalid_member_reference",
                             f"{collection} 第 {index + 1} 条的 {child_field} 第 {member_index} 项已剔除。{reason}",
+                            {"collection": collection, "record": {**item, child_field: [member]}},
                         ))
                     else:
                         kept.append(member)
@@ -284,6 +314,9 @@ def _fields(value):
     """遍历嵌套记录的字段和值。"""
     if isinstance(value, dict):
         for key, child in value.items():
+            if isinstance(child, dict) and child.keys() == {"raw_text", "value", "unit"}:
+                # 原文参数名属于论文内容，不按名称解释为编号引用。
+                continue
             yield key, child
             if key not in _DYNAMIC_MAPS:
                 yield from _fields(child)

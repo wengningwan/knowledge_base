@@ -11,7 +11,7 @@
         type="warning"
         show-icon
         message="部分完成"
-        :description="snapshot.message"
+        :description="partialDescription"
       />
       <a-alert
         v-else-if="!snapshot.canonical_available && snapshot.status === 'draft' && !snapshot.review?.records?.length"
@@ -74,6 +74,11 @@ let timer = null
 let disposed = false
 
 const active = computed(() => ['pending', 'running'].includes(snapshot.value?.status))
+const partialDescription = computed(() => {
+  const remaining = (snapshot.value?.review?.tasks || []).filter(task => !task.resolution).length
+  return remaining ? '已保留可用数据，还有 ' + remaining + ' 项待人工校对。' :
+    '当前没有可处理的人工待办，提取技术说明保留在人工校对页。'
+})
 const canonicalRevisionId = computed(() => snapshot.value?.canonical_available ? snapshot.value.revision_id : '')
 const canRetry = computed(() => props.canManage && ['failed', 'cancelled'].includes(snapshot.value?.status))
 const statusLabel = computed(() => ({
@@ -127,11 +132,13 @@ const saveReview = async (change) => {
   })
   if (disposed || snapshot.value !== current) return null
   const records = [...(current.review?.records || [])]
-  const index = records.findIndex((record) => record.record_id === result.record.record_id)
-  if (index === -1) records.push(result.record)
-  else records[index] = result.record
-  snapshot.value = { ...current, review: { version: result.version, records } }
-  return result.record
+  if (result.record) {
+    const index = records.findIndex((record) => record.record_id === result.record.record_id)
+    if (index === -1) records.push(result.record)
+    else records[index] = result.record
+  }
+  snapshot.value = { ...current, review: { version: result.version, records, tasks: result.tasks } }
+  return change.task_id ? result : result.record
 }
 
 /** 重试携带当前正文版本，服务端再次校验权限。 */

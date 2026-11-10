@@ -10,7 +10,11 @@ from decimal import Decimal, InvalidOperation
 from yuxi.knowledge.adsorption_contract import Notice
 from yuxi.knowledge.structure_tables import table_cells
 
-_NUMBER = re.compile(r"(?<![\w.])[+−-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+−-]?\d+)?(?![\d.])")
+_NUMBER = re.compile(
+    r"(?<![\w.])[+−-]?(?:\d+(?:\.\d+)?|\.\d+)"
+    r"(?:[eE][+−-]?\d+|\s*(?:\\times|×|⋅|·|x)\s*10\s*"
+    r"(?:\^\s*\{?\s*[+−-]?\d+\s*\}?|[+−-]\d+|[⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹]+))?(?!\d|\.\d)"
+)
 _TEXTURAL_HEADERS = {
     "textural.surface_area.specific": re.compile(r"\bS?\s*BET\b|surface\s+area", re.IGNORECASE),
     "textural.pore_volume.total": re.compile(r"pore\s+volume|\bV\s*total\b", re.IGNORECASE),
@@ -43,7 +47,8 @@ def filter_observation_values(record: dict, sources: dict, markdown: str, notice
                     {**observation, "results": []}, evidence, samples, sample_names, entities, markdown,
                 )
             except _UnverifiedObservation as error:
-                notices.append(("unverified_observation", f"第 {index} 条观测已剔除。{error}"))
+                notices.append(("unverified_observation", f"第 {index} 条观测已剔除。{error}",
+                                {"collection": "observations", "record": observation}))
                 continue
             for result_index, result in enumerate(results, 1):
                 try:
@@ -56,10 +61,14 @@ def filter_observation_values(record: dict, sources: dict, markdown: str, notice
                     location = f'观测 {observation["observation_id"]} 的第 {result_index} 个结果'
                     if label:
                         location += f"（{label}）"
-                    notices.append(("unverified_observation", f"{location}已剔除。{error}"))
+                    notices.append(("unverified_observation", f"{location}已剔除。{error}",
+                                    {"collection": "observations", "record": {**observation, "results": [result]}}))
                 else:
                     if not projected:
-                        notices.append(("empty_observation_value", f"第 {index} 条观测的第 {result_index} 个结果为空。"))
+                        notices.append((
+                            "empty_observation_value", f"第 {index} 条观测的第 {result_index} 个结果为空。",
+                            {"collection": "observations", "record": {**observation, "results": [result]}},
+                        ))
                         continue
                     accepted.append(result)
                     measurements.extend(projected)
@@ -70,10 +79,12 @@ def filter_observation_values(record: dict, sources: dict, markdown: str, notice
                     observation, evidence, samples, sample_names, entities, markdown,
                 )
             except _UnverifiedObservation as error:
-                notices.append(("unverified_observation", f"第 {index} 条观测已剔除。{error}"))
+                notices.append(("unverified_observation", f"第 {index} 条观测已剔除。{error}",
+                                {"collection": "observations", "record": observation}))
                 continue
         if not measurements:
-            notices.append(("empty_observation_value", f"第 {index} 条观测没有可用结果。"))
+            notices.append(("empty_observation_value", f"第 {index} 条观测没有可用结果。",
+                            {"collection": "observations", "record": observation}))
             continue
         kept.append(observation)
         values[observation["observation_id"]] = measurements
@@ -83,7 +94,6 @@ def filter_observation_values(record: dict, sources: dict, markdown: str, notice
 
 def project_experiment_cards(record: dict, sources: dict, measurement_values: dict) -> tuple[list[dict], list[dict]]:
     """把已校验的观测和原文位置映射到审核工作台。"""
-    sources = {item["evidence_id"]: sources[item["evidence_id"]] for item in record["evidence"]}
     review_ids = {ref: f"e{index}" for index, ref in enumerate(sources, 1)}
     evidence = [
         {
@@ -115,12 +125,17 @@ def project_experiment_cards(record: dict, sources: dict, measurement_values: di
     for route in record["synthesis_routes"]:
         for operation in route["operations"]:
             refs = operation["evidence_ids"]
-            for sample_id in operation.get("output_sample_state_ids", route["target_sample_state_ids"]):
-                conditions = dict(operation["conditions"])
+            sample_ids = operation.get("output_sample_state_ids")
+            if sample_ids is None:
+                output = operation.get("output_intermediate_id")
+                sample_ids = [output] if output in states else route["target_sample_state_ids"]
+            for sample_id in sample_ids:
+                conditions = dict(operation.get("conditions", {}))
                 by_sample = conditions.pop("temperature_by_sample", {})
                 if sample_temperature := by_sample.get(states[sample_id]["sample_batch_id"]):
                     conditions["temperature"] = sample_temperature
                 step = {
+                    "canonical_id": operation["operation_id"],
                     "operation": field(operation["operation_type"], refs),
                     "conditions": [
                         {"name": name, "value": field(text, refs)}
@@ -134,7 +149,7 @@ def project_experiment_cards(record: dict, sources: dict, measurement_values: di
         refs = observation["evidence_ids"]
         sample_ids = _sample_ids(observation)
         run = runs.get(observation.get("run_id"), {})
-        method = run.get("technique") or run.get("run_type")
+        method = run.get("technique") or run.get("method") or run.get("run_type")
         conditions = [
             {"name": name, "value": field(text, refs)}
             for name, value in _observation_conditions(observation, entities).items()
@@ -142,6 +157,7 @@ def project_experiment_cards(record: dict, sources: dict, measurement_values: di
         ]
         for label, text in measurement_values[observation["observation_id"]]:
             measurement = {
+                "canonical_id": observation["observation_id"],
                 "property": field(label, refs), "result": field(text, refs),
                 "method": field(method, run["evidence_ids"]) if method else None, "conditions": conditions,
             }
@@ -217,6 +233,8 @@ def _observation_conditions(observation: dict, entities: dict) -> dict:
         conditions["loading"] = observation["loading"]
     if entity_id := observation.get("entity_id"):
         conditions["species"] = entities[entity_id]
+    if pair := observation.get("ordered_species_pair"):
+        conditions["species_pair"] = f'{entities[pair["numerator_entity_id"]]}/{entities[pair["denominator_entity_id"]]}'
     return conditions
 
 
@@ -242,6 +260,10 @@ def _ground_quantity(
         else [Decimal(str(value["minimum"])), Decimal(str(value["maximum"]))]
     )
     raw = value["raw_text"]
+    numeric_raw = raw.strip()
+    if fence := re.fullmatch(r"(\${1,2})(.*?)\1", numeric_raw, re.S):
+        numeric_raw = fence[2].strip()
+    number_only = _NUMBER.fullmatch(numeric_raw) is not None
     expected = set(numbers)
     if not expected <= _numbers(raw):
         raise _UnverifiedObservation("数值与原文写法不一致。")
@@ -249,9 +271,14 @@ def _ground_quantity(
     unit = value.get("unit_raw", "")
     if metric_header is not None and (
         not _unit_matches(unit, value.get("unit_canonical", ""))
-        or (not _NUMBER.fullmatch(raw.strip()) and not _unit_matches(unit, raw))
+        or (not number_only and not _unit_matches(unit, raw))
     ):
         raise _UnverifiedObservation("原始单位、规范单位与结果写法不一致。")
+    if metric == "diffusion_time_constant" and (
+        not unit or not _unit_matches(unit, value.get("unit_canonical", ""), exact=True)
+        or (not number_only and not _unit_matches(unit, raw))
+    ):
+        raise _UnverifiedObservation("扩散时间常数的原文写法、原始单位与规范单位不一致。")
     for source in sources:
         quote = source["quote"]
         if not expected <= _numbers(quote):
@@ -274,11 +301,18 @@ def _ground_quantity(
                         not metric_header.search(_table_label(header)) or not _unit_matches(unit, f"{header} {cell}")
                     ):
                         continue
+                    if metric == "diffusion_time_constant" and not _unit_matches(unit, f"{header} {cell}"):
+                        continue
                     if expected <= _numbers(cell):
                         return markdown[start:end]
             continue
         if metric_header is not None and (
             grid is not None or not _matches_plain_textural(quote, metric_header, unit, expected, samples, sample_names)
+        ):
+            continue
+        if metric == "diffusion_time_constant" and not any(
+            _number(match.group()) == numbers[0] and _unit_matches(unit, quote[match.end():], prefix=True)
+            for match in _NUMBER.finditer(quote)
         ):
             continue
         if raw in quote:
@@ -324,18 +358,21 @@ def _table_label(text: str) -> str:
     return re.sub(r"[$_{}]", "", text)
 
 
-def _unit_matches(unit: str, text: str, *, prefix: bool = False) -> bool:
+def _unit_matches(unit: str, text: str, *, prefix: bool = False, exact: bool = False) -> bool:
     """在表头或单元格中核对原始单位，接受上标和倒数写法。"""
     def normalize(value):
         """统一单位中常见的数学标记。"""
         value = unicodedata.normalize("NFKC", html.unescape(value)).casefold().replace("−", "-")
         value = re.sub(r"[\^${}]", "", value).replace("·", " ").replace("⋅", " ")
-        value = re.sub(r"(?<=[a-z])\s+(?=\d)|\s*(/)\s*", r"\1", value)
+        value = re.sub(r"(?<=[a-z])\s+(?=[+-]?\d)|\s*(/)\s*", r"\1", value)
+        value = re.sub(r"\b(s|min|h)\s*-\s*1\b", r"1/\1", value)
         return re.sub(r"(\d)\s*(kg|g)\s*-\s*1\b", r"\1/\2", value).strip()
 
     normalized = normalize(unit)
-    start = "^" if prefix else r"(?<![a-z])"
-    return bool(normalized and re.search(rf"{start}{re.escape(normalized)}(?![a-z])", normalize(text)))
+    if exact:
+        return bool(normalized and normalized == normalize(text))
+    start = "^" if prefix else r"(?<![a-z/])"
+    return bool(normalized and re.search(rf"{start}{re.escape(normalized)}(?![a-z0-9/+-])", normalize(text)))
 
 
 def _phrase(text: str) -> str:
@@ -349,8 +386,10 @@ def _numbers(text: str) -> set[Decimal]:
 
 
 def _number(value: str) -> Decimal:
-    """将论文中的数学负号用于十进制比较。"""
+    """把原文乘十幂、上标指数和数学负号转换为十进制数。"""
+    value = unicodedata.normalize("NFKC", value).replace("−", "-")
+    value = re.sub(r"\s*(?:\\times|×|⋅|·|x)\s*10\s*\^?\s*\{?\s*([+-]?\d+)\s*\}?", r"e\1", value)
     try:
-        return Decimal(value.replace("−", "-"))
+        return Decimal(value)
     except InvalidOperation as error:
         raise _UnverifiedObservation("无法读取所引数值。") from error

@@ -29,6 +29,7 @@ from yuxi.knowledge.adsorption_contract import (
     validate_shape,
 )
 from yuxi.knowledge.adsorption_review import filter_observation_values, project_experiment_cards
+from yuxi.knowledge.experiment_corrections import project_rejected_corrections
 from yuxi.knowledge.chunking.source import SourceDocument
 from yuxi.knowledge.structure_tables import Span
 from yuxi.models.chat import select_model
@@ -39,7 +40,8 @@ from yuxi.utils.logging_config import logger
 _OBSERVATION_GROUPS = (
     ("textural_properties", "qualitative_characterization", "spectral_peak_assignments",
      "spectral_ratio", "surface_elemental_composition"),
-    ("equilibrium_uptake", "qualitative_ordering", "selectivity", "isosteric_heat"),
+    ("equilibrium_uptake", "qualitative_ordering", "selectivity", "isosteric_heat",
+     "kinetic_selectivity", "diffusion_time_constant"),
     ("breakthrough_working_capacity", "dynamic_selectivity", "qualitative_breakthrough_behavior", "binding_energy"),
 )
 
@@ -103,6 +105,10 @@ async def extract_adsorption_record(
         "pages 保留原文的期刊页范围或文章编号，未报告时返回空字符串，不按 PDF 页数猜测。"
         "可从 pdf_first_page 读取题录。日期使用 YYYY-MM-DD，doi 保留原文 DOI 编号。"
         "为不同材料、样品状态、路线、操作和试剂使用建立互不重复的编号。"
+        "登记制备试剂及所有测量气体，后续实验只引用这些实体编号。"
+        "factor_assignments 仅登记原文报告的制备变量，优先用 raw_text、value、unit 保存原文参数；"
+        "未报告或不适用的因素省略，不填零。操作条件也仅填写原文参数，保留电压、流量、距离等实际条件。"
+        "制备最终产物用 output_sample_state_ids 引用已登记样品，不添加原文未报告的操作。"
         "表格中的每个已命名样品独立登记，制备路线按步骤和顺序拆分。"
         "引用正文中对应的样品、原料及制备出处。",
     )
@@ -127,16 +133,20 @@ async def extract_adsorption_record(
         }
         for ref, item in sources.items()
     ]
+    filter_record_references(record, notices)
 
     await control.set_progress(30, "抽取实验、条件和曲线登记")
     runs, run_notices = await extract(
         "runs", ("experiment_runs", "series_sets"),
         "分别登记测量、拟合、预测、推导和计算，不把推导结果当作实测。"
+        "时间分辨吸附及其扩散拟合登记为 adsorption_kinetics，记录真实方法和测量条件。"
+        "动力学曲线的 series_kind 为 kinetic_uptake_curve。"
         "实验与曲线编号双向一致。曲线没有可见数表时 data_points 为 null，不估读曲线。",
         catalog=_catalog(record, "chemical_entities", "material_identities", "sample_states"),
     )
     record.update(runs)
     notices.extend(run_notices)
+    filter_record_references(record, notices)
 
     observation_catalog = _catalog(
         record, "chemical_entities", "sample_states", "experiment_runs", "series_sets",
@@ -151,6 +161,11 @@ async def extract_adsorption_record(
     async def extract_observation_group(item):
         """并发提取独立观测组，串行记录已处理组数。"""
         index, observation_types = item
+        kinetic_instruction = (
+            "动力学选择性用 kinetic_selectivity，扩散时间常数 D/r² 用 diffusion_time_constant；"
+            "分别关联相应的动力学实验、样品和气体，保持测量与拟合来源，原文未报告的条件省略。"
+            if "kinetic_selectivity" in observation_types else ""
+        )
         result = await extract(
             f"observations-{index}", ("observations",),
             f"本阶段只提取这些观测类型：{', '.join(observation_types)}。"
@@ -158,6 +173,7 @@ async def extract_adsorption_record(
             "每个样品与数值必须在引用原文中有对应关系。表格引用包含数据和表头的块。"
             "BET 比表面积与总孔容分别用 metric_id textural.surface_area.specific 与 textural.pore_volume.total。"
             "保留原文数字、单位、范围、约数及符号；对照原文区分实测、预测和定性描述。"
+            f"{kinetic_instruction}"
             "定性结果和排序使用可从所引证据中定位的连续原文短语。"
             "仅有正文正值时不得构造图中的有符号结合能或相互作用距离。"
             "不同实验、样品、气体和条件的结果分开。",
@@ -181,6 +197,7 @@ async def extract_adsorption_record(
     quality, quality_notices = await extract(
         "quality", ("mechanism_claims", "missing_information", "validation_issues"),
         "机制结论区分作者解释、背景资料与直接观测。指出缺失和冲突，引用已登记的编号。"
+        "validation_issues 的 message 使用简短中文，指出具体要核对的数值、单位或条件，并关联 record_ids 和原文出处。"
         "图像中未得到可引用数值的必填字段写入 missing_information，关联对应实验或曲线。"
         "模板仅展示允许的字段；没有相关内容时返回空列表。",
         catalog=_catalog(
@@ -194,8 +211,6 @@ async def extract_adsorption_record(
     measurement_values = filter_observation_values(record, sources, markdown, notices)
     _record_missing_figure_values(record)
     filter_record_references(record, notices)
-    if not record["observations"] and not any(route["operations"] for route in record["synthesis_routes"]):
-        raise ValueError("论文没有提取到格式合格且可核对的实验观测或制备步骤")
     record["extraction_metadata"] = {
         "created_on": utc_now().date().isoformat(),
         "extraction_scope": "main_article_pdf",
@@ -221,15 +236,26 @@ async def extract_adsorption_record(
         if "record_id" in item:
             used.add(item["record_id"])
     record["evidence"] = [item for item in record["evidence"] if item["evidence_id"] in used]
-    for kind, message in notices:
+    rejected = []
+    for notice in notices:
+        kind, message = notice[:2]
         scope = "pagination" if kind in {"printed_page_conflict", "unverified_printed_pages"} else "filtered"
+        issue_id = f"issue:{scope}:{uuid4().hex}"
         record["validation_issues"].append({
-            "issue_id": f"issue:{scope}:{uuid4().hex}", "severity": "warning", "issue_type": kind, "message": message,
+            "issue_id": issue_id, "severity": "warning", "issue_type": kind, "message": message,
         })
+        if len(notice) == 3:
+            rejected.append({**notice[2], "issue_id": issue_id, "message": message})
     partial_result = partial_source or bool(notices)
     record["quality_summary"] = _quality_summary(record, partial_result=partial_result)
     validate_shape(record, output_schema())
     validate_references(record)
+    correction_tasks = project_rejected_corrections(record, sources, rejected)
+    if (
+        not record["observations"] and not any(route["operations"] for route in record["synthesis_routes"])
+        and not correction_tasks
+    ):
+        raise ValueError("论文没有提取到可用实验记录或可供人工校对的候选")
     cards, review_evidence = project_experiment_cards(record, sources, measurement_values)
     await control.check_cancelled()
     await control.set_progress(95, "规范 JSON 与证据校验完成")
@@ -240,6 +266,7 @@ async def extract_adsorption_record(
             "source_coverage": "partial" if partial_source else "full",
             "partial_result": partial_result,
             "validation_notice_count": len(notices),
+            "correction_tasks": correction_tasks,
             "excluded_characters": excluded, "exhaustive_extraction": False,
         },
     }
@@ -275,7 +302,15 @@ async def _request_stage(executor, control, stage, schema, instruction, payload)
             value = json.loads(
                 content, object_pairs_hook=_unique_object, parse_constant=_reject_constant, parse_float=_finite_float,
             )
-            return filter_stage_records(value, schema, stage, source_ids)
+            result = filter_stage_records(value, schema, stage, source_ids)
+            if stage == "registry" and attempt == 1:
+                # 样品身份在供后续阶段引用前重试一次，第二次仍保留既有逐条过滤。
+                validate_references({
+                    **{collection: [] for collection in REGISTRIES},
+                    "record_id": payload["record_id"],
+                    "evidence": [{"evidence_id": ref} for ref in source_ids], **result[0],
+                })
+            return result
         except RecursionError:
             problem = "JSON 嵌套过深"
         except json.JSONDecodeError:
@@ -341,13 +376,13 @@ def _pdf_pages(content: bytes) -> tuple[list[str], dict[str, int]]:
 
 def _printed_pages(document: dict, pages: list[str], labels: dict[str, int], notices: list[Notice]) -> dict[str, int]:
     """保留可核对的数字印刷页码，并报告冲突或缺失的映射。"""
-    page_range = re.fullmatch(r"\s*(\d+)\s*[-–—]\s*(\d+)\s*", document["pages"])
+    page_range = re.fullmatch(r"\s*(\d+)\s*[-–—−]\s*(\d+)\s*", document["pages"])
     if page_range and pages:
         first, last = map(int, page_range.groups())
         title = _compact(document["title"])
         if (
             first > 0 and last - first + 1 == len(pages) and title and title in _compact(pages[0])
-            and re.search(rf"(?<!\d){first}\s*[-–—]\s*{last}(?!\d)", pages[0])
+            and re.search(rf"(?<!\d){first}\s*[-–—−]\s*{last}(?!\d)", pages[0])
         ):
             inferred = {str(i): first + i - 1 for i in range(1, len(pages) + 1)}
             if not any(inferred.get(key) != value for key, value in labels.items()):
@@ -417,6 +452,7 @@ def _catalog(record: dict, *collections: str) -> dict:
         "reported_name", "formula_ascii", "state", "route_name", "run_type", "technique", "sample_state_ids",
         "series_kind", "run_id", "run_ids", "observation_type", "sample_state_id", "entity_id",
         "metric_id", "evidence_ids", "feed", "temperature", "pressure",
+        "method", "conditions", "data_origin", "species_entity_ids",
     }
     catalog = {
         collection: [
@@ -446,6 +482,10 @@ def _quality_summary(record: dict, *, partial_result: bool) -> dict:
         ),
         "equilibrium_scalar_values": (
             "extracted_pending_review" if "equilibrium_uptake" in observation_types else "not_extracted"
+        ),
+        "kinetic_scalar_values": (
+            "extracted_pending_review" if observation_types & {"kinetic_selectivity", "diffusion_time_constant"}
+            else "not_extracted"
         ),
         "IAST_ranges": "extracted_pending_review" if any(
             item["observation_type"] == "selectivity" and item["selectivity"]["kind"] == "range"

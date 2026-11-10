@@ -35,7 +35,9 @@ class ExperimentReviewRequest(BaseModel):
     version: int = Field(ge=0)
     record_id: str | None = Field(default=None, max_length=64)
     fragment_id: str | None = Field(default=None, pattern=r"^f[1-9][0-9]*$", max_length=32)
-    action: Literal["save", "confirm", "exclude"]
+    action: Literal["save", "confirm", "exclude", "resolve"]
+    task_id: str | None = Field(default=None, min_length=1, max_length=256)
+    resolution: Literal["unreported", "ignored", "checked"] | None = None
     fields: ExperimentReviewFields | None = None
     verified: bool = False
 
@@ -66,6 +68,7 @@ def experiment_record_fields(kind: str, sample: dict | None, entry: dict) -> dic
     fields = [sample, metric, entry.get("method"), entry.get("result"), *(item["value"] for item in conditions)]
     ids = [evidence_id for field in fields if field for evidence_id in field.get("evidence_ids", [])]
     return {
+        **({"canonical_id": entry["canonical_id"]} if entry.get("canonical_id") else {}),
         "kind": kind,
         "sample": (sample or {}).get("raw_text", ""),
         "test": (entry.get("method") or {}).get("raw_text", ""),
@@ -76,8 +79,10 @@ def experiment_record_fields(kind: str, sample: dict | None, entry: dict) -> dic
     }
 
 
-def validate_experiment_review(fields: ExperimentReviewFields, evidence: list[dict], *, confirm: bool) -> None:
-    """核对出处身份和确认所需的样品及核心字段。"""
+def validate_experiment_review(
+    fields: ExperimentReviewFields, evidence: list[dict], *, confirm: bool, edit: bool = False,
+) -> None:
+    """校验出处身份、完整记录字段及补录确认的原文依据。"""
     quotes = {item["evidence_id"]: item["quote"] for item in evidence}
     if any(ref not in quotes for ref in fields.evidence_ids):
         raise ValueError("所选出处不属于当前正文草稿")
@@ -85,11 +90,15 @@ def validate_experiment_review(fields: ExperimentReviewFields, evidence: list[di
         raise ValueError("制备记录使用操作和条件字段")
     if not fields.metric and not fields.result:
         raise ValueError("请填写实验操作、指标或结果")
-    if not confirm:
+    if not (confirm or edit):
         return
     core = fields.result if fields.kind == "measurement" else fields.metric
-    if not (fields.sample and fields.metric and core and fields.evidence_ids):
-        raise ValueError("确认前须填写样品、核心实验字段并选择出处")
+    if not (fields.sample and fields.metric and core):
+        raise ValueError("保存前须填写样品及核心实验字段")
+    if not confirm:
+        return
+    if not fields.evidence_ids:
+        raise ValueError("确认前须选择出处")
     selected = [quotes[ref] for ref in fields.evidence_ids]
     if not _locates_literal(fields.sample, selected):
         raise ValueError("所选出处中找不到填写的样品名")

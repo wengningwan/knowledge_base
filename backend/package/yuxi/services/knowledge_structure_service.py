@@ -7,6 +7,7 @@ import uuid
 
 from yuxi.knowledge.adsorption_contract import STRUCTURE_PROMPT_VERSION, STRUCTURE_VERSION, output_schema
 from yuxi.knowledge.chunking.source import source_sha256
+from yuxi.knowledge.experiment_corrections import experiment_correction_tasks
 from yuxi.knowledge.experiment_review import (
     ExperimentReviewRequest,
     experiment_review_records,
@@ -87,7 +88,7 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 "model_spec": revision.model_spec,
                 "coverage": {
                     key: value for key, value in coverage.items()
-                    if key not in {"manual_review", "review_candidates", "canonical"}
+                    if key not in {"manual_review", "review_candidates", "canonical", "correction_tasks"}
                 },
                 "message": revision.error_message or "", "cards": [], "evidence": [],
                 "review_status": "machine_only",
@@ -106,11 +107,14 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                     "version": coverage.get("manual_review", {}).get("version", 0),
                     "records": list(experiment_review_records(result["cards"], coverage).values()),
                 }
+                result["review"]["tasks"] = experiment_correction_tasks(
+                    coverage, result["evidence"], {item["record_id"]: item for item in result["review"]["records"]},
+                )
                 if coverage.get("partial_result"):
-                    count = coverage.get("validation_notice_count", 0)
+                    count = sum(not item["resolution"] for item in result["review"]["tasks"])
                     result["message"] = (
-                        f"已保留可核对的记录。下载 JSON 可查看 {count} 条校验说明。"
-                        if count else "已保留可核对的记录。部分正文无法定位到 PDF 页码。"
+                        f"已保留可用数据，还有 {count} 项待人工校对。"
+                        if count else "已保留可用数据。提取异常可在人工校对页的技术说明中查看。"
                     )
                 elif not result["cards"]:
                     result["message"] = (
@@ -153,7 +157,7 @@ async def read_experiment_json(kb_id, file_id, *, uid, revision_id):
 
 
 async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentReviewRequest):
-    """在文档锁与当前正文版本内原子保存单条审核。"""
+    """在文档锁与当前正文版本内保存修改或补录。"""
     repo = KnowledgeStructureRepository()
     async with KnowledgeFileRepository().lock_file_operation(kb_id, file_id):
         async with pg_manager.get_async_session_context() as session:
@@ -170,42 +174,99 @@ async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentRevie
             coverage = dict(revision.coverage or {})
             review = coverage.get("manual_review", {})
             if change.version != review.get("version", 0):
-                raise StructureConflictError("已有其他审核修改，请重新打开页面后核对")
+                raise StructureConflictError("记录已被修改，请重新打开页面")
             markdown = await _read_structure_markdown(revision.markdown_file, kb_id=kb_id, file_id=file_id)
             if source_sha256(markdown) != change.source_sha256:
                 raise StructureConflictError("正文内容已变化，请重新入库")
             cards, evidence = await repo.read_result(session, revision)
             records = experiment_review_records(cards, coverage)
-            if change.record_id is not None and change.record_id not in records:
+            task = None
+            if change.task_id is not None:
+                task = next((item for item in experiment_correction_tasks(coverage, evidence, records)
+                             if item["task_id"] == change.task_id), None)
+                if task is None:
+                    raise ValueError("该校对任务不属于当前草稿")
+                if change.action not in {"save", "resolve"}:
+                    raise ValueError("请选择保存校对结果或处理说明")
+                if change.record_id is not None and change.record_id != task.get("record_id"):
+                    raise ValueError("校对任务与目标记录不一致")
+            record_id = task.get("record_id") if task else change.record_id
+            fragment_id = task.get("fragment_id") if task else change.fragment_id
+            if task is None and fragment_id is not None and record_id is not None:
+                raise ValueError("该原文片段不能用于当前记录")
+            if record_id is not None and record_id not in records:
                 raise ValueError("该实验记录不属于当前草稿")
-            if change.fragment_id is not None:
-                if change.record_id is not None or not any(
-                    fact["fact_id"] == change.fragment_id for fact in coverage.get("unassigned_facts", [])
+            if fragment_id is not None and record_id is None:
+                if not any(
+                    fact["fact_id"] == fragment_id for fact in coverage.get("unassigned_facts", [])
                 ):
                     raise ValueError("该原文片段不能用于当前记录")
-                if any(record.get("fragment_id") == change.fragment_id for record in records.values()):
+                if any(record.get("fragment_id") == fragment_id for record in records.values()):
                     raise StructureConflictError("该原文片段已整理，请重新打开页面")
-            if change.action == "exclude":
-                if change.record_id is None:
+            if task is None and (change.resolution is not None or change.action == "resolve"):
+                raise ValueError("请指定当前校对任务")
+            record = None
+            resolution_evidence = None
+            if change.action == "resolve":
+                if change.resolution is None:
+                    raise ValueError("请选择处理说明")
+                if change.resolution == "unreported" and task["kind"] != "missing":
+                    raise ValueError("仅缺失资料可以标记为原文未提供")
+                if change.resolution == "checked":
+                    resolution_evidence = (
+                        change.fields.evidence_ids if change.fields else task["fields"]["evidence_ids"]
+                    )
+                    known_evidence = {item["evidence_id"] for item in evidence}
+                    if task["kind"] != "source" or not resolution_evidence:
+                        raise ValueError("请先定位疑点的原文出处")
+                    if any(ref not in known_evidence for ref in resolution_evidence):
+                        raise ValueError("所选出处不属于当前正文草稿")
+                if record_id is not None and change.resolution != "checked":
+                    record = {**records[record_id], "status": "excluded"}
+            elif change.action == "exclude":
+                if record_id is None:
                     raise ValueError("请指定要排除的记录")
-                record = {**records[change.record_id], "status": "excluded"}
+                record = {**records[record_id], "status": "excluded"}
             else:
-                if change.fields is None or (change.action == "confirm" and not change.verified):
-                    raise ValueError("请填写字段并完成确认所需的人工核对")
-                validate_experiment_review(change.fields, evidence, confirm=change.action == "confirm")
-                record_id = change.record_id or f"manual-{uuid.uuid4().hex}"
+                if change.fields is None:
+                    raise ValueError("请填写实验字段")
+                if change.action == "confirm" and not change.verified:
+                    raise ValueError("确认补录前请完成原文核对")
+                editing = change.action == "save" and (record_id is not None or task is not None)
+                validate_experiment_review(
+                    change.fields, evidence, confirm=change.action == "confirm", edit=editing,
+                )
+                if task is not None and not change.fields.evidence_ids:
+                    raise ValueError("请为校对结果选择原文出处")
+                if task is not None and task["kind"] == "source" and record_id is None:
+                    raise ValueError("原文疑点请记录核对结论；已有数据可在样品结果中直接修改")
+                record_id = record_id or f"manual-{uuid.uuid4().hex}"
                 record = {
                     **change.fields.model_dump(), "record_id": record_id,
-                    "status": "confirmed" if change.action == "confirm" else "pending",
+                    "status": "edited" if editing else "confirmed" if change.action == "confirm" else "pending",
                 }
-                fragment_id = change.fragment_id or records.get(record_id, {}).get("fragment_id")
+                fragment_id = fragment_id or records.get(record_id, {}).get("fragment_id")
                 if fragment_id is not None:
                     record["fragment_id"] = fragment_id
+                if records.get(record_id, {}).get("canonical_id"):
+                    record["canonical_id"] = records[record_id]["canonical_id"]
             version = change.version + 1
             items = dict(review.get("items", {}))
-            items[record["record_id"]] = {"record": record, "operator_id": uid, "updated_at": utc_now().isoformat()}
-            await repo.save_review(session, revision, {"version": version, "items": items})
-    return {"version": version, "record": record}
+            if record is not None:
+                items[record["record_id"]] = {"record": record, "operator_id": uid, "updated_at": utc_now().isoformat()}
+                records[record["record_id"]] = record
+            resolutions = dict(review.get("resolutions", {}))
+            if task is not None:
+                resolutions[task["task_id"]] = {
+                    "outcome": "saved" if change.action == "save" else change.resolution,
+                    "record_id": record["record_id"] if record else task.get("record_id"),
+                    "evidence_ids": resolution_evidence,
+                    "operator_id": uid, "updated_at": utc_now().isoformat(),
+                }
+            review = {"version": version, "items": items, "resolutions": resolutions}
+            await repo.save_review(session, revision, review)
+            tasks = experiment_correction_tasks({**coverage, "manual_review": review}, evidence, records)
+    return {"version": version, "record": record, "tasks": tasks}
 
 
 async def retry_experiment_cards(kb_id, file_id, *, uid, revision_id, expected_source_sha256):

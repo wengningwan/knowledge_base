@@ -11,6 +11,8 @@ export const experimentFields = {
 
 const labels = {
   characterization: '材料表征', equilibrium_isotherm: '平衡吸附', isotherm_model_fit: '模型拟合',
+  adsorption_kinetics: '吸附动力学', kinetic_selectivity: '动力学选择性', diffusion_time_constant: '扩散时间常数',
+  kinetic_uptake_curve: '吸附动力学曲线', kinetic_scalar_values: '动力学数值', species_pair: '气体对',
   mixture_prediction: '混合气预测', isosteric_heat_derivation: '等量吸附热推导',
   breakthrough: '动态穿透', computational_adsorption: '计算吸附',
   gas_physisorption: '氮气吸附测试', scanning_electron_microscopy: '扫描电子显微镜',
@@ -36,6 +38,9 @@ const labels = {
   surface_area_normalized_isotherm: '按表面积归一的等温线',
   selectivity_vs_pressure: '选择性与压力', isosteric_heat_vs_loading: '吸附热与吸附量',
   breakthrough_curve: '穿透曲线', temperature: '温度', pressure: '压力',
+  activation_temperature: '活化温度', KOH_to_asphalt_mass_ratio: 'KOH/沥青质量比',
+  carbonization_temperature: '碳化温度', cross_linking_temperature: '交联温度', EDA_amount: 'EDA 用量',
+  voltage: '电压', flow_rate: '流量', spinning_distance: '纺丝距离',
   duration: '时长', hold_duration: '保温时长', heating_rate: '升温速率',
   atmosphere: '气氛', atmosphere_streams: '气体与流量', endpoint: '终点',
   repeat_qualifier: '重复次数', temperature_qualifier: '温度描述', pressure_qualifier: '压力描述',
@@ -43,7 +48,10 @@ const labels = {
   printed_page_conflict: '印刷页码有冲突', unverified_printed_pages: '印刷页码未核对',
   unverified_observation: '观测需要核对', ambiguous_peak_assignment: '峰归属有疑点',
   comparison_basis_mismatch: '比较基准不同', interpretation_scope_tension: '解释范围有差异',
-  sign_convention_ambiguity: '符号定义有疑点', suspected_unit_error: '单位疑点'
+  sign_convention_ambiguity: '符号定义有疑点', suspected_unit_error: '单位疑点',
+  signed_value_from_figure: '图中的有符号结合能', magnitude_reported_in_prose: '正文报告的结合能大小',
+  interaction_distance_from_figure: '图中的相互作用距离', data_points: '曲线数值点',
+  unit_raw: '原始单位', unit: '单位', sample_mass: '样品用量', particle_size: '颗粒尺寸'
 }
 
 /** 将规范字段翻译为阅读标签，原始键仍由字段树保留。 */
@@ -110,30 +118,110 @@ function tableCellHtml(cell) {
   return experimentTextHtml(text)
 }
 
-/** 原表只保留单元格文字，按样品和结果标记交点。 */
-export function experimentEvidenceMarkdown(quote, record) {
+/** 忽略 PDF 空白与数学排版，保留标识和数值符号。 */
+function evidenceText(value) {
+  return String(value ?? '').normalize('NFKC')
+    .replace(/\\(?:mathrm|textrm|text|mathbf|mathit|left|right)\b/g, '')
+    .replace(/\\%/g, '%').replace(/\\[,;! ]/g, '')
+    .replace(/\\[()[\]]/g, '').replace(/[$_{}]/g, '')
+    .replace(/−/g, '-').replace(/\s+/g, '').toLowerCase()
+}
+
+const tableMetricAliases = {
+  C_percent: ['C', 'Carbon'], O_percent: ['O', 'Oxygen'], N_percent: ['N', 'Nitrogen'],
+  O_over_C_percent: ['O/C'], N_over_C_percent: ['N/C'],
+  'textural.surface_area.specific': ['S_BET', 'BET', 'BET surface area', 'Specific surface area'],
+  'textural.pore_volume.total': ['Pore volume', 'Total pore volume', 'V_total'],
+  'raman.I_D/I_G': ['I_D/I_G']
+}
+
+/** 表头与审核指标的括号单位不参与名称匹配。 */
+function tableMetricName(value) {
+  return evidenceText(value).replace(/\([^()]*\)$/, '').replace(/%$/, '')
+}
+
+/** 后端投影的中文指标和单位后缀对应同一个规范指标。 */
+function canonicalTableMetric(metric) {
+  const name = tableMetricName(metric)
+  return Object.keys(tableMetricAliases).find(key =>
+    name === tableMetricName(key) || name === tableMetricName(experimentLabel(key))) || metric
+}
+
+/** 指标只与完整表头匹配，避免其他指标的同值被标记。 */
+function matchesMetric(header, metric) {
+  const label = tableMetricName(header)
+  return label && [metric, experimentLabel(metric), ...(tableMetricAliases[metric] || [])]
+    .some(name => tableMetricName(name) === label)
+}
+
+/** 纯十进制值只消除末尾零，其他单位和限定词保持逐字匹配。 */
+function evidenceValue(value, metric) {
+  let text = evidenceText(value)
+  if (metric?.endsWith('_percent')) text = text.replace(/%$/, '')
+  const decimal = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(text)
+  if (!decimal) return text
+  const integer = decimal[2].replace(/^0+(?=\d)/, '')
+  const fraction = (decimal[3] || '').replace(/0+$/, '')
+  return (decimal[1] === '-' ? '-' : '') + integer + (fraction ? '.' + fraction : '')
+}
+
+/** 规则表格只接受样品、指标和结果的唯一交点。 */
+function locateTableResult(table, record) {
+  if (!table || !record?.sample || !record.metric || !record.result) return null
+  const rows = Array.from(table.rows)
+  const regular = rows.every(row => row.cells.length === rows[0].cells.length &&
+    Array.from(row.cells).every(cell => cell.colSpan === 1 && cell.rowSpan === 1))
+  if (!regular) return null
+  const matches = []
+  const sample = evidenceText(record.sample)
+  const metric = canonicalTableMetric(record.metric)
+  const result = evidenceValue(record.result, metric)
+  for (const row of rows.slice(1)) {
+    for (const cell of Array.from(row.cells).slice(1)) {
+      const rowLabel = row.cells[0].textContent
+      const columnLabel = rows[0].cells[cell.cellIndex].textContent
+      const metricMatches = (evidenceText(columnLabel) === sample && matchesMetric(rowLabel, metric)) ||
+        (evidenceText(rowLabel) === sample && matchesMetric(columnLabel, metric))
+      if (metricMatches && evidenceValue(cell.textContent, metric) === result) {
+        matches.push(cell)
+      }
+    }
+  }
+  return matches.length === 1 ? matches[0] : null
+}
+
+/** 选择出处时只核对交点，不提前渲染所有引文的公式。 */
+export function experimentEvidenceMatches(quote, record) {
+  if (!/^\s*<table\b/i.test(quote || '')) return false
+  const table = new DOMParser().parseFromString(quote, 'text/html').querySelector('table')
+  return Boolean(locateTableResult(table, record))
+}
+
+/** 原表保留顺序和文字，定位结果与高亮共用交点规则。 */
+export function experimentEvidencePreview(quote, record) {
   const text = String(quote ?? '')
   if (!/^\s*<table\b/i.test(text)) {
-    if (/^(?:\\(?:frac|ln)\b|[A-Za-z]\s*=.*\\frac\b)/.test(text.trim())) return '$$\n' + text + '\n$$'
-    return mathMarkdown(text)
+    const content = /^(?:\\(?:frac|ln)\b|[A-Za-z]\s*=.*\\frac\b)/.test(text.trim())
+      ? '$$\n' + text + '\n$$' : mathMarkdown(text)
+    return { content, table: false }
   }
   const table = new DOMParser().parseFromString(text, 'text/html').querySelector('table')
-  if (!table) return text
-  const regular = Array.from(table.rows).every(row => Array.from(row.cells).every(cell => cell.colSpan === 1 && cell.rowSpan === 1))
-  return '<table>' + Array.from(table.rows, (row, rowIndex) => '<tr>' +
+  if (!table) return { content: '', table: true }
+  const target = locateTableResult(table, record)
+  const content = '<table>' + Array.from(table.rows, (row, rowIndex) => '<tr>' +
     Array.from(row.cells, (cell, columnIndex) => {
       const tag = rowIndex === 0 || columnIndex === 0 ? 'th' : 'td'
-      const raw = cell.textContent.trim()
-      const sampleMatches = record?.sample && (
-        table.rows[0]?.cells[columnIndex]?.textContent.trim() === record.sample ||
-        row.cells[0]?.textContent.trim() === record.sample
-      )
-      const marked = regular && tag === 'td' && sampleMatches && raw === record.result?.trim()
       const content = tableCellHtml(cell)
       return '<' + tag + ' colspan="' + cell.colSpan + '" rowspan="' + cell.rowSpan + '">' +
-        (marked ? '<mark>' + content + '</mark>' : content) + '</' + tag + '>'
+        (cell === target ? '<mark>' + content + '</mark>' : content) + '</' + tag + '>'
     }).join('') + '</tr>'
   ).join('') + '</table>'
+  return { content, table: true }
+}
+
+/** 审核页复用同一份表格匹配和受控渲染。 */
+export function experimentEvidenceMarkdown(quote, record) {
+  return experimentEvidencePreview(quote, record).content
 }
 
 /** 按实验用途归类审核记录，保留未知方法的原始名称。 */

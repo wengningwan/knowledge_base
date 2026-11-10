@@ -107,11 +107,11 @@
               />
             </label>
           </div>
-          <a-checkbox v-model:checked="editor.verified" class="section-title" :disabled="saving">已对照出处核对样品、条件及结果</a-checkbox>
+          <a-checkbox v-if="!editor.recordId" v-model:checked="editor.verified" class="section-title" :disabled="saving">已对照出处核对样品、条件及结果</a-checkbox>
           <a-alert v-if="error" type="error" :message="error" show-icon />
           <div class="record-actions">
-            <a-button :disabled="saving" @click="save('save')">{{ editorOnly ? '保存待确认' : '保存为待审核' }}</a-button>
-            <a-button type="primary" :loading="saving" :disabled="!editor.verified" @click="save('confirm')">确认本条</a-button>
+            <a-button :type="editor.recordId ? 'primary' : 'default'" :loading="saving" @click="save('save')">{{ editor.recordId ? '保存修改' : editorOnly ? '保存待确认' : '保存为待审核' }}</a-button>
+            <a-button v-if="!editor.recordId" type="primary" :loading="saving" :disabled="!editor.verified" @click="save('confirm')">确认本条</a-button>
             <a-button
               v-if="editor.recordId && editor.status !== 'excluded'" danger :disabled="saving" @click="save('exclude')"
             >排除</a-button>
@@ -137,9 +137,9 @@
           </dl>
           <p v-if="activeRecord.issue" class="muted">{{ issueLabels[activeRecord.issue] }}</p>
           <p v-if="canManage && activeRecord.status === 'pending'" class="muted section-title">
-            对照右侧原文，点「调整数据」补全、确认或排除这条记录。
+            点「修改」补全并保存这条记录，也可以排除。
           </p>
-          <a-button v-if="canManage" size="small" class="section-title" @click="editRecord(activeRecord)">调整数据</a-button>
+          <a-button v-if="canManage" size="small" class="section-title" @click="editRecord(activeRecord)">修改</a-button>
         </template>
         <template v-else-if="mode === 'review'">
           <h3 v-if="queueRecords.length">没有符合筛选条件的记录</h3>
@@ -188,7 +188,7 @@ const props = defineProps({
 const emit = defineEmits(['saved', 'cancel'])
 
 const kindLabels = { preparation: '制备', measurement: '测量' }
-const statusLabels = { machine: '机器草稿', pending: '待审核', confirmed: '已确认', excluded: '已排除' }
+const statusLabels = { machine: '机器草稿', pending: '待审核', edited: '已修改', confirmed: '已确认', excluded: '已排除' }
 const issueLabels = {
   missing_evidence: '部分字段缺少可定位出处',
   different_source: '需要核对不同原文位置间的归属',
@@ -200,8 +200,8 @@ const kindOptions = Object.entries(kindLabels).map(([value, label]) => ({ value,
 const highlightLabels = { result: '结果', metric: '指标或操作', sample: '样品', test: '方法' }
 const records = computed(() => props.snapshot.review?.records || [])
 const pending = computed(() => records.value.filter((record) => record.status === 'pending'))
-const processed = computed(() => records.value.filter((record) => ['confirmed', 'excluded'].includes(record.status)))
-const usable = computed(() => records.value.filter((record) => ['machine', 'confirmed'].includes(record.status)))
+const processed = computed(() => records.value.filter((record) => ['edited', 'confirmed', 'excluded'].includes(record.status)))
+const usable = computed(() => records.value.filter((record) => ['machine', 'edited', 'confirmed'].includes(record.status)))
 const mode = ref(usable.value.length ? 'samples' : 'review')
 const queueMode = ref('pending')
 const selectedSample = ref('')
@@ -348,8 +348,8 @@ const save = async (action) => {
       verified: current.verified
     })
     if (!record) return
-    notice.value = action === 'confirm' ? '本条记录已确认。' : action === 'exclude' ? '本条记录已排除。' : '已保存为待审核。'
-    if (action === 'save') {
+    notice.value = record.status === 'edited' ? '修改已保存。' : action === 'confirm' ? '本条记录已确认。' : action === 'exclude' ? '本条记录已排除。' : '已保存为待审核。'
+    if (record.status === 'pending') {
       mode.value = 'review'
       queueMode.value = 'pending'
     } else if (mode.value === 'samples') {

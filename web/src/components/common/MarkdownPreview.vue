@@ -37,6 +37,7 @@ const props = defineProps({
     default: false
   }
 })
+const emit = defineEmits(['rendered'])
 
 const themeStore = useThemeStore()
 const userStore = useUserStore()
@@ -365,6 +366,7 @@ onMounted(async () => {
   enhanceHtmlPreviews()
   enhanceKbImages()
   if (props.codeCopy) enhanceCodeBlocks()
+  emit('rendered', props.content)
 })
 
 window.addEventListener('message', handleHtmlPreviewHeight)
@@ -402,6 +404,7 @@ watch(
       enhanceKbImages()
       if (codeCopy) enhanceCodeBlocks()
       cleanupHtmlPreviewFrames()
+      emit('rendered', content)
     }
   },
   { immediate: true }

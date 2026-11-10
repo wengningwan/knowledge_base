@@ -6,16 +6,18 @@
       </button>
     </div>
     <nav class="paper-nav" aria-label="实验数据视图">
-      <button v-for="(label, key) in views" :key="key" type="button" :aria-pressed="view === key" @click="changeView(key)">{{ label }}</button>
+      <button v-for="(label, key) in views" :key="key" type="button" :aria-pressed="view === key" @click="changeView(key)">{{ label }}<span v-if="key === 'review' && pendingCorrectionCount"> · {{ pendingCorrectionCount }}</span></button>
+      <button v-if="canManage" type="button" @click="startNew()">新增记录</button>
     </nav>
-    <form class="paper-search" @submit.prevent="search">
+    <form v-if="view !== 'review'" class="paper-search" @submit.prevent="search">
       <label for="experiment-search">查结果</label>
       <a-input id="experiment-search" v-model:value="searchInput" placeholder="输入样品、指标或数值，例如 C-700-3 BET" allow-clear />
       <a-button html-type="submit" type="primary">搜索</a-button>
       <a-button v-if="query" @click="clearSearch">清除搜索</a-button>
     </form>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
-    <div class="paper-columns">
+    <ExperimentCorrectionQueue v-if="view === 'review'" :paper="paper" :snapshot="snapshot" :can-manage="canManage" :save-review="saveReview" />
+    <div v-else class="paper-columns">
       <nav class="paper-pane directory" aria-label="记录目录">
         <template v-if="view === 'samples'">
           <h3>{{ query ? '筛选样品' : '样品目录' }}</h3>
@@ -31,12 +33,6 @@
             <strong>{{ runTitle(run) }}</strong><small>{{ runNote(run) }}</small>
           </button>
           <p v-if="!paper.experiment_runs.length" class="empty">当前没有实验登记。</p>
-        </template>
-        <template v-else-if="view === 'review'">
-          <h3>核对与补录</h3>
-          <button v-for="(category, key) in reviewCategories" :key="key" type="button" :aria-pressed="reviewCategory === key" @click="chooseReviewCategory(key)">
-            <strong>{{ category.label }} <span class="count">{{ category.items.length }}</span></strong>
-          </button>
         </template>
         <template v-else>
           <h3>JSON 顶层字段</h3>
@@ -87,7 +83,7 @@
                 </section>
               </div>
               <button v-for="record in group.numeric" :key="record.record_id" type="button" class="result-row" :aria-pressed="inspection.record?.record_id === record.record_id" @click="chooseRecord(record)">
-                <span><ExperimentText :text="metricTitle(record)" /><small v-if="record.conditions"><ExperimentText :text="record.conditions" /></small><small v-if="record.status === 'confirmed'">已人工确认</small></span>
+                <span><ExperimentText :text="metricTitle(record)" /><small v-if="record.conditions"><ExperimentText :text="record.conditions" /></small><small v-if="['edited', 'confirmed'].includes(record.status)">{{ statusLabels[record.status] }}</small></span>
                 <strong><ExperimentText :text="recordResult(record)" /></strong><span class="muted">{{ recordPage(record) }}</span>
               </button>
               <details v-if="group.written.length" class="written-results">
@@ -101,11 +97,11 @@
             <p v-if="!measurementGroups.length" class="empty">当前样品没有这一类已组装的测量结果。</p>
           </template>
           <template v-else>
-            <button v-for="(operation, index) in sampleRoute?.operations || []" :key="operation.operation_id" type="button" class="step-row" :aria-pressed="(inspection.canonicalObject || inspection.object)?.operation_id === operation.operation_id" @click="chooseStep(operation)">
+            <button v-for="({ operation, record }, index) in preparationSteps" :key="operation.operation_id" type="button" class="step-row" :aria-pressed="(inspection.canonicalObject || inspection.object)?.operation_id === operation.operation_id" @click="chooseStep(operation)">
               <span class="step-number">{{ operation.sequence ?? index + 1 }}</span>
-              <span><strong>{{ experimentLabel(operation.operation_type) }}</strong><small v-if="reagentText(operation)">{{ reagentText(operation) }}</small><small><ExperimentText :text="experimentStepConditions(operation, activeSample)" /></small><small v-if="stepRecord(operation)?.status === 'confirmed'">已人工确认 · 在详情查看人工记录</small></span>
+              <span><strong>{{ experimentLabel(record?.metric || operation.operation_type) }}</strong><small v-if="reagentText(operation)">{{ reagentText(operation) }}</small><small><ExperimentText :text="record && record.status !== 'machine' ? record.conditions : experimentStepConditions(operation, activeSample)" /></small><small v-if="record && ['edited', 'confirmed'].includes(record.status)">{{ statusLabels[record.status] }}</small></span>
             </button>
-            <p v-if="!sampleRoute?.operations?.length" class="empty">这个样品没有关联的制备路线。</p>
+            <p v-if="!preparationSteps.length" class="empty">这个样品没有关联的制备步骤。</p>
             <template v-if="additionalPreparation.length">
               <h3 class="section-heading">其他制备记录</h3>
               <button v-for="record in additionalPreparation" :key="record.record_id" type="button" class="record-button" @click="chooseRecord(record)"><strong>{{ experimentLabel(record.metric) }}</strong><small><ExperimentText :text="record.conditions" /></small></button>
@@ -130,21 +126,10 @@
           </button>
           <p v-if="!runObservations.length" class="empty">这个实验没有关联观测。</p>
         </template>
-        <template v-else-if="view === 'review'">
-          <header class="pane-heading">
-            <h2>{{ currentReviewCategory.label }}</h2>
-            <p v-if="currentReviewCategory.help" class="muted">{{ currentReviewCategory.help }}</p>
-            <a-button v-if="canManage" size="small" @click="startNew()">补录记录</a-button>
-          </header>
-          <button v-for="(item, index) in currentReviewCategory.items" :key="item.record_id || item.issue_id || item.fact_id || index" type="button" class="record-button" @click="chooseReviewItem(item)">
-            <strong>{{ reviewTitle(item) }}</strong><small><ExperimentText :text="item.result || item.message || item.reason || item.raw_text || item.conditions || ''" /></small>
-          </button>
-          <p v-if="!currentReviewCategory.items.length" class="empty">目前没有{{ currentReviewCategory.label }}记录。</p>
-        </template>
         <template v-else>
           <header class="pane-heading">
             <h2>{{ jsonField ? experimentLabel(jsonField) : '完整原始 JSON' }}</h2>
-            <p class="muted">机器提取的原始数据。人工核对记录保存在「核对与补录」中。</p>
+            <p class="muted">机器提取的原始数据。人工处理记录保存在「人工校对」中。</p>
             <div class="button-group"><button type="button" class="small-button" :aria-pressed="jsonMode === 'code'" @click="jsonMode = 'code'">JSON 代码</button><button type="button" class="small-button" :aria-pressed="jsonMode === 'tree'" @click="jsonMode = 'tree'">字段树</button></div>
           </header>
           <pre v-if="jsonMode === 'code'" class="json-code">{{ JSON.stringify(jsonValue, null, 2) }}</pre>
@@ -166,9 +151,8 @@
             <p v-if="inspection.record?.conditions" class="muted"><ExperimentText :text="inspection.record.conditions" /></p>
             <p v-if="inspection.record && inspection.record.status !== 'machine'" class="record-status">{{ statusLabels[inspection.record.status] }}</p>
             <div v-if="canManage" class="button-group">
-              <a-button v-if="inspection.record" type="primary" size="small" @click="openEditor(inspection.record)">核对或修改</a-button>
-              <a-button v-else-if="inspection.fact" size="small" @click="openEditor(null, inspection.fact)">整理为记录</a-button>
-              <a-button v-else-if="view === 'review' || inspection.object.operation_id" size="small" @click="startNew()">补录记录</a-button>
+              <a-button v-if="inspection.record" type="primary" size="small" @click="openEditor(inspection.record)">修改</a-button>
+              <a-button v-else-if="inspection.object.operation_id" size="small" @click="startNew()">补录记录</a-button>
             </div>
             <template v-if="detailMode === 'fields'">
               <div class="field-content"><ExperimentStructureFields name="record" :value="inspection.object" /><ExperimentStructureFields v-if="inspection.canonicalObject" name="canonical_operation" :value="inspection.canonicalObject" /></div>
@@ -179,7 +163,8 @@
               </div>
               <section v-if="activeSource" class="source-content">
                 <p class="source-location"><strong>{{ sourceLabel(activeSource) }}</strong><span v-if="activeSource.printed_page"> · 期刊第 {{ activeSource.printed_page }} 页</span><small>{{ activeSource.location }}</small></p>
-                <MarkdownPreview :content="experimentEvidenceMarkdown(activeSource.quote, inspection.record)" :highlight-text="/^\s*<table\b/i.test(activeSource.quote) ? '' : inspection.record?.result || ''" compact />
+                <p v-if="inspection.record?.result && sourceHasHighlight === false" class="source-unlocated" role="status">当前出处未能定位到这条结果，请切换出处或对照原文核对。</p>
+                <MarkdownPreview :key="(inspection.record?.record_id || '') + ':' + activeSource.evidence_id" :content="activePreview.content" :highlight-text="activePreview.table ? '' : inspection.record?.result || ''" compact @rendered="onSourceRendered" />
               </section>
               <p v-else class="empty">这条记录未关联可展示的原文出处，可在结构字段中查看完整内容。</p>
             </template>
@@ -188,20 +173,21 @@
         </template>
       </aside>
     </div>
-    <a-modal :open="editorOpen" title="核对或修改" :width="1000" :footer="null" :mask-closable="false" :closable="!reviewEditor?.saving" :keyboard="!reviewEditor?.saving" destroy-on-close @cancel="closeEditor">
+    <a-modal :open="editorOpen" title="编辑记录" :width="1000" :footer="null" :mask-closable="false" :closable="!reviewEditor?.saving" :keyboard="!reviewEditor?.saving" destroy-on-close @cancel="closeEditor">
       <ExperimentReviewWorkspace v-if="editorOpen" ref="reviewEditor" :snapshot="snapshot" :can-manage="canManage" :save-review="saveReview" editor-only @saved="onSaved" @cancel="closeEditor" />
     </a-modal>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import ExperimentReviewWorkspace from './ExperimentReviewWorkspace.vue'
+import ExperimentCorrectionQueue from './ExperimentCorrectionQueue.vue'
 import ExperimentStructureFields from './ExperimentStructureFields.vue'
 import ExperimentText from './ExperimentText.vue'
 import {
-  experimentCategory, experimentEvidenceMarkdown, experimentLabel, experimentMethodFacts, experimentObservationValues,
+  experimentCategory, experimentEvidenceMatches, experimentEvidencePreview, experimentLabel, experimentMethodFacts, experimentObservationValues,
   experimentStepConditions, experimentUnit, experimentValue
 } from '@/utils/experimentPresentation'
 
@@ -212,8 +198,8 @@ const props = defineProps({
   saveReview: { type: Function, required: true }
 })
 
-const views = { samples: '样品与结果', runs: '实验与曲线', review: '核对与补录', json: '原始 JSON' }
-const statusLabels = { machine: '机器草稿', pending: '待确认', confirmed: '已人工确认', excluded: '已排除' }
+const views = { samples: '样品与结果', runs: '实验与曲线', review: '人工校对', json: '原始 JSON' }
+const statusLabels = { machine: '机器草稿', pending: '待确认', edited: '已修改', confirmed: '已人工确认', excluded: '已排除' }
 const categoryLabels = { character: '材料性质', adsorption: '吸附与选择性', breakthrough: '穿透与计算' }
 const view = ref('samples')
 const selectedSample = ref('')
@@ -221,11 +207,11 @@ const sampleMode = ref('results')
 const filter = ref('')
 const selectedRun = ref('')
 const expandedMethod = ref('')
-const reviewCategory = ref('pending')
 const jsonField = ref('')
 const jsonMode = ref('code')
 const detailMode = ref('source')
 const sourceId = ref('')
+const sourceHasHighlight = ref(null)
 const selection = ref(null)
 const searchInput = ref('')
 const query = ref('')
@@ -237,7 +223,8 @@ const mainPane = ref(null)
 const detailPane = ref(null)
 
 const records = computed(() => props.snapshot.review?.records || [])
-const usable = computed(() => records.value.filter(record => ['machine', 'confirmed'].includes(record.status)))
+const pendingCorrectionCount = computed(() => (props.snapshot.review?.tasks || []).filter(task => !task.resolution).length)
+const usable = computed(() => records.value.filter(record => ['machine', 'edited', 'confirmed'].includes(record.status)))
 const sampleNames = computed(() => [...new Set([
   ...props.paper.sample_states.map(sample => sample.reported_name),
   ...usable.value.map(record => record.sample).filter(Boolean)
@@ -287,23 +274,14 @@ const searchResults = computed(() => {
 const runObservations = computed(() => props.paper.observations.filter(observation =>
   observation.run_id === activeRun.value?.run_id || observation.run_ids?.includes(activeRun.value?.run_id)
 ))
+const preparationSteps = computed(() => (sampleRoute.value?.operations || [])
+  .map(operation => ({ operation, record: stepRecord(operation) }))
+  .filter(({ record }) => !record || (record.sample === activeSampleName.value && record.kind === 'preparation' &&
+    ['machine', 'edited', 'confirmed'].includes(record.status))))
 const additionalPreparation = computed(() => {
   const linked = new Set((sampleRoute.value?.operations || []).map(operation => stepRecord(operation)?.record_id))
   return usable.value.filter(record => record.kind === 'preparation' && record.sample === activeSampleName.value && !linked.has(record.record_id))
 })
-const reviewCategories = computed(() => {
-  const fragmentsUsed = new Set(records.value.map(record => record.fragment_id).filter(Boolean))
-  return {
-    pending: { label: '待确认', items: records.value.filter(record => record.status === 'pending') },
-    skipped: { label: '程序跳过', help: '这些候选未通过格式、编号或出处核对。找到原文依据后，可以补录。', items: props.paper.validation_issues.filter(item => item.issue_id.startsWith('issue:filtered:')) },
-    missing: { label: '缺少资料', help: '这里列出论文未报告、只在图中出现或需要补充材料的数据。', items: props.paper.missing_information },
-    source: { label: '原文疑点', help: '对照原文核对这些记录的符号、单位或实验条件。', items: props.paper.validation_issues.filter(item => !item.issue_id.startsWith('issue:filtered:')) },
-    confirmed: { label: '已确认', items: records.value.filter(record => record.status === 'confirmed') },
-    excluded: { label: '已排除', items: records.value.filter(record => record.status === 'excluded') },
-    fragments: { label: '未归属片段', items: (props.snapshot.coverage?.unassigned_facts || []).filter(fact => !fragmentsUsed.has(fact.fact_id)) }
-  }
-})
-const currentReviewCategory = computed(() => reviewCategories.value[reviewCategory.value])
 const inspection = computed(() => {
   if (selection.value?.recordId) {
     const record = records.value.find(item => item.record_id === selection.value.recordId)
@@ -313,7 +291,8 @@ const inspection = computed(() => {
   if (view.value === 'samples') {
     if (query.value) return searchResults.value[0] ? recordInspection(searchResults.value[0]) : { sources: [] }
     if (sampleMode.value === 'preparation') {
-      if (sampleRoute.value?.operations[0]) return stepInspection(sampleRoute.value.operations[0])
+      if (preparationSteps.value[0]) return stepInspection(preparationSteps.value[0].operation)
+      if (additionalPreparation.value[0]) return recordInspection(additionalPreparation.value[0])
       return activeSample.value ? canonicalInspection(activeSample.value, '样品信息') : { sources: [] }
     }
     const record = measurementGroups.value.flatMap(group => group.numeric)[0]
@@ -321,20 +300,56 @@ const inspection = computed(() => {
     return activeSample.value ? canonicalInspection(activeSample.value, '样品信息') : { sources: [] }
   }
   if (view.value === 'runs' && activeRun.value) return canonicalInspection(activeRun.value, runTitle(activeRun.value))
-  if (view.value === 'review' && currentReviewCategory.value.items[0]) return reviewInspection(currentReviewCategory.value.items[0])
   return { sources: [] }
 })
 const activeSource = computed(() => inspection.value.sources.find(source => source.evidence_id === sourceId.value) ||
-  inspection.value.sources.find(source => /^\s*<table\b/i.test(source.quote)) || inspection.value.sources[0])
+  preferredSource(inspection.value.sources, inspection.value.record))
+const activePreview = computed(() => experimentEvidencePreview(activeSource.value?.quote, inspection.value.record))
 
-/** 原始卡片位置拥有审核标识，重名操作不猜测对应记录。 */
+watch([() => activePreview.value.content, () => activeSource.value?.evidence_id, () => inspection.value.record?.record_id], () => {
+  sourceHasHighlight.value = null
+})
+
+/** 默认出处和结果行页码共同使用可定位的原表。 */
+function preferredSource(sources, record) {
+  return sources.find(source => experimentEvidenceMatches(source.quote, record)) ||
+    sources.find(source => /^\s*<table\b/i.test(source.quote)) || sources[0]
+}
+
+/** 根据当前预览的实际高亮反馈定位状态。 */
+function onSourceRendered(content) {
+  if (content !== activePreview.value.content) return
+  sourceHasHighlight.value = Boolean(detailPane.value?.querySelector('.source-content mark'))
+  revealSourceResult()
+}
+
+/** 宽屏滚动详情面板，窄屏沿实际外层容器显示高亮。 */
+function revealSourceResult() {
+  if (detailMode.value !== 'source') return
+  const pane = detailPane.value
+  const mark = pane?.querySelector('.source-content mark')
+  if (!mark) return
+  if (window.matchMedia('(max-width: 760px)').matches) {
+    mark.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    return
+  }
+  const paneRect = pane.getBoundingClientRect()
+  const markRect = mark.getBoundingClientRect()
+  if (markRect.top < paneRect.top || markRect.bottom > paneRect.bottom) {
+    pane.scrollTop += markRect.top - paneRect.top - pane.clientHeight / 2
+  }
+  if (markRect.left < paneRect.left || markRect.right > paneRect.right) {
+    pane.scrollLeft += markRect.left - paneRect.left - pane.clientWidth / 2
+  }
+}
+
+/** 按原机器位置关联记录，人工改名或改归属不改变身份。 */
 function stepRecord(operation) {
   const cardIndex = props.snapshot.cards.findIndex(card => card.sample?.raw_text === activeSampleName.value)
   const entries = props.snapshot.cards[cardIndex]?.preparation_steps || []
   const matches = entries.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry.operation?.raw_text === operation.operation_type)
   if (matches.length !== 1) return null
-  return records.value.find(record => record.record_id === 'preparation-' + cardIndex + '-' + matches[0].index &&
-    record.sample === activeSampleName.value && record.kind === 'preparation' && record.metric === operation.operation_type)
+  return records.value.find(record => record.record_id === 'preparation-' + cardIndex + '-' + matches[0].index)
 }
 
 /** 审核结果和机器原稿分别读取，选择后始终跟随服务端的新值。 */
@@ -355,19 +370,6 @@ function stepInspection(operation) {
   return record ? { ...recordInspection(record), canonicalObject: operation } : canonicalInspection(operation, experimentLabel(operation.operation_type))
 }
 
-/** 质量说明没有直接出处时，读取其明确引用的记录。 */
-function reviewInspection(item) {
-  if (item.record_id && item.kind) return recordInspection(item)
-  if (item.fact_id) return { object: item, fact: item, heading: '未归属片段', sources: item.evidence_ids.map(id => sourceMap.value.get(id)).filter(Boolean) }
-  const ids = item.record_ids || (item.record_id ? [item.record_id] : [])
-  const linked = [
-    ...props.paper.experiment_runs, ...props.paper.observations, ...props.paper.series_sets,
-    ...props.paper.sample_states, ...props.paper.synthesis_routes, ...props.paper.mechanism_claims
-  ].filter(record => ids.includes(record.run_id || record.observation_id || record.series_set_id || record.sample_state_id || record.route_id || record.claim_id))
-  const refs = [...new Set([...(item.evidence_ids || []), ...linked.flatMap(record => record.evidence_ids || []), ...ids.filter(id => canonicalEvidence.value.has(id))])]
-  return { ...canonicalInspection(item, reviewTitle(item)), sources: refs.map(id => canonicalEvidence.value.get(id)).filter(Boolean) }
-}
-
 /** 同页选择只更新详情，不切换导航。 */
 function select(detail) {
   selection.value = detail
@@ -377,6 +379,7 @@ function select(detail) {
     if (!detailPane.value) return
     detailPane.value.scrollTop = 0
     if (window.matchMedia('(max-width: 760px)').matches) detailPane.value.scrollIntoView({ block: 'start' })
+    revealSourceResult()
   })
 }
 
@@ -446,17 +449,6 @@ function chooseRun(run) {
   resetSelection()
 }
 
-/** 审核分类切换后显示该分类的第一条说明。 */
-function chooseReviewCategory(key) {
-  reviewCategory.value = key
-  resetSelection()
-}
-
-/** 核对说明和人工记录保留各自出处身份。 */
-function chooseReviewItem(item) {
-  select(reviewInspection(item))
-}
-
 /** 数量入口定位完整 JSON 字段。 */
 function showJson(field) {
   changeView('json')
@@ -485,11 +477,11 @@ function chooseSearchSample(name) {
 }
 
 /** 弹窗复用既有审核表单和真实保存回调。 */
-async function openEditor(record = null, fact = null) {
+async function openEditor(record = null) {
   if (!props.canManage) return
   editorOpen.value = true
   await nextTick()
-  reviewEditor.value?.editRecord(record, fact)
+  reviewEditor.value?.editRecord(record)
 }
 
 /** 补录默认绑定用户正在阅读的样品。 */
@@ -506,9 +498,8 @@ function closeEditor() {
 function onSaved(record) {
   editorOpen.value = false
   notice.value = statusLabels[record.status] + '，重新打开文件后仍可查看。'
-  if (record.status === 'pending' || record.status === 'excluded') {
+  if (record.status === 'pending') {
     changeView('review')
-    reviewCategory.value = record.status === 'pending' ? 'pending' : 'excluded'
   }
   select(recordInspection(record))
 }
@@ -517,10 +508,8 @@ function onSaved(record) {
 function sampleNote(name) {
   const sample = props.paper.sample_states.find(item => item.reported_name === name)
   const factors = props.paper.sample_batches.find(item => item.sample_batch_id === sample?.sample_batch_id)?.factor_assignments || {}
-  return [
-    factors.activation_temperature && experimentValue(factors.activation_temperature),
-    factors.KOH_to_asphalt_mass_ratio != null && '沥青∶KOH 1∶' + factors.KOH_to_asphalt_mass_ratio
-  ].filter(Boolean).join(' · ')
+  return Object.entries(factors).filter(([, value]) => value != null)
+    .map(([key, value]) => experimentLabel(key) + ' ' + experimentValue(value)).join(' · ')
 }
 
 /** 指标单位随标签显示，结果保留原始取值限定词。 */
@@ -543,7 +532,7 @@ function recordResult(record) {
 /** 当前记录的页码来自它关联的证据。 */
 function recordPage(record) {
   const sources = record.evidence_ids.map(id => sourceMap.value.get(id)).filter(Boolean)
-  const source = sources.find(item => /^\s*<table\b/i.test(item.quote)) || sources[0]
+  const source = preferredSource(sources, record)
   return source?.page ? 'PDF ' + source.page + ' 页' : '查看出处'
 }
 
@@ -610,14 +599,6 @@ function reagentText(operation) {
   }).join(' · ')
 }
 
-/** 说明标题优先显示用户可识别的指标或问题类型。 */
-function reviewTitle(item) {
-  if (item.metric) return [item.sample, metricTitle(item)].filter(Boolean).join(' · ')
-  if (item.issue_type) return experimentLabel(item.issue_type)
-  if (item.fact_id) return item.raw_text
-  return item.fields?.length ? '缺少 ' + item.fields.map(experimentLabel).join('、') : '缺少实验资料'
-}
-
 /** 出处切换按钮清楚区分原表与正文。 */
 function sourceLabel(source) {
   const kind = /^\s*<table\b/i.test(source.quote) ? '原表' : source.extraction_origin === 'figure' ? '图表说明' : '原文'
@@ -682,6 +663,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--main-colo
 .record-status { margin-top: 6px !important; color: var(--main-color); font-size: 12px; }
 .source-content { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--gray-150); }
 .source-location { margin-bottom: 8px !important; font-size: 12px; }
+.source-unlocated { margin-bottom: 8px !important; color: var(--color-text-secondary); font-size: 12px; }
 .source-content :deep(mark), .source-content :deep(.markdown-text-highlight) { color: inherit; background: var(--color-warning-100); }
 .source-content :deep(table) { font-size: 12px; }
 .field-content { padding: 10px; }
