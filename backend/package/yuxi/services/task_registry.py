@@ -68,6 +68,13 @@ _TASK_DEFINITIONS = {
             failure_function="fail_knowledge_file_task",
         ),
         TaskDefinition(
+            "knowledge_structure",
+            "yuxi.services.knowledge_structure_service",
+            "run_knowledge_structure",
+            success_function="finish_knowledge_structure",
+            failure_function="fail_knowledge_structure",
+        ),
+        TaskDefinition(
             "knowledge_graph_index",
             "yuxi.services.knowledge_task_service",
             "run_knowledge_graph",

@@ -1,4 +1,4 @@
-"""PDF模型请求的共享并发、成功缓存及真实用量；不截断篇级检查范围。"""
+"""文档模型请求的共享并发、PDF 成功缓存及真实用量。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,10 @@ class PdfModelUnavailable(Exception):
     """配置或共享准入不可用，调用方保留未完成状态。"""
 
 
+class InvalidPdfModelResponse(ValueError):
+    """供应商返回了不可作为文本读取的响应。"""
+
+
 @dataclass(frozen=True)
 class PdfModelResponse:
     """模型文本和服务报告用量，内容校验之前即可计量。"""
@@ -25,6 +29,8 @@ class PdfModelResponse:
     text: str
     usage: dict
     request_id: str
+    queue_seconds: float
+    call_seconds: float
 
 
 def content_digest(value) -> str:
@@ -113,7 +119,7 @@ class PdfModelExecutor:
         self._configuration()
         return self
 
-    async def request(self, prompt, images=(), *, mime="image/png", batch_id="-", attempt=1):
+    async def request(self, prompt, images=(), *, mime="image/png", batch_id="-", attempt=1, system_prompt=None):
         """只记安全规模和真实用量，取消时停止子请求并释放当前owner。"""
         await self._check()
         client = await self._connection()
@@ -150,11 +156,11 @@ class PdfModelExecutor:
             self.calls += 1
             route_stats["calls"] += 1
             self.vision_calls += int(bool(image_list))
-            logger.info(f"{prefix} request_start images={len(image_list)} input_chars={len(prompt)} input_image_bytes={sum(len(data) for data in image_list)} model={json.dumps(self.model_spec)}")
+            logger.info(f"{prefix} request_start images={len(image_list)} input_chars={len(prompt) + len(system_prompt or '')} input_image_bytes={sum(len(data) for data in image_list)} queue_s={queue_s:.2f} model={json.dumps(self.model_spec)}")
             started = time.monotonic()
             received = False
             try:
-                operation = asyncio.create_task(self._invoke(prompt, image_list, mime))
+                operation = asyncio.create_task(self._invoke(prompt, image_list, mime, system_prompt))
                 monitor = asyncio.create_task(self._renew(client, token))
                 done, _ = await asyncio.wait({operation, monitor}, return_when=asyncio.FIRST_COMPLETED)
                 if monitor in done:
@@ -169,10 +175,11 @@ class PdfModelExecutor:
                 content = getattr(response, "content", None)
                 if isinstance(content, list):
                     content = "\n".join(item["text"] for item in content if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str))
-                logger.info(f"{prefix} response_received output_chars={len(content) if isinstance(content, str) else 0} usage={json.dumps(usage, sort_keys=True)} call_s={time.monotonic() - started:.2f}")
+                call_s = time.monotonic() - started
+                logger.info(f"{prefix} response_received output_chars={len(content) if isinstance(content, str) else 0} usage={json.dumps(usage, sort_keys=True)} call_s={call_s:.2f}")
                 if not isinstance(content, str):
-                    raise ValueError("invalid_response_content")
-                return PdfModelResponse(content, usage, request_id)
+                    raise InvalidPdfModelResponse("invalid_response_content")
+                return PdfModelResponse(content, usage, request_id, queue_s, call_s)
             except BaseException as exc:
                 self.failed_requests += 1
                 route_stats["failed_requests"] += 1
@@ -253,13 +260,15 @@ class PdfModelExecutor:
         if self.control:
             await self.control.check_cancelled()
 
-    async def _invoke(self, prompt, images, mime):
+    async def _invoke(self, prompt, images, mime, system_prompt):
         """经现有适配器发送文本与有序图像。"""
-        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import HumanMessage, SystemMessage
 
         parts = [{"type": "text", "text": prompt}]
         parts.extend({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}} for data in images)
-        return await self.model.call([HumanMessage(content=parts)], stream=False)
+        user_message = HumanMessage(content=parts if images or system_prompt is None else prompt)
+        messages = [SystemMessage(content=system_prompt), user_message] if system_prompt is not None else [user_message]
+        return await self.model.call(messages, stream=False)
 
     async def _connection(self):
         """共享准入不可用时拒绝新增请求，不退化为无约束并发。"""

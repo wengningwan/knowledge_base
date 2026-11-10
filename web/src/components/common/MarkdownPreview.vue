@@ -15,6 +15,7 @@ import { isKnowledgeImageProxyPath } from '@/utils/knowledge_images.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useThemeStore } from '@/stores/theme'
 import { useUserStore } from '@/stores/user'
+import { highlightMarkdownText } from '@/utils/markdown_highlight'
 import { renderMarkdown } from '@/utils/markdown_preview'
 import { HTML_PREVIEW_MAX_HEIGHT, HTML_PREVIEW_MIN_HEIGHT } from '@/utils/htmlPreviewRenderer'
 import 'katex/dist/katex.min.css'
@@ -26,6 +27,10 @@ const props = defineProps({
   compact: {
     type: Boolean,
     default: false
+  },
+  highlightText: {
+    type: String,
+    default: ''
   },
   codeCopy: {
     type: Boolean,
@@ -217,6 +222,7 @@ const replaceHtmlPreservingPreviews = (html) => {
   const existingPreviews = collectExistingHtmlPreviews(root)
   const template = document.createElement('template')
   template.innerHTML = html
+  if (props.highlightText) highlightMarkdownText(template.content, props.highlightText)
   const nextNodes = [...template.content.childNodes]
   const hasReusablePreview = nextNodes.some((node) => {
     if (!(node instanceof Element) || !node.classList.contains('html-preview-render')) return false
@@ -370,7 +376,7 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  [() => props.content, shikiTheme, () => props.codeCopy],
+  [() => props.content, shikiTheme, () => props.codeCopy, () => props.highlightText],
   async ([content, theme, codeCopy], _, onCleanup) => {
     let expired = false
     onCleanup(() => {

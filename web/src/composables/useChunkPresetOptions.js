@@ -17,6 +17,7 @@ const normalizeChunkPresetOptions = (options) => {
       label: String(item.label),
       description: item.description ? String(item.description) : ''
     }))
+    .sort((left, right) => Number(right.value === 'paper') - Number(left.value === 'paper'))
 }
 
 export const useChunkPresetOptions = () => {

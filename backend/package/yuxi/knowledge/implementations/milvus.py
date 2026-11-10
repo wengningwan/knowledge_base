@@ -870,13 +870,19 @@ class MilvusKB(KnowledgeBase):
             }
             if operator_id:
                 update_data["updated_by"] = operator_id
-            updated_record = await file_repo.update_fields_if_status(
-                file_id=file_id,
-                kb_id=kb_id,
-                allowed_statuses={FileStatus.INDEXING},
-                data=update_data,
-                **owner_filter,
-            )
+            if params.get("chunk_preset_id") == "paper":
+                from yuxi.services.knowledge_structure_service import finish_index_with_structure
+
+                updated_record = await finish_index_with_structure(
+                    kb_id=kb_id, file_id=file_id, operator_id=operator_id,
+                    markdown_file=file_meta["markdown_file"], source_hash=source_sha256(markdown_content),
+                    data=update_data, processing_task_id=processing_task_id, processing_owner=processing_owner,
+                )
+            else:
+                updated_record = await file_repo.update_fields_if_status(
+                    file_id=file_id, kb_id=kb_id, allowed_statuses={FileStatus.INDEXING},
+                    data=update_data, **owner_filter,
+                )
             if updated_record is None:
                 raise asyncio.CancelledError("File processing owner was lost")
             return self._file_record_to_meta(updated_record)

@@ -344,7 +344,7 @@ import {
   ChevronDown,
   ChevronUp
 } from '@lucide/vue'
-import { buildChunkParamsPayload } from '@/utils/chunkUtils'
+import { buildChunkParamsPayload, DEFAULT_CHUNK_PRESET_ID } from '@/utils/chunkUtils'
 import ChunkParamsConfig from '@/components/ChunkParamsConfig.vue'
 import OCRSelector from '@/components/OCRSelector.vue'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
@@ -789,7 +789,7 @@ const showFigureModel = computed(() => ['disable', 'oxr_ocr'].includes(processin
 // 自动入库相关
 const autoIndex = ref(false)
 const indexParams = ref({
-  chunk_preset_id: '',
+  chunk_preset_id: DEFAULT_CHUNK_PRESET_ID,
   chunk_parser_config: {}
 })
 

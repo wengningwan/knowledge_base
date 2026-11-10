@@ -131,7 +131,7 @@ const parserConfig = computed(() => {
 })
 
 const presetOptions = computed(() => {
-  const options = []
+  const options = [...chunkPresetSelectOptions.value]
   const defaultPresetLabel =
     chunkPresetLabelMap.value[props.databasePresetId] ||
     props.databasePresetId ||
@@ -143,8 +143,6 @@ const presetOptions = computed(() => {
       label: `沿用知识库默认（${defaultPresetLabel}）`
     })
   }
-
-  options.push(...chunkPresetSelectOptions.value)
 
   return options
 })

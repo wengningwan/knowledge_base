@@ -239,6 +239,27 @@ export const documentApi = {
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/parse-assets`)
   },
 
+  /** 读取与当前正文绑定的实验卡片机器草稿。 */
+  getExperimentCards: async (kbId, docId) => {
+    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards`)
+  },
+
+  /** 读取指定草稿版本的规范机器 JSON。 */
+  getExperimentJson: async (kbId, docId, revisionId) => {
+    const query = buildQuery({ revision_id: revisionId })
+    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/json?${query}`)
+  },
+
+  /** 保存当前草稿的一条人工审核记录。 */
+  saveExperimentReview: async (kbId, docId, change) => {
+    return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/review`, change)
+  },
+
+  /** 仅重试指定正文版本的失败或取消任务。 */
+  retryExperimentCards: async (kbId, docId, snapshot) => {
+    return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/retry`, snapshot)
+  },
+
   /** 确认人工核对结果并同步当前 Markdown。 */
   confirmDocumentReview: async (kbId, docId, changes) => {
     return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/review-confirmations`, changes)
