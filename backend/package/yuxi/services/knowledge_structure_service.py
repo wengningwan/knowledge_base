@@ -192,9 +192,9 @@ async def read_experiment_json(
 ):
     """下载本次原稿或同一人工版本的当前结果，清理后拒绝旧快照。"""
     if view not in {"machine", "effective"}:
-    raise ValueError("不支持的实验 JSON 视图")
+        raise ValueError("不支持的实验 JSON 视图")
     if view == "effective" and (expected_source_sha256 is None or expected_review_version is None):
-    raise ValueError("当前结果下载必须携带正文与人工版本")
+        raise ValueError("当前结果下载必须携带正文与人工版本")
     repo = KnowledgeStructureRepository()
     async with pg_manager.get_async_session_context() as session:
         file, _kb = await repo.require_file(
