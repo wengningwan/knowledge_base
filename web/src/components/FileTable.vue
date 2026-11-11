@@ -81,6 +81,13 @@
       </template>
       <div class="index-params">
         <a-alert
+          v-if="indexConfigModalTitle === '重新入库参数配置'"
+          class="index-pending-alert"
+          type="warning"
+          show-icon
+          message="重新入库将清除旧检索数据，以及本次实验原稿、卡片、人工修改、证据和校对记录。新任务将从现有正文重新生成，失败或取消也不会恢复旧结果。"
+        />
+        <a-alert
           v-if="isPendingIndexOperation"
           class="index-pending-alert"
           type="info"

@@ -2,9 +2,10 @@
   <div class="experiment-panel" :class="{ 'is-draft': snapshot?.status === 'draft' }">
     <div class="experiment-toolbar">
       <span>实验卡片</span>
+      <a-button v-if="canRetry" size="small" :loading="retrying" @click="confirmRetry">重新提取</a-button>
     </div>
-    <a-spin v-if="loading && !snapshot" tip="正在读取实验卡片…" />
-    <a-alert v-if="error" type="error" show-icon :message="error" />
+    <a-spin v-if="(loading || retrying) && !snapshot" :tip="retrying ? '正在提交重新提取…' : '正在读取实验卡片…'" />
+    <a-alert v-if="error" type="error" show-icon :message="error"><template #action><a-button size="small" :loading="loading" @click="refresh">重新读取</a-button></template></a-alert>
     <template v-if="snapshot">
       <a-alert
         v-if="!snapshot.canonical_available && snapshot.status === 'draft' && !snapshot.review?.records?.length"
@@ -16,14 +17,15 @@
         <a-alert v-if="canonicalError" type="error" show-icon :message="canonicalError">
           <template #action><a-button size="small" :loading="loading" @click="refresh">重新读取</a-button></template>
         </a-alert>
-        <a-spin v-else-if="!canonical" tip="正在读取完整结构化数据…" />
         <CanonicalExperimentWorkspace
-          v-else
           :key="snapshot.revision_id"
-          :paper="canonical"
+          :paper="canonical || emptyPaper"
+          :effective-available="Boolean(canonical)"
+          :effective-json-available="snapshot.effective_available !== false"
           :snapshot="snapshot"
           :can-manage="canManage"
           :save-review="saveReview"
+          :load-machine="loadMachine"
         />
       </template>
       <ExperimentReviewWorkspace
@@ -36,9 +38,6 @@
       <template v-else>
         <a-alert :type="noticeType" show-icon :message="statusLabel" :description="snapshot.message" />
         <a-progress v-if="active" :percent="Math.round(snapshot.progress || 0)" size="small" />
-        <div v-if="canRetry">
-          <a-button :loading="retrying" @click="retry">重试失败任务</a-button>
-        </div>
       </template>
     </template>
   </div>
@@ -46,6 +45,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { Modal } from 'ant-design-vue'
 import { documentApi } from '@/apis/knowledge_api'
 import ExperimentReviewWorkspace from './ExperimentReviewWorkspace.vue'
 import CanonicalExperimentWorkspace from './CanonicalExperimentWorkspace.vue'
@@ -55,9 +55,12 @@ const props = defineProps({
   fileId: { type: [String, Number], required: true },
   canManage: { type: Boolean, default: false }
 })
+const emit = defineEmits(['snapshot', 'invalidate'])
 const snapshot = ref(null)
+const emptyPaper = { sample_states: [], sample_batches: [], synthesis_routes: [], experiment_runs: [], observations: [], series_sets: [], evidence: [] }
 const loading = ref(false)
 const retrying = ref(false)
+const savingReview = ref(false)
 const error = ref('')
 const canonical = ref(null)
 const canonicalError = ref('')
@@ -66,15 +69,15 @@ let retrySequence = 0
 let timer = null
 let disposed = false
 
-const active = computed(() => ['pending', 'running'].includes(snapshot.value?.status))
-const canonicalRevisionId = computed(() => snapshot.value?.canonical_available ? snapshot.value.revision_id : '')
-const canRetry = computed(() => props.canManage && ['failed', 'cancelled'].includes(snapshot.value?.status))
+const activeStatuses = ['indexing', 'pending', 'running']
+const active = computed(() => activeStatuses.includes(snapshot.value?.status))
+const canRetry = computed(() => props.canManage && ['draft', 'failed', 'cancelled'].includes(snapshot.value?.status) && !retrying.value)
 const statusLabel = computed(() => ({
-  not_generated: '尚未生成实验卡片', pending: '原文已入库，等待生成实验卡片',
+  not_generated: '尚未生成实验卡片', indexing: '正在重新入库，等待生成实验卡片', error_indexing: '重新入库失败，未生成实验卡片', pending: '原文已入库，等待生成实验卡片',
   running: '原文已入库，正在生成实验卡片',
   failed: '原文已入库，实验卡片生成失败', cancelled: '实验卡片生成已取消', stale: '实验草稿对应旧正文'
 }[snapshot.value?.status] || '实验卡片状态未知'))
-const noticeType = computed(() => ['failed', 'cancelled', 'stale'].includes(snapshot.value?.status) ? 'warning' : 'info')
+const noticeType = computed(() => ['failed', 'cancelled', 'stale', 'error_indexing'].includes(snapshot.value?.status) ? 'warning' : 'info')
 
 /** 每次读取废弃旧请求；轮询只在任务进行中继续。 */
 const refresh = async () => {
@@ -88,53 +91,104 @@ const refresh = async () => {
   try {
     const result = await documentApi.getExperimentCards(kbId, fileId)
     if (disposed || request !== sequence) return
-    canonical.value = null
+    canonicalError.value = result.effective_error || ''
+    if (activeStatuses.includes(result.status)) timer = setTimeout(refresh, 3000)
+    else if (result.status === 'draft') timer = setTimeout(checkCurrentRevision, 10000)
+    canonical.value = result.current_result || null
     snapshot.value = result
-    if (['pending', 'running'].includes(result.status)) timer = setTimeout(refresh, 3000)
-    if (result.status === 'draft' && result.canonical_available) {
-      try {
-        const record = await documentApi.getExperimentJson(kbId, fileId, result.revision_id)
-        if (!disposed && request === sequence) canonical.value = record
-      } catch (cause) {
-        if (!disposed && request === sequence) canonicalError.value = cause.message || '完整结构化数据读取失败，请重新读取。'
-      }
-    }
+    emit('snapshot', result)
+    return true
   } catch (cause) {
     if (!disposed && request === sequence) {
       snapshot.value = null
+      canonical.value = null
+      emit('snapshot', null)
       error.value = cause.message || '实验卡片读取失败，请重新打开卡片后再试。'
     }
+    return false
   } finally {
     if (!disposed && request === sequence) loading.value = false
   }
 }
 
-/** 用服务端提交的记录替换本页投影，旧页签响应不能覆盖新文档。 */
-const saveReview = async (change) => {
-  const current = snapshot.value
-  const result = await documentApi.saveExperimentReview(String(props.kbId), String(props.fileId), {
-    ...change,
-    revision_id: current.revision_id,
-    source_sha256: current.source_sha256,
-    version: current.review?.version || 0
-  })
-  if (disposed || snapshot.value !== current) return null
-  const records = [...(current.review?.records || [])]
-  if (result.record) {
-    const index = records.findIndex((record) => record.record_id === result.record.record_id)
-    if (index === -1) records.push(result.record)
-    else records[index] = result.record
+/** 后台只检查本次结果是否被清理，不覆盖仍在编辑的同版字段。 */
+const checkCurrentRevision = async () => {
+  if (disposed) return
+  if (savingReview.value || retrying.value) {
+    timer = setTimeout(checkCurrentRevision, 10000)
+    return
   }
-  snapshot.value = { ...current, review: { version: result.version, records, tasks: result.tasks } }
-  return change.task_id ? result : result.record
+  const request = sequence
+  const current = snapshot.value
+  try {
+    const result = await documentApi.getExperimentCards(String(props.kbId), String(props.fileId))
+    if (disposed || request !== sequence || current !== snapshot.value) return
+    if (result.revision_id !== current?.revision_id || result.status !== current?.status ||
+        result.source_sha256 !== current?.source_sha256) {
+      canonical.value = null
+      snapshot.value = null
+      emit('invalidate', current)
+      await refresh()
+      return
+    }
+  } catch {
+    // 短暂断线保留正在编辑的本地输入；保存与下载仍由服务端版本检查裁决。
+  }
+  if (!disposed && request === sequence) timer = setTimeout(checkCurrentRevision, 10000)
 }
 
-/** 重试携带当前正文版本，服务端再次校验权限。 */
+/** 保存后统一重读服务端投影与当前结果，不在浏览器合并人工记录。 */
+const saveReview = async (change) => {
+  const current = snapshot.value
+  if (!current || savingReview.value) return null
+  savingReview.value = true
+  try {
+    const result = await documentApi.saveExperimentReview(String(props.kbId), String(props.fileId), {
+      ...change,
+      revision_id: current.revision_id,
+      source_sha256: current.source_sha256,
+      version: current.review?.version || 0
+    })
+    if (disposed || snapshot.value !== current) return null
+    const refreshed = await refresh()
+    if (!refreshed) throw new Error('修改已保存，但当前结果读取失败，请重新读取。')
+    return change.task_id || change.entity_change ? result : result.record
+  } finally {
+    savingReview.value = false
+  }
+}
+
+/** 单独读取机器原稿，快照变化后不再交给旧页签。 */
+const loadMachine = async () => {
+  const current = snapshot.value
+  const request = sequence
+  const result = await documentApi.getExperimentJson(String(props.kbId), String(props.fileId), current.revision_id, {
+    view: 'machine', sourceSha256: current.source_sha256, expectedReviewVersion: current.review?.version || 0
+  })
+  if (disposed || request !== sequence || snapshot.value !== current) return null
+  return result
+}
+
+/** 明确提示重新提取会清理本次所有实验和人工修改。 */
+const confirmRetry = () => Modal.confirm({
+  title: '重新提取实验数据？',
+  content: '将清除本次实验原稿、卡片、人工修改、证据和处理记录，再从整篇正文重新提取。失败或取消也不会恢复旧结果。',
+  okText: '清除并重新提取', okType: 'danger', cancelText: '取消', onOk: retry
+})
+
+/** 清理请求立即废弃旧快照，迟到的读取和下载不能复活旧结果。 */
 const retry = async () => {
+  if (!canRetry.value) return
   const retryRequest = ++retrySequence
   const kbId = String(props.kbId)
   const fileId = String(props.fileId)
   const current = snapshot.value
+  sequence += 1
+  clearTimeout(timer)
+  snapshot.value = null
+  canonical.value = null
+  canonicalError.value = ''
+  emit('invalidate', current)
   retrying.value = true
   try {
     await documentApi.retryExperimentCards(kbId, fileId, {
@@ -145,7 +199,10 @@ const retry = async () => {
       await refresh()
     }
   } catch (cause) {
-    if (!disposed && retryRequest === retrySequence) error.value = cause.message || '重试失败，请重新打开卡片后再试。'
+    if (!disposed && retryRequest === retrySequence) {
+      await refresh()
+      error.value = cause.message || '重新提取失败，请重新读取状态。'
+    }
   } finally {
     if (!disposed && retryRequest === retrySequence) retrying.value = false
   }
@@ -167,7 +224,6 @@ onBeforeUnmount(() => {
   clearTimeout(timer)
 })
 
-defineExpose({ canonicalRevisionId })
 </script>
 
 <style scoped lang="less">

@@ -4,6 +4,8 @@
 类型：feature
 Owner：web/src/components/knowledge/ExperimentCardsPanel.vue
 
+工作台数据来源、步骤身份和下载版本的后续调整见[结构化正确性与导出提案](2026-11-11-experiment-structure-correctness-and-export.md)。本记录的当前装配与新提案的待实施行为分别保留，实际页面行为以源码为准。
+
 ## 问题
 
 实验卡片把制备、测试条件和结果混在长表中，反复展示相同出处。用户需要按已确认的原型阅读样品、实验、材料和完整 JSON，在样品内查看测试条件及制备步骤，并直接阅读公式。

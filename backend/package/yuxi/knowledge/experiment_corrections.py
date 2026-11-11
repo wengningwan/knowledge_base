@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from yuxi.knowledge.adsorption_quantities import quantity_from_text
+from yuxi.knowledge.experiment_review import review_parameters
+
 
 def project_rejected_corrections(record: dict, sources: dict, rejected: list[dict]) -> list[dict]:
     """保留被拒候选的明确字段，不猜测未知样品或出处。"""
@@ -15,11 +18,23 @@ def project_rejected_corrections(record: dict, sources: dict, rejected: list[dic
             continue
         collection = entry["collection"]
         if collection == "observations":
-            for index, (metric, result) in enumerate(_candidate_values(candidate)):
+            for index, (result_id, metric, result) in enumerate(_candidate_values(candidate)):
                 fields = _candidate_fields(candidate, record, refs)
                 fields.update(metric=_text(metric), result=_text(result))
+                context = {
+                    key: candidate[key] for key in ("observation_type", "entity_id")
+                    if isinstance(candidate.get(key), str) and candidate[key]
+                }
+                pair = candidate.get("ordered_species_pair")
+                pair_fields = ("numerator_entity_id", "denominator_entity_id")
+                if isinstance(pair, dict) and all(isinstance(pair.get(key), str) and pair[key] for key in pair_fields):
+                    context["ordered_species_pair"] = {key: pair[key] for key in pair_fields}
+                if context.get("observation_type") == "breakthrough_working_capacity" and isinstance(metric, str) and metric:
+                    context["entity_id"] = metric
                 tasks.append({
                     "task_id": f'{entry["issue_id"]}:{index}', "kind": "candidate", "fields": fields,
+                    "canonical_id": candidate.get("observation_id"), "result_id": result_id,
+                    "observation_context": context,
                     "reason": "模型提取的结果或归属未通过校验，请对照原文确认。",
                     "detail": entry["message"],
                 })
@@ -32,7 +47,16 @@ def project_rejected_corrections(record: dict, sources: dict, rejected: list[dic
                 fields.update(kind="preparation", metric=_text(operation.get("operation_type")))
                 tasks.append({
                     "task_id": f'{entry["issue_id"]}:{index}', "kind": "candidate", "fields": fields,
+                    "canonical_id": operation.get("operation_id"), "operation_id": operation.get("operation_id"),
                     "reason": "这条制备操作需要确认样品或条件。", "detail": entry["message"],
+                })
+        elif collection in {"chemical_entities", "sample_batches", "sample_states", "experiment_runs"}:
+            fields = _candidate_fields(candidate, record, refs)
+            if fields["evidence_ids"]:
+                tasks.append({
+                    "task_id": entry["issue_id"], "kind": "source", "fields": fields,
+                    "reason": "这项实验登记的数量或条件未通过原文核对，请查看原文；被拒登记尚未进入有效数据。",
+                    "detail": entry["message"], "rejected_record": deepcopy(candidate), "collection": collection,
                 })
     return tasks
 
@@ -80,7 +104,7 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
         related = [candidate for candidate in records.values()
                    if candidate.get("canonical_id") in ids]
         for candidate in related or [None]:
-            related_fields = {key: candidate[key] for key in fields} if candidate else fields
+            related_fields = {key: candidate.get(key, value) for key, value in fields.items()} if candidate else fields
             related_fields["evidence_ids"] = list(dict.fromkeys([
                 *related_fields["evidence_ids"], *fields["evidence_ids"],
             ]))[:32]
@@ -100,9 +124,16 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
         ):
             tasks.append({
                 "task_id": f"record:{record_id}", "kind": "candidate", "record_id": record_id,
-                "fields": {key: candidate.get(key, "") for key in (
+                "fields": {key: candidate.get(key) for key in (
                     "kind", "sample", "metric", "test", "conditions", "result", "evidence_ids",
-                )}, "reason": "请确认这条记录的样品、条件和结果。", "detail": candidate.get("issue", ""),
+                    "sample_state_id", "sample_state_ids", "scope", "run_id", "run_missing_reason", "parameters",
+                )},
+                "legacy_mapping_required": bool(candidate.get("legacy_mapping_required")),
+                "legacy_operation_sample_ids": candidate.get("legacy_operation_sample_ids"),
+                "reason": candidate.get("issue") if candidate.get("legacy_operation_mapping") else (
+                    "请指定旧修改的对应记录。" if candidate.get("legacy_mapping_required") else "请确认这条记录的样品、条件和结果。"
+                ),
+                "detail": candidate.get("issue", ""),
             })
     for fact in coverage.get("unassigned_facts", []):
         if f'fragment:{fact["fact_id"]}' not in resolutions and any(
@@ -117,6 +148,12 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
             "fields": fields, "reason": "原文片段尚未确定归属样品。", "detail": "",
         })
     for task in tasks:
+        task["fields"]["parameters"] = review_parameters(task["fields"].get("parameters") or {})
+        for key in ("evidence_ids", "sample_state_ids"):
+            task["fields"][key] = task["fields"].get(key) or []
+        for key in ("sample_state_id", "run_id", "run_missing_reason"):
+            task["fields"][key] = task["fields"].get(key) or None
+        task["fields"]["scope"] = task["fields"].get("scope") or "sample"
         resolution = resolutions.get(task["task_id"])
         record_id = resolution.get("record_id") if resolution else task.get("record_id")
         saved = records.get(record_id)
@@ -134,9 +171,10 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
         task["resolution"] = resolution
         if resolution and saved:
             task["record_id"] = saved["record_id"]
-            task["fields"] = {key: saved[key] for key in task["fields"]}
+            task["fields"] = {key: saved.get(key, value) for key, value in task["fields"].items()}
         if resolution and resolution.get("evidence_ids") is not None:
             task["fields"]["evidence_ids"] = resolution["evidence_ids"]
+        task["fields"]["parameters"] = review_parameters(task["fields"].get("parameters") or {})
     return tasks
 
 
@@ -146,9 +184,11 @@ def _candidate_fields(candidate: dict, record: dict, refs: dict) -> dict:
     if candidate.get("sample_state_id"):
         ids = [candidate["sample_state_id"]]
     if not ids:
-        ids = candidate.get("output_sample_state_ids") or candidate.get("target_sample_state_ids", [])
+        ids = candidate.get("applies_to_sample_state_ids") or candidate.get("output_sample_state_ids", [])
     ids = ids if isinstance(ids, list) else []
-    names = [item["reported_name"] for item in record.get("sample_states", []) if item["sample_state_id"] in ids]
+    states = {item["sample_state_id"]: item["reported_name"] for item in record.get("sample_states", [])}
+    ids = list(dict.fromkeys(item for item in ids if isinstance(item, str) and item in states))
+    names = [states[sample_id] for sample_id in ids]
     run = next((item for item in record.get("experiment_runs", []) if item["run_id"] == candidate.get("run_id")), {})
     conditions = candidate.get("conditions")
     conditions = conditions if isinstance(conditions, dict) else {}
@@ -156,9 +196,13 @@ def _candidate_fields(candidate: dict, record: dict, refs: dict) -> dict:
     evidence_ids = candidate.get("evidence_ids")
     evidence_ids = evidence_ids if isinstance(evidence_ids, list) else []
     return {
-        "kind": "measurement", "sample": _text(names[0]) if len(names) == 1 else "",
+        "kind": "measurement", "sample": _text(" / ".join(names)),
+        "sample_state_id": ids[0] if len(ids) == 1 else None, "sample_state_ids": ids,
+        "scope": "group" if len(ids) > 1 else "sample", "run_id": run.get("run_id"),
+        "run_missing_reason": None if run else candidate.get("run_missing_reason") or "unresolved",
         "metric": "", "test": _text(run.get("technique") or run.get("run_type") or candidate.get("technique")),
         "conditions": " · ".join(f"{key}: {_text(value)}" for key, value in conditions.items() if _text(value))[:16000],
+        "parameters": {key: quantity_from_text(text) for key, value in conditions.items() if (text := _text(value))},
         "result": "", "evidence_ids": list(dict.fromkeys(
             refs[ref] for ref in evidence_ids if isinstance(ref, str) and ref in refs
         ))[:32],
@@ -171,17 +215,19 @@ def _candidate_values(candidate: dict):
     results = candidate.get("results")
     if isinstance(results, dict):
         for metric, value in results.items():
-            yield metric, value
+            yield None, metric, value
     elif isinstance(results, list):
         for value in results:
             if isinstance(value, str):
-                yield kind, value
+                yield None, kind, value
             elif isinstance(value, dict):
                 if "binding_energy_eV" in value:
-                    yield value.get("assignment") or kind, {"value": value["binding_energy_eV"], "unit": "eV"}
+                    yield None, value.get("assignment") or kind, {
+                        "value": value["binding_energy_eV"], "unit": "eV",
+                    }
                 else:
                     metric = value.get("metric_id") or value.get("entity_id") or value.get("peak_name") or kind
-                    yield metric, value.get("value", value.get("position", value))
+                    yield value.get("result_id"), metric, value.get("value", value.get("position", value))
     found = False
     for key in (
         "value", "loading", "selectivity", "result", "reported_observation", "reported_order", "qualitative_result",
@@ -192,13 +238,13 @@ def _candidate_values(candidate: dict):
             metric = candidate.get("metric_id") or (
                 kind if key in {"value", "result", "loading", "selectivity"} else key
             )
-            yield metric or key, candidate[key]
+            yield candidate.get("result_id"), metric or key, candidate[key]
     written = candidate.get("qualitative_results")
     for value in written if isinstance(written, list) else []:
         found = True
-        yield kind, value
+        yield None, kind, value
     if not results and not found and candidate.get("metric_id"):
-        yield candidate["metric_id"], ""
+        yield candidate.get("result_id"), candidate["metric_id"], ""
 
 
 def _text(value) -> str:

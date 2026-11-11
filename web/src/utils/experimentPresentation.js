@@ -74,7 +74,12 @@ export function experimentValue(value) {
   if (Array.isArray(value)) return value.map(experimentValue).join(' · ')
   if (typeof value !== 'object') return experimentUnit(value)
   if (value.reported_value != null) return [value.reported_value, experimentUnit(value.reported_unit)].join(' ').trim()
-  if (value.raw_text) return value.raw_text
+  if (value.raw_text) {
+    if (!['scalar', 'range', 'uncertainty'].includes(value.kind) || !value.unit_raw) return value.raw_text
+    const raw = experimentUnit(value.raw_text)
+    const unit = experimentUnit(value.unit_raw)
+    return raw.includes(unit) ? raw : raw + ' ' + unit
+  }
   const unit = experimentUnit(value.unit_canonical || value.unit_raw || value.unit)
   if (value.minimum != null && value.maximum != null) return (value.minimum + '–' + value.maximum + ' ' + unit).trim()
   if (value.value != null) return ((value.operator && value.operator !== '=' ? value.operator : '') + String(value.value) + ' ' + unit).trim()
@@ -249,12 +254,13 @@ export function experimentMethodFacts(run) {
   const program = run.temperature_program
   return [
     ['仪器', run.instrument?.model],
-    ['方法', run.measurement_method || run.method],
+    ['方法', run.method || run.measurement_method],
     ['测试温度', (run.temperatures || [run.probe?.temperature || run.temperature]).filter(value => value != null).map(experimentValue).join('、')],
     ['测试压力', run.pressure == null ? '' : experimentValue(run.pressure)],
     ['测试前处理', prep && Object.entries(prep).filter(([, value]) => value != null).map(([key, value]) => experimentLabel(key) + ' ' + experimentValue(value)).join(' · ')],
     ['升温范围', program && [program.start, program.end].filter(value => value != null).map(experimentValue).join(' 至 ')],
-    ['升温速率', program?.heating_rate && experimentValue(program.heating_rate)]
+    ['升温速率', program?.heating_rate && experimentValue(program.heating_rate)],
+    ...Object.entries(run.conditions || {}).map(([key, value]) => ['条件 · ' + experimentLabel(key), experimentValue(value)])
   ].filter(([, value]) => value)
 }
 
@@ -267,28 +273,21 @@ export function experimentStepConditions(operation, sample) {
     .map(([key, value]) => experimentLabel(key) + ' ' + experimentValue(value)).join(' · ')
 }
 
-/** 读取规范观测的指标和取值，供显示单位核对。 */
+/** 当前观测的每个值均按稳定结果编号读取。 */
 export function experimentObservationValues(observation) {
-  const values = []
-  const add = (metric, value) => {
-    if (value != null) values.push({ metric, value })
+  return (observation.results || []).map(item => ({ resultId: item.result_id, metric: item.metric_id, value: item.value }))
+}
+
+/** 仅携带固定人工字段，投影中的目标编号不进入可编辑表单。 */
+export function experimentReviewFields(record) {
+  const kind = record.kind || 'measurement'
+  const scope = record.scope === 'group' ? 'group' : 'sample'
+  const runId = kind === 'measurement' ? record.run_id || null : null
+  return {
+    kind, scope, sample: record.sample || '', sample_state_id: scope === 'sample' ? record.sample_state_id || null : null,
+    sample_state_ids: scope === 'group' ? [...(record.sample_state_ids || [])] : [],
+    run_id: runId, run_missing_reason: runId || kind !== 'measurement' ? null : record.run_missing_reason === 'not_reported' ? 'not_reported' : 'unresolved',
+    metric: record.metric || '', test: record.test || '', conditions: record.conditions || '', result: kind === 'measurement' ? record.result || '' : '',
+    evidence_ids: [...(record.evidence_ids || [])], parameters: record.parameters || {}
   }
-  if (Array.isArray(observation.results)) {
-    for (const item of observation.results) {
-      if (typeof item === 'string') {
-        add(observation.observation_type, item)
-        continue
-      }
-      add(item.metric_id || item.entity_id || item.peak_name || item.assignment || observation.observation_type,
-        item.value ?? item.position ?? item.binding_energy_eV)
-    }
-  } else if (observation.results && typeof observation.results === 'object') {
-    for (const [metric, value] of Object.entries(observation.results)) add(metric, value)
-  }
-  for (const text of observation.qualitative_results || []) add('qualitative_results', text)
-  for (const key of ['value', 'selectivity', 'result', 'reported_observation', 'reported_order', 'qualitative_result', 'signed_value_from_figure', 'magnitude_reported_in_prose', 'interaction_distance_from_figure']) {
-    add(observation.metric_id || (['value', 'result'].includes(key) ? observation.observation_type : key), observation[key])
-  }
-  if (observation.observation_type === 'equilibrium_uptake') add(observation.observation_type, observation.loading)
-  return values
 }

@@ -204,11 +204,12 @@ class ModelRequestError(RuntimeError):
 
 
 class GeneralResponse:
-    def __init__(self, content, *, usage_metadata=None, token_usage=None):
+    def __init__(self, content, *, usage_metadata=None, token_usage=None, response_metadata=None):
         self.content = content
         self.is_full = False
         self.usage_metadata = usage_metadata
         self.token_usage = token_usage
+        self.response_metadata = response_metadata
 
 
 class LangChainChatAdapter:
@@ -229,6 +230,7 @@ class LangChainChatAdapter:
             return GeneralResponse(
                 response.text, usage_metadata=getattr(response, "usage_metadata", None),
                 token_usage=metadata.get("token_usage") if isinstance(metadata, dict) else None,
+                response_metadata=metadata,
             )
         except Exception as e:
             if self.safe_error_logging:

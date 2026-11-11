@@ -97,6 +97,8 @@ const editingModel = ref({
   request_body_overrides: {},
   request_body_overrides_text: '{}',
   context_length: null,
+  max_input_tokens: null,
+  max_completion_tokens: null,
   dimension: null,
   batch_size: null,
   supported_parameters: [],
@@ -564,7 +566,9 @@ const normalizeModel = (model = {}) => ({
     !Array.isArray(model.request_body_overrides)
       ? model.request_body_overrides
       : {},
-  context_length: model.context_length || null,
+  context_length: model.context_length ?? model.extra?.context_length ?? null,
+  max_input_tokens: model.max_input_tokens ?? model.extra?.max_input_tokens ?? null,
+  max_completion_tokens: model.max_completion_tokens ?? model.extra?.max_completion_tokens ?? null,
   dimension: model.dimension || null,
   batch_size: model.batch_size || null,
   supported_parameters: model.supported_parameters || [],
@@ -652,6 +656,8 @@ const openCreateModal = (provider) => {
     request_body_overrides: {},
     request_body_overrides_text: '{}',
     context_length: null,
+    max_input_tokens: null,
+    max_completion_tokens: null,
     dimension: null,
     batch_size: null,
     supported_parameters: [],
@@ -1381,6 +1387,21 @@ defineExpose({
             enable_thinking、thinking_budget、thinking、reasoning 和 reasoning_effort。
           </small>
         </label>
+
+        <div v-if="editingModel.type === 'chat'" class="form-row">
+          <label class="form-label">
+            <span>上下文容量（Token）</span>
+            <a-input-number v-model:value="editingModel.context_length" :min="1" :precision="0" />
+          </label>
+          <label class="form-label">
+            <span>最大输入（Token）</span>
+            <a-input-number v-model:value="editingModel.max_input_tokens" :min="1" :precision="0" />
+          </label>
+          <label class="form-label">
+            <span>最大输出（Token）</span>
+            <a-input-number v-model:value="editingModel.max_completion_tokens" :min="1" :precision="0" />
+          </label>
+        </div>
 
         <div class="form-row">
           <label class="form-label" v-if="editingModel.type === 'embedding'">

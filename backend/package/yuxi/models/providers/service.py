@@ -75,6 +75,10 @@ def _normalize_model_item(model: dict[str, Any]) -> dict[str, Any]:
     normalized["source"] = source
     normalized["display_name"] = str(model.get("display_name") or model.get("name") or model_id)
     normalized["extra"] = _normalize_dict(model.get("extra"))
+    for name in ("context_length", "max_input_tokens", "max_completion_tokens"):
+        for value in (model.get(name), normalized["extra"].get(name)):
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"模型 {model_id} 的 {name} 必须为正整数")
     if "request_body_overrides" in model:
         overrides = model.get("request_body_overrides")
         if not isinstance(overrides, dict):
@@ -272,7 +276,11 @@ def _normalize_remote_model(raw_model: dict[str, Any], model_type: str = "chat")
         "display_name": raw_model.get("name") or model_id,
         "description": raw_model.get("description"),
         "context_length": raw_model.get("context_length") or top_provider.get("context_length"),
-        "max_completion_tokens": top_provider.get("max_completion_tokens"),
+        "max_completion_tokens": (
+            raw_model.get("max_completion_tokens") or raw_model.get("max_output_tokens")
+            or top_provider.get("max_completion_tokens")
+        ),
+        "max_input_tokens": raw_model.get("max_input_tokens"),
         "input_modalities": architecture.get("input_modalities") or [],
         "output_modalities": architecture.get("output_modalities") or [],
         "supported_parameters": raw_model.get("supported_parameters") or [],

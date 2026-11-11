@@ -31,6 +31,7 @@ class PdfModelResponse:
     request_id: str
     queue_seconds: float
     call_seconds: float
+    finish_reason: str | None = None
 
 
 def content_digest(value) -> str:
@@ -179,7 +180,10 @@ class PdfModelExecutor:
                 logger.info(f"{prefix} response_received output_chars={len(content) if isinstance(content, str) else 0} usage={json.dumps(usage, sort_keys=True)} call_s={call_s:.2f}")
                 if not isinstance(content, str):
                     raise InvalidPdfModelResponse("invalid_response_content")
-                return PdfModelResponse(content, usage, request_id, queue_s, call_s)
+                metadata = getattr(response, "response_metadata", None) or {}
+                reason = (metadata.get("finish_reason") or metadata.get("stop_reason")) if isinstance(metadata, dict) else None
+                finish_reason = str(getattr(reason, "name", reason)) if reason is not None else None
+                return PdfModelResponse(content, usage, request_id, queue_s, call_s, finish_reason)
             except BaseException as exc:
                 self.failed_requests += 1
                 route_stats["failed_requests"] += 1

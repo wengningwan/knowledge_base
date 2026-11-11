@@ -46,11 +46,15 @@
                 </a-menu-item>
                 <a-menu-item
                   key="structured"
-                  :disabled="checkingStructure || downloadingStructured || !structureRevisionId || (viewMode === 'experiments' && !experimentPanel?.canonicalRevisionId)"
-                  :title="checkingStructure ? '正在读取结构化状态' : !structureRevisionId ? '当前没有可下载的结构化 JSON' : ''"
+                  :disabled="structureDownloadUnavailable || structureSnapshot?.effective_available === false"
+                  :title="structureSnapshot?.effective_error || structureDownloadHint"
                 >
                   <template #icon><FlaskConical :size="16" /></template>
                   下载结构化 JSON
+                </a-menu-item>
+                <a-menu-item key="machine" :disabled="structureDownloadUnavailable" :title="structureDownloadHint">
+                  <template #icon><FileText :size="16" /></template>
+                  下载机器原稿
                 </a-menu-item>
               </a-menu>
             </template>
@@ -135,11 +139,12 @@
       </div>
       <ExperimentCardsPanel
         v-if="viewMode === 'experiments'"
-        ref="experimentPanel"
         :key="`experiments-${file.file_id}`"
         :kb-id="kbId"
         :file-id="file.file_id"
         :can-manage="canManage"
+        @snapshot="syncStructureSnapshot"
+        @invalidate="invalidateStructureDownload"
       />
       <KeepAlive :max="1">
         <DocumentReviewPanel
@@ -219,8 +224,14 @@ const downloadingOriginal = ref(false)
 const downloadingMarkdown = ref(false)
 const downloadingStructured = ref(false)
 const checkingStructure = ref(false)
-const structureRevisionId = ref('')
-const experimentPanel = ref(null)
+const structureSnapshot = ref(null)
+const structureStatus = ref('')
+const structureDownloadUnavailable = computed(() => checkingStructure.value || downloadingStructured.value || !structureSnapshot.value)
+const structureDownloadHint = computed(() => checkingStructure.value ? '正在读取结构化状态' :
+  ['indexing', 'pending', 'running', 'rebuilding'].includes(structureStatus.value) ? '实验数据生成完成后可下载' :
+    !structureSnapshot.value ? '当前没有可下载的结构化 JSON' : '')
+let structureRequestSeq = 0
+let invalidatedRevision = ''
 const contentState = ref(emptyDocumentContent())
 const assetsState = ref(emptyDocumentAssets())
 const parseLoader = createDocumentParseLoader({
@@ -240,6 +251,7 @@ const saveReview = async (changes) => {
   const result = await documentApi.confirmDocumentReview(kbId, fileId, changes)
   if (!props.open || sequence !== basicRequestSeq || kbId !== String(props.kbId) || fileId !== String(props.fileId)) return
   emit('review-saved')
+  if (result.content_changed) invalidateStructureDownload(structureSnapshot.value)
   message.success(result.content_changed
     ? (result.index_invalidated ? '已同步到 Markdown，旧索引已清理，请重新入库。' : '已确认并同步到 Markdown。')
     : '已确认。')
@@ -293,9 +305,7 @@ const resetLocalState = () => {
   detailError.value = ''
   downloadingOriginal.value = false
   downloadingMarkdown.value = false
-  downloadingStructured.value = false
-  checkingStructure.value = false
-  structureRevisionId.value = ''
+  invalidateStructureDownload()
   parseLoader.reset()
   resetSourcePreview()
   viewMode.value = 'markdown'
@@ -412,9 +422,7 @@ const loadBasicInfo = async () => {
   }
 
   const requestId = ++basicRequestSeq
-  downloadingStructured.value = false
-  checkingStructure.value = false
-  structureRevisionId.value = ''
+  invalidateStructureDownload()
   file.value = null
   detailError.value = ''
   parseLoader.reset({ kbId, fileId })
@@ -587,19 +595,45 @@ const loadSourcePreview = async () => {
 /** 打开下载菜单时读取当前文件的可下载结构化版本。 */
 const loadStructureDownloadState = async (open) => {
   if (!open || !file.value || checkingStructure.value || downloadingStructured.value) return
-  const requestId = basicRequestSeq
+  const requestId = ++structureRequestSeq
   const kbId = String(props.kbId)
   const fileId = String(props.fileId)
   checkingStructure.value = true
-  structureRevisionId.value = ''
+  structureSnapshot.value = null
   try {
     const snapshot = await documentApi.getExperimentCards(kbId, fileId)
-    if (requestId !== basicRequestSeq || !props.open || kbId !== String(props.kbId) || fileId !== String(props.fileId)) return
-    if (snapshot.status === 'draft' && snapshot.canonical_available) structureRevisionId.value = snapshot.revision_id
+    if (requestId !== structureRequestSeq || !props.open) return
+    if (snapshot.revision_id !== invalidatedRevision) structureStatus.value = snapshot.status
+    if (snapshot.status === 'draft' && snapshot.canonical_available && snapshot.revision_id !== invalidatedRevision) structureSnapshot.value = snapshot
   } catch (error) {
-    if (requestId === basicRequestSeq && props.open) message.error(error.message || '结构化下载状态读取失败，请重新打开下载菜单。')
+    if (requestId === structureRequestSeq && props.open) message.error(error.message || '结构化下载状态读取失败，请重新打开下载菜单。')
   } finally {
-    if (requestId === basicRequestSeq) checkingStructure.value = false
+    if (requestId === structureRequestSeq) checkingStructure.value = false
+  }
+}
+
+/** 清理或切换文件后丢弃旧下载状态及在途响应。 */
+function invalidateStructureDownload(current = null) {
+  structureRequestSeq += 1
+  invalidatedRevision = current?.revision_id || ''
+  structureSnapshot.value = null
+  structureStatus.value = current ? 'rebuilding' : ''
+  downloadingStructured.value = false
+  checkingStructure.value = false
+}
+
+/** 实验页接收到重建后的版本时，同步顶部下载可用状态。 */
+function syncStructureSnapshot(snapshot) {
+  if (!snapshot) {
+    invalidateStructureDownload(invalidatedRevision ? { revision_id: invalidatedRevision } : null)
+    return
+  }
+  const revision = structureSnapshot.value?.revision_id
+  if (snapshot.status !== 'draft' || (revision && revision !== snapshot.revision_id)) invalidateStructureDownload()
+  structureStatus.value = snapshot.status
+  if (snapshot.status === 'draft' && snapshot.canonical_available) {
+    invalidatedRevision = ''
+    structureSnapshot.value = snapshot
   }
 }
 
@@ -610,36 +644,38 @@ const handleDownloadMenuClick = ({ key }) => {
   } else if (key === 'markdown') {
     handleDownloadMarkdown()
   } else if (key === 'structured') {
-    handleDownloadStructured()
+    handleDownloadStructured('effective')
+  } else if (key === 'machine') {
+    handleDownloadStructured('machine')
   }
 }
 
-/** 下载由服务端校验正文和版本的完整机器 JSON。 */
-const handleDownloadStructured = async () => {
-  if (downloadingStructured.value || checkingStructure.value || !structureRevisionId.value) return
-  const requestId = basicRequestSeq
+/** 两种下载都使用服务端校验的同次正文和人工版本。 */
+const handleDownloadStructured = async (view) => {
+  if (structureDownloadUnavailable.value || (view === 'effective' && structureSnapshot.value?.effective_available === false)) return
+  const requestId = structureRequestSeq
   const kbId = String(props.kbId)
   const fileId = String(props.fileId)
-  const revisionId = viewMode.value === 'experiments' ? experimentPanel.value?.canonicalRevisionId : structureRevisionId.value
-  if (!revisionId) return
+  const { revision_id: revisionId, source_sha256: sourceSha256, review } = structureSnapshot.value
+  const expectedReviewVersion = review?.version || 0
   downloadingStructured.value = true
   try {
-    const record = await documentApi.getExperimentJson(kbId, fileId, revisionId)
-    if (requestId !== basicRequestSeq || !props.open || kbId !== String(props.kbId) || fileId !== String(props.fileId)) return
+    const record = await documentApi.getExperimentJson(kbId, fileId, revisionId, { view, sourceSha256, expectedReviewVersion })
+    if (requestId !== structureRequestSeq || !props.open) return
     const blob = new Blob([JSON.stringify(record, null, 2) + '\n'], { type: 'application/json' })
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = 'adsorption-' + fileId + '.json'
+    link.download = `adsorption-${fileId}-${view === 'effective' ? 'current' : 'machine'}-${revisionId.slice(0, 8)}-v${expectedReviewVersion}.json`
     link.click()
     setTimeout(() => window.URL.revokeObjectURL(url), 1000)
     message.success('下载成功')
   } catch (error) {
-    if (requestId !== basicRequestSeq || !props.open) return
-    structureRevisionId.value = ''
+    if (requestId !== structureRequestSeq || !props.open) return
+    structureSnapshot.value = null
     message.error(error.message || '结构化 JSON 下载失败，请重新打开下载菜单后再试。')
   } finally {
-    if (requestId === basicRequestSeq) downloadingStructured.value = false
+    if (requestId === structureRequestSeq) downloadingStructured.value = false
   }
 }
 

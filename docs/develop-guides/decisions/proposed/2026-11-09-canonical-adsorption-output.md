@@ -4,6 +4,8 @@
 类型：feature
 Owner：backend/package/yuxi/knowledge/adsorption_schema.json
 
+身份与数量契约、当前结果下载及重新提取的后续设计见[结构化正确性与导出提案](2026-11-11-experiment-structure-correctness-and-export.md)。该提案尚待实施，本记录中的现有机器原稿行为仍以源码为准。
+
 ## 问题
 
 Paper 入库生成的机器草稿按样品组织制备与测量卡片，缺少《结构化输出(1).docx》样例中的论文、材料、样品状态、实验、观测、曲线与出处关系。用户需要下载与附件同构的 JSON。

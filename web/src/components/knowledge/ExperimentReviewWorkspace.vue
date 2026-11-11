@@ -19,10 +19,10 @@
         <template v-if="mode === 'samples'">
           <h3>样品目录</h3>
           <button
-            v-for="sample in samples" :key="sample" type="button" :disabled="Boolean(editor)"
-            :aria-pressed="sample === activeSample" @click="chooseSample(sample)"
+            v-for="sample in samples" :key="sample.sample_state_id" type="button" :disabled="Boolean(editor)"
+            :aria-pressed="sample.sample_state_id === activeSample?.sample_state_id" @click="chooseSample(sample.sample_state_id)"
           >
-            {{ sample }}
+            {{ sample.label || sample.reported_name }}
           </button>
           <p v-if="!samples.length" class="muted">当前没有已组装的样品卡。</p>
         </template>
@@ -56,7 +56,7 @@
       <section ref="recordScroll" class="workspace-column record-column" aria-label="实验记录">
         <template v-if="mode === 'samples' && activeSample && !editor">
           <p class="muted">样品卡</p>
-          <h2>{{ activeSample }}</h2>
+          <h2>{{ activeSample.label || activeSample.reported_name }}</h2>
           <h3 class="section-title">实验记录</h3>
           <div class="record-table">
             <table>
@@ -90,15 +90,7 @@
             <a-button size="small" :disabled="saving" @click="cancelEditor">取消</a-button>
           </div>
           <div class="edit-fields">
-            <label>记录类型<a-select v-model:value="editor.fields.kind" :options="kindOptions" :disabled="saving" /></label>
-            <label>归属样品<a-input v-model:value="editor.fields.sample" :maxlength="1000" :disabled="saving" /></label>
-            <label>操作或指标<a-input v-model:value="editor.fields.metric" :maxlength="1000" :disabled="saving" /></label>
-            <label>测试方法<a-input v-model:value="editor.fields.test" :maxlength="1000" :disabled="saving" /></label>
-            <label class="full-field">条件<a-textarea v-model:value="editor.fields.conditions" :maxlength="16000" :auto-size="{ minRows: 2 }" :disabled="saving" /></label>
-            <label v-if="editor.fields.kind === 'measurement'" class="full-field">
-              结果（保留原文限定词与单位）
-              <a-input v-model:value="editor.fields.result" :maxlength="1000" :disabled="saving" />
-            </label>
+            <ExperimentRecordFields v-model="editor.fields" class="full-field" :snapshot="snapshot" :paper="paper" :group="editor.group" :linked-run-ids="editor.linkedRunIds" :disabled="saving" @validity="parametersValid = $event" />
             <label class="full-field">
               选择出处
               <a-select
@@ -109,8 +101,8 @@
           </div>
           <a-alert v-if="error" type="error" :message="error" show-icon />
           <div class="record-actions">
-            <a-button :type="editor.recordId ? 'primary' : 'default'" :loading="saving" @click="save('save')">{{ editor.recordId ? '保存修改' : editorOnly ? '保存待确认' : '保存为待审核' }}</a-button>
-            <a-button v-if="!editor.recordId" type="primary" :loading="saving" @click="save('confirm')">确认本条</a-button>
+            <a-button :type="editor.recordId ? 'primary' : 'default'" :loading="saving" :disabled="!parametersValid" @click="save('save')">{{ editor.recordId ? '保存修改' : '保存为待审核' }}</a-button>
+            <a-button v-if="!editor.recordId" type="primary" :loading="saving" :disabled="!parametersValid || (editor.fields.kind === 'measurement' && editor.fields.run_missing_reason === 'unresolved')" @click="save('confirm')">确认补录</a-button>
             <a-button
               v-if="editor.recordId && editor.status !== 'excluded'" danger :disabled="saving" @click="save('exclude')"
             >排除</a-button>
@@ -176,10 +168,12 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
-import { experimentEvidenceMarkdown } from '@/utils/experimentPresentation'
+import ExperimentRecordFields from './ExperimentRecordFields.vue'
+import { experimentEvidenceMarkdown, experimentReviewFields } from '@/utils/experimentPresentation'
 
 const props = defineProps({
   snapshot: { type: Object, required: true },
+  paper: { type: Object, default: () => ({}) },
   canManage: { type: Boolean, default: false },
   saveReview: { type: Function, required: true },
   editorOnly: { type: Boolean, default: false }
@@ -195,7 +189,6 @@ const issueLabels = {
   table_alignment: '样品或指标与表格行列未对齐'
 }
 const views = [{ label: '样品卡', value: 'samples' }, { label: '待审核', value: 'review' }]
-const kindOptions = Object.entries(kindLabels).map(([value, label]) => ({ value, label }))
 const highlightLabels = { result: '结果', metric: '指标或操作', sample: '样品', test: '方法' }
 const records = computed(() => props.snapshot.review?.records || [])
 const pending = computed(() => records.value.filter((record) => record.status === 'pending'))
@@ -211,6 +204,7 @@ const highlightField = ref('result')
 const fragment = ref(null)
 const editor = ref(null)
 const saving = ref(false)
+const parametersValid = ref(true)
 const error = ref('')
 const notice = ref('')
 const evidenceScroll = ref(null)
@@ -220,17 +214,17 @@ const queueOptions = computed(() => [
   { label: `待审核 ${pending.value.length}`, value: 'pending' },
   { label: `已处理 ${processed.value.length}`, value: 'processed' }
 ])
-const samples = computed(() => [...new Set(usable.value.map((record) => record.sample).filter(Boolean))])
-const activeSample = computed(() => samples.value.includes(selectedSample.value) ? selectedSample.value : samples.value[0])
-const sampleRecords = computed(() => usable.value.filter((record) => record.sample === activeSample.value))
+const samples = computed(() => props.snapshot.sample_options || [])
+const activeSample = computed(() => samples.value.find(sample => sample.sample_state_id === selectedSample.value) || samples.value[0])
+const sampleRecords = computed(() => usable.value.filter(record => record.sample_state_id === activeSample.value?.sample_state_id || record.sample_state_ids?.includes(activeSample.value?.sample_state_id)))
 const queueRecords = computed(() => queueMode.value === 'pending' ? pending.value : processed.value)
 const sampleOptions = computed(() => [
   { label: '所有样品', value: '' },
-  ...[...new Set(queueRecords.value.map((record) => record.sample).filter(Boolean))].map((value) => ({ value, label: value }))
+  ...samples.value.map(sample => ({ value: sample.sample_state_id, label: sample.label || sample.reported_name }))
 ])
 const issueOptions = [{ value: '', label: '所有问题' }, ...Object.entries(issueLabels).map(([value, label]) => ({ value, label }))]
 const queue = computed(() => queueRecords.value.filter((record) =>
-  (!sampleFilter.value || record.sample === sampleFilter.value) &&
+  (!sampleFilter.value || record.sample_state_id === sampleFilter.value || record.sample_state_ids?.includes(sampleFilter.value)) &&
   (queueMode.value !== 'pending' || !issueFilter.value || record.issue === issueFilter.value)
 ))
 const activeRecord = computed(() => {
@@ -304,21 +298,23 @@ const chooseFragment = (fact) => {
 
 /** 从一条现有记录或可回查片段开始编辑。 */
 const editRecord = (record, fact) => {
+  parametersValid.value = true
   fragment.value = fact || null
   if (record) selectedId.value = record.record_id
   editor.value = {
     recordId: record?.record_id || null,
     status: record?.status,
     fragmentId: fact?.fact_id || null,
-    fields: {
-      kind: record?.kind || 'measurement',
-      sample: record?.sample ?? (props.editorOnly ? '' : mode.value === 'samples' ? activeSample.value || '' : ''),
-      metric: record?.metric || '',
-      test: record?.test || '',
+    group: record?.scope === 'group',
+    linkedRunIds: record?.run_id ? [] : record?.run_ids || [],
+    fields: experimentReviewFields({
+      ...record,
+      sample: record?.sample ?? (props.editorOnly ? '' : mode.value === 'samples' ? activeSample.value?.reported_name || '' : ''),
+      sample_state_id: record?.sample_state_id ?? (props.editorOnly ? null : mode.value === 'samples' ? activeSample.value?.sample_state_id || null : null),
       conditions: record?.conditions || (fact?.kind === 'condition' ? fact.raw_text : ''),
       result: record?.result || (fact?.kind === 'result' ? fact.raw_text : ''),
       evidence_ids: [...(record?.evidence_ids || fact?.evidence_ids || [])]
-    }
+    })
   }
   highlightField.value = 'result'
   error.value = ''
@@ -333,7 +329,7 @@ const cancelEditor = () => {
 
 /** 只在服务器提交成功后切换到最新记录状态。 */
 const save = async (action) => {
-  if (saving.value || !editor.value || !props.canManage) return
+  if (saving.value || !editor.value || !props.canManage || (action !== 'exclude' && !parametersValid.value)) return
   const current = editor.value
   saving.value = true
   error.value = ''
@@ -342,15 +338,15 @@ const save = async (action) => {
       action,
       record_id: current.recordId,
       fragment_id: current.fragmentId,
-      fields: action === 'exclude' ? null : { ...current.fields, result: current.fields.kind === 'preparation' ? '' : current.fields.result }
+      fields: action === 'exclude' ? null : experimentReviewFields(current.fields)
     })
     if (!record) return
-    notice.value = record.status === 'edited' ? '修改已保存。' : action === 'confirm' ? '本条记录已确认。' : action === 'exclude' ? '本条记录已排除。' : '已保存为待审核。'
+    notice.value = record.status === 'edited' ? '修改已保存。' : record.status === 'confirmed' ? '本条记录已确认。' : action === 'exclude' ? '本条记录已排除。' : '已保存为待审核。'
     if (record.status === 'pending') {
       mode.value = 'review'
       queueMode.value = 'pending'
     } else if (mode.value === 'samples') {
-      selectedSample.value = record.sample
+      selectedSample.value = record.sample_state_id
     }
     clearSelection()
     selectedId.value = record.record_id
