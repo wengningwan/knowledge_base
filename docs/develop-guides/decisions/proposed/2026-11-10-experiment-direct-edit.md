@@ -4,8 +4,6 @@
 类型：simplification
 Owner：backend/package/yuxi/services/knowledge_structure_service.py
 
-稳定记录身份、类型化人工修改及校对结果导出的后续设计见[结构化正确性与导出提案](2026-11-11-experiment-structure-correctness-and-export.md)。该提案保留直接保存交互，拟调整修改持久化和下载契约，尚不表示当前行为已经变化。
-
 ## 问题
 
 用户修改已有实验记录时仍需声明核对原文并确认，普通保存会将记录放入待确认队列，导致修改不能直接用于样品结果展示。新增记录的核对勾选框与「确认本条」重复表达用户意图，增加额外操作。

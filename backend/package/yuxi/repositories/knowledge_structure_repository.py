@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from yuxi.knowledge.adsorption_contract import STRUCTURE_PROMPT_VERSION, STRUCTURE_VERSION
 from yuxi.permissions import ResourcePermission, require_knowledge_base_permission
@@ -41,36 +41,11 @@ class KnowledgeStructureRepository:
             KnowledgeFile.kb_id == kb_id, KnowledgeFile.file_id == file_id, KnowledgeFile.is_folder.is_(False),
         )
         if lock:
-            statement = statement.with_for_update(read=lock == "read")
+            statement = statement.with_for_update()
         record = await session.scalar(statement)
         if record is None:
             raise StructureNotFoundError("文档不存在或不属于当前知识库")
         return record, kb
-
-    async def begin_index(self, session, *, kb_id, file_id, uid, markdown_file, data):
-        """在有效入库事务内标记执行归属并清理该文件的全部实验数据。"""
-        record, _kb = await self.require_file(
-            session, kb_id=kb_id, file_id=file_id, uid=uid, permission=ResourcePermission.MANAGE, lock=True,
-        )
-        if record.status not in {"parsed", "error_indexing", "indexed", "done"}:
-            raise StructureConflictError("文件正在处理或尚未解析，不能重新入库")
-        if not markdown_file or record.markdown_file != markdown_file:
-            raise StructureConflictError("解析正文已变化，请刷新后重新入库")
-        task_ids = await self._delete_results(session, kb_id=kb_id, file_id=file_id)
-        for name in ("status", "processing_params", "error_message", "processing_task_id", "processing_owner"):
-            if name in data:
-                setattr(record, name, data[name])
-        record.updated_by = uid
-        record.updated_at = utc_now()
-        await session.flush()
-        return record, task_ids
-
-    async def clear_results(self, session, *, kb_id, file_id, uid):
-        """在管理权限及文件行锁内删除旧实验结果，保留任务系统收敛记录。"""
-        await self.require_file(
-            session, kb_id=kb_id, file_id=file_id, uid=uid, permission=ResourcePermission.MANAGE, lock=True,
-        )
-        return await self._delete_results(session, kb_id=kb_id, file_id=file_id)
 
     async def finish_index(self, session, *, kb_id, file_id, uid, markdown_file, data, task_id, owner):
         """在入库任务的 lease 事务中发布原文索引状态。"""
@@ -117,12 +92,12 @@ class KnowledgeStructureRepository:
             raise StructureConflictError("实验任务身份不匹配")
         record, _kb = await self.require_file(
             session, kb_id=revision.kb_id, file_id=revision.file_id, uid=uid,
-            permission=ResourcePermission.MANAGE, lock=True if lock else "read",
+            permission=ResourcePermission.MANAGE, lock=lock,
         )
-        if record.markdown_file != revision.markdown_file or record.status not in {"indexed", "done"}:
+        if record.markdown_file != revision.markdown_file:
             raise StructureConflictError("正文已变化，本次实验抽取已失效")
         latest = await self.latest(session, kb_id=revision.kb_id, file_id=revision.file_id)
-        if latest is None or latest.revision_id != revision.revision_id:
+        if latest.revision_id != revision.revision_id:
             raise StructureConflictError("已有更新的实验抽取版本")
         return revision, record
 
@@ -187,26 +162,6 @@ class KnowledgeStructureRepository:
         revision.coverage = {**(revision.coverage or {}), "manual_review": review}
         revision.updated_at = utc_now()
         await session.flush()
-
-    async def save_coverage(self, session, *, task_id, uid, summary):
-        """仅由有效执行版本保存有界批次进度，不发布半成品。"""
-        revision, _file = await self.require_input(session, task_id=task_id, uid=uid, lock=True)
-        if revision.status != "pending":
-            raise StructureConflictError("实验抽取已经结束")
-        revision.coverage = {**(revision.coverage or {}), "batch_progress": summary}
-        revision.updated_at = utc_now()
-        await session.flush()
-
-    async def _delete_results(self, session, *, kb_id, file_id):
-        """revision 子表级联清理机器结果、证据和 JSONB 人工内容。"""
-        condition = (
-            KnowledgeStructureRevision.kb_id == kb_id,
-            KnowledgeStructureRevision.file_id == file_id,
-        )
-        task_ids = list(await session.scalars(select(KnowledgeStructureRevision.task_id).where(*condition)))
-        await session.execute(delete(KnowledgeStructureRevision).where(*condition))
-        await session.flush()
-        return task_ids
 
     def _check_evidence_refs(self, value, evidence_ids):
         """拒绝 JSON 中跨版本或不存在的字段引用。"""

@@ -1,18 +1,15 @@
 <template>
   <div class="canonical-workspace">
-    <div v-if="effectiveAvailable" class="paper-counts" aria-label="结构化记录数量">
+    <div class="paper-counts" aria-label="结构化记录数量">
       <button v-for="fact in counts" :key="fact.field" type="button" @click="showJson(fact.field)">
         <strong>{{ fact.count }}</strong> {{ fact.label }}
       </button>
     </div>
     <nav class="paper-nav" aria-label="实验数据视图">
       <button v-for="(label, key) in views" :key="key" type="button" :aria-pressed="view === key" @click="changeView(key)">{{ label }}<span v-if="key === 'review' && pendingCorrectionCount"> · {{ pendingCorrectionCount }}</span></button>
-      <button v-if="canManage && effectiveAvailable" type="button" @click="startNew()">新增记录</button>
-      <button v-if="canManage && effectiveAvailable && view === 'samples'" type="button" @click="openEntity('sample_state')">新增样品</button>
-      <button v-if="canManage && effectiveAvailable && view === 'samples'" type="button" @click="openEntity('sample_batch')">新增批次</button>
-      <button v-if="canManage && effectiveAvailable && view === 'runs'" type="button" @click="openEntity('experiment_run')">补录实验</button>
+      <button v-if="canManage" type="button" @click="startNew()">新增记录</button>
     </nav>
-    <form v-if="view === 'samples' || view === 'runs'" class="paper-search" @submit.prevent="search">
+    <form v-if="view !== 'review'" class="paper-search" @submit.prevent="search">
       <label for="experiment-search">查结果</label>
       <a-input id="experiment-search" v-model:value="searchInput" placeholder="输入样品、指标或数值，例如 C-700-3 BET" allow-clear />
       <a-button html-type="submit" type="primary">搜索</a-button>
@@ -25,10 +22,10 @@
         <template v-if="view === 'samples'">
           <h3>{{ query ? '筛选样品' : '样品目录' }}</h3>
           <button v-if="query" type="button" :aria-pressed="searchSample === ''" @click="chooseSearchSample('')">全部样品</button>
-          <button v-for="sample in samples" :key="sample.sample_state_id" type="button" :aria-pressed="(query ? searchSample : activeSampleId) === sample.sample_state_id" @click="query ? chooseSearchSample(sample.sample_state_id) : chooseSample(sample.sample_state_id)">
-            <strong>{{ sampleLabel(sample.sample_state_id) }}</strong><small v-if="sampleNote(sample)">{{ sampleNote(sample) }}</small>
+          <button v-for="name in sampleNames" :key="name" type="button" :aria-pressed="query ? searchSample === name : activeSampleName === name" @click="query ? chooseSearchSample(name) : chooseSample(name)">
+            <strong>{{ name }}</strong><small>{{ sampleNote(name) }}</small>
           </button>
-          <p v-if="!samples.length" class="empty">当前没有已登记样品。</p>
+          <p v-if="!sampleNames.length" class="empty">当前没有已登记样品。</p>
         </template>
         <template v-else-if="view === 'runs'">
           <h3>实验目录</h3>
@@ -40,7 +37,7 @@
         <template v-else>
           <h3>JSON 顶层字段</h3>
           <button type="button" :aria-pressed="jsonField === ''" @click="jsonField = ''">查看全文</button>
-          <button v-for="key in Object.keys(jsonPaper || {})" :key="key" type="button" :aria-pressed="jsonField === key" @click="jsonField = key">
+          <button v-for="key in Object.keys(paper)" :key="key" type="button" :aria-pressed="jsonField === key" @click="jsonField = key">
             {{ experimentLabel(key) }}<small>{{ key }}</small>
           </button>
         </template>
@@ -51,7 +48,7 @@
           <header class="pane-heading"><h2>搜索结果</h2><p class="muted">“{{ query }}” · {{ searchResults.length }} 项结果</p></header>
           <div class="result-head"><span>样品与指标</span><span>结果</span><span>原文出处</span></div>
           <button v-for="record in searchResults" :key="record.record_id" type="button" class="result-row" :aria-pressed="inspection.record?.record_id === record.record_id" @click="chooseRecord(record)">
-            <span><ExperimentText :text="metricTitle(record)" /><small>{{ recordSampleLabel(record) }} · {{ experimentLabel(record.test) }}</small><small v-if="record.conditions"><ExperimentText :text="record.conditions" /></small></span>
+            <span><ExperimentText :text="metricTitle(record)" /><small>{{ record.sample }} · {{ experimentLabel(record.test) }}</small><small v-if="record.conditions"><ExperimentText :text="record.conditions" /></small></span>
             <ExperimentText :text="recordResult(record)" /><span class="muted">{{ recordPage(record) }}</span>
           </button>
           <p v-if="!searchResults.length" class="empty">没有匹配的结果。可以试试样品编号、BET 或总孔容。</p>
@@ -59,13 +56,7 @@
         <template v-else-if="view === 'samples'">
           <header class="pane-heading">
             <h2>{{ activeSampleName || '样品与结果' }}</h2>
-            <p v-if="activeSample?.physical_form" class="muted">形态 · {{ activeSample.physical_form }}</p>
-            <p v-if="sampleNote(activeSample)" class="muted">制备条件 · {{ sampleNote(activeSample) }}</p>
-            <p v-if="activeBatch?.batch_number" class="muted">批号 · {{ activeBatch.batch_number }}</p>
-            <div v-if="canManage && activeSample" class="button-group">
-              <button type="button" class="small-button" @click="openEntity('sample_state', activeSample)">编辑样品</button>
-              <button v-if="activeBatch" type="button" class="small-button" @click="openEntity('sample_batch', activeBatch)">编辑批次</button>
-            </div>
+            <p v-if="sampleNote(activeSampleName)" class="muted">制备条件 · {{ sampleNote(activeSampleName) }}</p>
             <div class="button-group">
               <a-button :type="sampleMode === 'results' ? 'primary' : 'default'" @click="chooseSampleMode('results')">测量结果</a-button>
               <a-button :type="sampleMode === 'preparation' ? 'primary' : 'default'" @click="chooseSampleMode('preparation')">制备步骤</a-button>
@@ -76,30 +67,29 @@
           </header>
           <template v-if="sampleMode === 'results'">
             <div v-if="measurementGroups.length" class="result-head"><span>指标与条件</span><span>结果</span><span>原文出处</span></div>
-            <section v-for="group in measurementGroups" :key="group.key" class="method-group">
+            <section v-for="group in measurementGroups" :key="group.method" class="method-group">
               <div class="group-heading">
                 <strong>{{ experimentLabel(group.method) || '未注明测试方法' }}</strong>
-                <small v-if="group.run">{{ runNote(group.run) }}</small>
-                <button v-if="group.run" type="button" class="small-button" :aria-expanded="expandedMethod === group.key" @click="toggleMethod(group.key)">{{ expandedMethod === group.key ? '收起方法与条件' : '方法与条件' }}</button>
+                <button v-if="group.runs.length" type="button" class="small-button" :aria-expanded="expandedMethod === group.method" @click="toggleMethod(group.method)">{{ expandedMethod === group.method ? '收起方法与条件' : '方法与条件' }}</button>
               </div>
-              <div v-if="expandedMethod === group.key && group.run" class="method-details">
-                <section>
-                  <dl class="facts"><template v-for="[label, value] in experimentMethodFacts(group.run)" :key="label"><dt>{{ label }}</dt><dd><ExperimentText :text="value" /></dd></template></dl>
+              <div v-if="expandedMethod === group.method" class="method-details">
+                <section v-for="run in group.runs" :key="run.run_id">
+                  <p v-if="group.runs.length > 1" class="muted">{{ runNote(run) }}</p>
+                  <dl class="facts"><template v-for="[label, value] in experimentMethodFacts(run)" :key="label"><dt>{{ label }}</dt><dd><ExperimentText :text="value" /></dd></template></dl>
                   <div class="button-group">
-                    <button type="button" class="small-button" @click="chooseCanonical(group.run, runTitle(group.run))">完整实验字段</button>
-                    <button v-if="canManage" type="button" class="small-button" @click="openEntity('experiment_run', group.run)">编辑实验</button>
-                    <button v-for="curve in runCurves(group.run)" :key="curve.series_set_id" type="button" class="small-button" @click="chooseCanonical(curve, experimentLabel(curve.series_kind))">{{ curveTitle(curve) }}</button>
+                    <button type="button" class="small-button" @click="chooseCanonical(run, runTitle(run))">完整实验字段</button>
+                    <button v-for="curve in runCurves(run)" :key="curve.series_set_id" type="button" class="small-button" @click="chooseCanonical(curve, experimentLabel(curve.series_kind))">{{ curveTitle(curve) }}</button>
                   </div>
                 </section>
               </div>
               <button v-for="record in group.numeric" :key="record.record_id" type="button" class="result-row" :aria-pressed="inspection.record?.record_id === record.record_id" @click="chooseRecord(record)">
-                <span><ExperimentText :text="metricTitle(record)" /><small v-if="record.scope === 'group'">整组 · {{ recordSampleLabel(record) }}</small><small v-if="!group.run && record.test">{{ experimentLabel(record.test) }}</small><small v-if="recordConditions(record)"><ExperimentText :text="recordConditions(record)" /></small><small v-if="['edited', 'confirmed'].includes(record.status)">{{ statusLabels[record.status] }}</small></span>
+                <span><ExperimentText :text="metricTitle(record)" /><small v-if="record.conditions"><ExperimentText :text="record.conditions" /></small><small v-if="['edited', 'confirmed'].includes(record.status)">{{ statusLabels[record.status] }}</small></span>
                 <strong><ExperimentText :text="recordResult(record)" /></strong><span class="muted">{{ recordPage(record) }}</span>
               </button>
               <details v-if="group.written.length" class="written-results">
                 <summary>文字观察（{{ group.written.length }}）</summary>
                 <button v-for="record in group.written" :key="record.record_id" type="button" class="result-row" :aria-pressed="inspection.record?.record_id === record.record_id" @click="chooseRecord(record)">
-                  <span><ExperimentText :text="metricTitle(record)" /><small v-if="record.scope === 'group'">整组 · {{ recordSampleLabel(record) }}</small><small v-if="!group.run && record.test">{{ experimentLabel(record.test) }}</small><small v-if="recordConditions(record)"><ExperimentText :text="recordConditions(record)" /></small><small v-if="['edited', 'confirmed'].includes(record.status)">{{ statusLabels[record.status] }}</small></span>
+                  <span><ExperimentText :text="metricTitle(record)" /><small v-if="record.conditions"><ExperimentText :text="record.conditions" /></small></span>
                   <ExperimentText :text="recordResult(record)" /><span class="muted">{{ recordPage(record) }}</span>
                 </button>
               </details>
@@ -107,14 +97,9 @@
             <p v-if="!measurementGroups.length" class="empty">当前样品没有这一类已组装的测量结果。</p>
           </template>
           <template v-else>
-            <div v-if="sampleRoute && (canManage || sampleRoute.yield || sampleRoute.replicate_count != null)" class="section-heading">
-              <p v-if="sampleRoute.yield">产率 · {{ experimentValue(sampleRoute.yield) }}</p>
-              <p v-if="sampleRoute.replicate_count != null">重复次数 · {{ sampleRoute.replicate_count }}</p>
-              <button v-if="canManage" type="button" class="small-button" @click="openEntity('synthesis_route', sampleRoute)">编辑制备路线</button>
-            </div>
             <button v-for="({ operation, record }, index) in preparationSteps" :key="operation.operation_id" type="button" class="step-row" :aria-pressed="(inspection.canonicalObject || inspection.object)?.operation_id === operation.operation_id" @click="chooseStep(operation)">
               <span class="step-number">{{ operation.sequence ?? index + 1 }}</span>
-              <span><strong>{{ experimentLabel(record?.metric || operation.operation_type) }}</strong><small v-if="reagentText(operation)">{{ reagentText(operation) }}</small><small><ExperimentText :text="record && record.status !== 'machine' ? recordConditions(record) : experimentStepConditions(operation, activeSample)" /></small><small v-if="record && ['edited', 'confirmed'].includes(record.status)">{{ statusLabels[record.status] }}</small></span>
+              <span><strong>{{ experimentLabel(record?.metric || operation.operation_type) }}</strong><small v-if="reagentText(operation)">{{ reagentText(operation) }}</small><small><ExperimentText :text="record && record.status !== 'machine' ? record.conditions : experimentStepConditions(operation, activeSample)" /></small><small v-if="record && ['edited', 'confirmed'].includes(record.status)">{{ statusLabels[record.status] }}</small></span>
             </button>
             <p v-if="!preparationSteps.length" class="empty">这个样品没有关联的制备步骤。</p>
             <template v-if="additionalPreparation.length">
@@ -127,10 +112,7 @@
           <header class="pane-heading">
             <h2>{{ activeRun ? runTitle(activeRun) : '实验与曲线' }}</h2>
             <dl v-if="activeRun" class="facts"><template v-for="[label, value] in experimentMethodFacts(activeRun)" :key="label"><dt>{{ label }}</dt><dd><ExperimentText :text="value" /></dd></template></dl>
-            <div class="button-group">
-              <button v-for="id in runSampleIds(activeRun)" :key="id" type="button" class="small-button" @click="chooseSample(id, true)">{{ sampleLabel(id) }} 的结果</button>
-              <button v-if="activeRun && canManage" type="button" class="small-button" @click="openEntity('experiment_run', activeRun)">编辑实验</button>
-            </div>
+            <div class="button-group"><button v-for="name in runSampleNames(activeRun)" :key="name" type="button" class="small-button" @click="chooseSample(name, true)">{{ name }} 的结果</button></div>
           </header>
           <h3 class="section-heading">关联曲线</h3>
           <button v-for="curve in runCurves(activeRun)" :key="curve.series_set_id" type="button" class="record-button" @click="chooseCanonical(curve, experimentLabel(curve.series_kind))">
@@ -146,21 +128,18 @@
         </template>
         <template v-else>
           <header class="pane-heading">
-            <h2>{{ jsonField ? experimentLabel(jsonField) : jsonView === 'machine' ? '机器原稿' : '当前结构化 JSON' }}</h2>
-            <p class="muted">{{ jsonView === 'machine' ? '本次机器提取的原稿。' : '包含本次已生效的人工修改。' }}</p>
-            <div class="button-group"><button type="button" class="small-button" :aria-pressed="jsonView === 'machine'" @click="chooseJsonView('machine')">机器原稿</button><button v-if="canViewEffectiveJson" type="button" class="small-button" :aria-pressed="jsonView === 'effective'" @click="chooseJsonView('effective')">当前结果</button></div>
+            <h2>{{ jsonField ? experimentLabel(jsonField) : '完整原始 JSON' }}</h2>
+            <p class="muted">机器提取的原始数据。人工处理记录保存在「人工校对」中。</p>
             <div class="button-group"><button type="button" class="small-button" :aria-pressed="jsonMode === 'code'" @click="jsonMode = 'code'">JSON 代码</button><button type="button" class="small-button" :aria-pressed="jsonMode === 'tree'" @click="jsonMode = 'tree'">字段树</button></div>
           </header>
-          <a-alert v-if="jsonView === 'machine' && machineError" type="error" show-icon :message="machineError"><template #action><a-button size="small" @click="readMachine">重新读取</a-button></template></a-alert>
-          <a-spin v-else-if="jsonView === 'machine' && machineLoading" tip="正在读取机器原稿…" />
-          <pre v-else-if="jsonPaper && jsonMode === 'code'" class="json-code">{{ JSON.stringify(jsonValue, null, 2) }}</pre>
-          <div v-else-if="jsonPaper" class="field-content"><ExperimentStructureFields :name="jsonField || 'root'" :value="jsonValue" /></div>
+          <pre v-if="jsonMode === 'code'" class="json-code">{{ JSON.stringify(jsonValue, null, 2) }}</pre>
+          <div v-else class="field-content"><ExperimentStructureFields :name="jsonField || 'root'" :value="jsonValue" /></div>
         </template>
       </section>
 
       <aside ref="detailPane" class="paper-pane inspector" aria-label="记录详情">
         <template v-if="view === 'json'">
-          <h3>格式版本</h3><dl v-if="jsonPaper" class="facts"><dt>格式标识</dt><dd>{{ jsonPaper.schema_id }}</dd><dt>版本</dt><dd>{{ jsonPaper.schema_version }}</dd><dt>记录编号</dt><dd>{{ jsonPaper.record_id }}</dd></dl>
+          <h3>格式版本</h3><dl class="facts"><dt>格式标识</dt><dd>{{ paper.schema_id }}</dd><dt>版本</dt><dd>{{ paper.schema_version }}</dd><dt>记录编号</dt><dd>{{ paper.record_id }}</dd></dl>
         </template>
         <template v-else>
           <div class="inspector-heading"><h3>记录详情</h3><div class="button-group"><button type="button" class="small-button" :aria-pressed="detailMode === 'source'" @click="detailMode = 'source'">原文出处</button><button type="button" class="small-button" :aria-pressed="detailMode === 'fields'" @click="detailMode = 'fields'">结构字段</button></div></div>
@@ -169,10 +148,11 @@
             <p v-if="inspection.sample" class="muted">{{ inspection.sample }}</p>
             <h3 class="detail-title"><ExperimentText :text="inspection.heading" /></h3>
             <p v-if="inspection.record?.result"><strong><ExperimentText :text="recordResult(inspection.record)" /></strong></p>
-            <p v-if="inspection.record && recordConditions(inspection.record)" class="muted"><ExperimentText :text="recordConditions(inspection.record)" /></p>
+            <p v-if="inspection.record?.conditions" class="muted"><ExperimentText :text="inspection.record.conditions" /></p>
             <p v-if="inspection.record && inspection.record.status !== 'machine'" class="record-status">{{ statusLabels[inspection.record.status] }}</p>
             <div v-if="canManage" class="button-group">
               <a-button v-if="inspection.record" type="primary" size="small" @click="openEditor(inspection.record)">修改</a-button>
+              <a-button v-else-if="inspection.object.operation_id" size="small" @click="startNew()">补录记录</a-button>
             </div>
             <template v-if="detailMode === 'fields'">
               <div class="field-content"><ExperimentStructureFields name="record" :value="inspection.object" /><ExperimentStructureFields v-if="inspection.canonicalObject" name="canonical_operation" :value="inspection.canonicalObject" /></div>
@@ -182,7 +162,7 @@
                 <button v-for="source in inspection.sources" :key="source.evidence_id" type="button" class="small-button" :aria-pressed="activeSource?.evidence_id === source.evidence_id" @click="sourceId = source.evidence_id">{{ sourceLabel(source) }}</button>
               </div>
               <p v-if="inspection.record?.kind === 'measurement' && (!activeSource || sourceHasHighlight === false)" class="empty" role="status">未定位到这条结果的原文出处。请核对数值及所选出处。</p>
-              <section v-if="activeSource" class="source-content">
+              <section v-if="activeSource" v-show="inspection.record?.kind !== 'measurement' || sourceHasHighlight !== false" class="source-content">
                 <p class="source-location"><strong>{{ sourceLabel(activeSource) }}</strong><span v-if="activeSource.printed_page"> · 期刊第 {{ activeSource.printed_page }} 页</span><small>{{ activeSource.location }}</small></p>
                 <MarkdownPreview :key="(inspection.record?.record_id || '') + ':' + activeSource.evidence_id" :content="activePreview.content" :highlight-text="activePreview.table ? '' : inspection.record?.result || ''" compact @rendered="onSourceRendered" />
               </section>
@@ -194,10 +174,7 @@
       </aside>
     </div>
     <a-modal :open="editorOpen" title="编辑记录" :width="1000" :footer="null" :mask-closable="false" :closable="!reviewEditor?.saving" :keyboard="!reviewEditor?.saving" destroy-on-close @cancel="closeEditor">
-      <ExperimentReviewWorkspace v-if="editorOpen" ref="reviewEditor" :paper="paper" :snapshot="snapshot" :can-manage="canManage" :save-review="saveReview" editor-only @saved="onSaved" @cancel="closeEditor" />
-    </a-modal>
-    <a-modal :open="Boolean(entityEdit)" :title="entityTitle" :footer="null" :width="640" :mask-closable="false" :closable="!entityEditor?.saving" :keyboard="!entityEditor?.saving" destroy-on-close @cancel="closeEntity">
-      <ExperimentEntityEditor v-if="entityEdit" ref="entityEditor" :kind="entityEdit.kind" :entity="entityEdit.entity" :paper="paper" :snapshot="snapshot" :save-review="saveReview" @saved="onEntitySaved" @cancel="closeEntity" />
+      <ExperimentReviewWorkspace v-if="editorOpen" ref="reviewEditor" :snapshot="snapshot" :can-manage="canManage" :save-review="saveReview" editor-only @saved="onSaved" @cancel="closeEditor" />
     </a-modal>
   </div>
 </template>
@@ -207,7 +184,6 @@ import { computed, nextTick, ref, watch } from 'vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import ExperimentReviewWorkspace from './ExperimentReviewWorkspace.vue'
 import ExperimentCorrectionQueue from './ExperimentCorrectionQueue.vue'
-import ExperimentEntityEditor from './ExperimentEntityEditor.vue'
 import ExperimentStructureFields from './ExperimentStructureFields.vue'
 import ExperimentText from './ExperimentText.vue'
 import {
@@ -218,18 +194,14 @@ import {
 const props = defineProps({
   paper: { type: Object, required: true },
   snapshot: { type: Object, required: true },
-  effectiveAvailable: { type: Boolean, default: true },
-  effectiveJsonAvailable: { type: Boolean, default: true },
   canManage: { type: Boolean, default: false },
-  saveReview: { type: Function, required: true },
-  loadMachine: { type: Function, required: true }
+  saveReview: { type: Function, required: true }
 })
 
-const views = computed(() => ({ ...(props.effectiveAvailable ? { samples: '样品与结果', runs: '实验与曲线' } : {}), review: '人工校对', json: '原始 JSON' }))
-const canViewEffectiveJson = computed(() => props.effectiveAvailable && props.effectiveJsonAvailable)
+const views = { samples: '样品与结果', runs: '实验与曲线', review: '人工校对', json: '原始 JSON' }
 const statusLabels = { machine: '机器草稿', pending: '待确认', edited: '已修改', confirmed: '已人工确认', excluded: '已排除' }
 const categoryLabels = { character: '材料性质', adsorption: '吸附与选择性', breakthrough: '穿透与计算' }
-const view = ref(props.effectiveAvailable ? 'samples' : 'review')
+const view = ref('samples')
 const selectedSample = ref('')
 const sampleMode = ref('results')
 const filter = ref('')
@@ -237,11 +209,6 @@ const selectedRun = ref('')
 const expandedMethod = ref('')
 const jsonField = ref('')
 const jsonMode = ref('code')
-const jsonView = ref('machine')
-const machine = ref(null)
-const machineLoading = ref(false)
-const machineError = ref('')
-let machineRequest = 0
 const detailMode = ref('source')
 const sourceId = ref('')
 const sourceHasHighlight = ref(null)
@@ -251,11 +218,6 @@ const query = ref('')
 const searchSample = ref('')
 const editorOpen = ref(false)
 const reviewEditor = ref(null)
-const entityEdit = ref(null)
-const entityEditor = ref(null)
-const entityTitle = computed(() => ({ sample_state: entityEdit.value?.entity ? '编辑样品' : '新增样品',
-  sample_batch: entityEdit.value?.entity ? '编辑批次' : '新增批次', synthesis_route: '编辑制备路线',
-  experiment_run: entityEdit.value?.entity ? '编辑实验' : '补录实验' }[entityEdit.value?.kind] || ''))
 const notice = ref('')
 const mainPane = ref(null)
 const detailPane = ref(null)
@@ -263,18 +225,17 @@ const detailPane = ref(null)
 const records = computed(() => props.snapshot.review?.records || [])
 const pendingCorrectionCount = computed(() => (props.snapshot.review?.tasks || []).filter(task => !task.resolution).length)
 const usable = computed(() => records.value.filter(record => ['machine', 'edited', 'confirmed'].includes(record.status)))
-const samples = computed(() => props.paper.sample_states)
-const sampleOptions = computed(() => new Map((props.snapshot.sample_options || []).map(option => [option.sample_state_id, option])))
-const activeSample = computed(() => samples.value.find(sample => sample.sample_state_id === selectedSample.value) || samples.value[0])
-const activeSampleId = computed(() => activeSample.value?.sample_state_id || '')
-const activeSampleName = computed(() => sampleLabel(activeSampleId.value))
-const activeBatch = computed(() => props.paper.sample_batches.find(batch => batch.sample_batch_id === activeSample.value?.sample_batch_id))
+const sampleNames = computed(() => [...new Set([
+  ...props.paper.sample_states.map(sample => sample.reported_name),
+  ...usable.value.map(record => record.sample).filter(Boolean)
+])])
+const activeSampleName = computed(() => sampleNames.value.includes(selectedSample.value) ? selectedSample.value : sampleNames.value[0] || '')
+const activeSample = computed(() => props.paper.sample_states.find(sample => sample.reported_name === activeSampleName.value))
 const sampleRoute = computed(() => props.paper.synthesis_routes.find(route => route.route_id === activeSample.value?.preparation_route_id))
-const sampleMeasurements = computed(() => usable.value.filter(record => record.kind === 'measurement' && hasSample(record, activeSampleId.value)))
+const sampleMeasurements = computed(() => usable.value.filter(record => record.kind === 'measurement' && record.sample === activeSampleName.value))
 const availableCategories = computed(() => [...new Set(sampleMeasurements.value.map(record => experimentCategory(record.test)))].map(key => ({ key, label: categoryLabels[key] })))
 const activeRun = computed(() => props.paper.experiment_runs.find(run => run.run_id === selectedRun.value) || props.paper.experiment_runs[0])
-const jsonPaper = computed(() => jsonView.value === 'machine' ? machine.value : canViewEffectiveJson.value ? props.paper : null)
-const jsonValue = computed(() => jsonField.value ? jsonPaper.value?.[jsonField.value] : jsonPaper.value)
+const jsonValue = computed(() => jsonField.value ? props.paper[jsonField.value] : props.paper)
 const counts = computed(() => [
   ['样品', 'sample_states'], ['实验', 'experiment_runs'], ['观测', 'observations'], ['曲线', 'series_sets'], ['证据', 'evidence']
 ].map(([label, field]) => ({ label, field, count: props.paper[field].length })))
@@ -284,43 +245,47 @@ const sourceMap = computed(() => new Map((props.snapshot.evidence || []).map(sou
 const canonicalEvidence = computed(() => new Map(props.paper.evidence.map(source => [source.evidence_id, {
   ...source, quote: source.quote_raw, page: source.pdf_page
 }])))
-const resultValues = computed(() => new Map(props.paper.observations.flatMap(observation =>
-  experimentObservationValues(observation).map(item => [item.resultId, item.value]))))
+const observationValues = computed(() => props.paper.observations.flatMap(observation => {
+  const ids = observation.sample_state_ids || (observation.sample_state_id ? [observation.sample_state_id] : [])
+  const names = props.paper.sample_states.filter(sample => ids.includes(sample.sample_state_id)).map(sample => sample.reported_name)
+  return experimentObservationValues(observation).map(item => ({ ...item, names }))
+}))
 const measurementGroups = computed(() => {
   const groups = new Map()
   for (const record of sampleMeasurements.value) {
     if (filter.value && experimentCategory(record.test) !== filter.value) continue
-    const runIds = record.run_id ? [record.run_id] : record.run_ids || []
-    const key = runIds.length ? 'run:' + [...runIds].sort().join(',') : 'unlinked'
-    if (!groups.has(key)) {
-      const runs = props.paper.experiment_runs.filter(item => runIds.includes(item.run_id))
-      const run = runs.length === 1 ? runs[0] : null
-      groups.set(key, { key, method: runs.map(runTitle).join(' / ') || '未关联实验', numeric: [], written: [], run })
+    if (!groups.has(record.test)) {
+      const matchingRuns = props.paper.experiment_runs.filter(run =>
+        (run.technique || run.run_type) === record.test &&
+        (!run.sample_state_ids?.length || run.sample_state_ids.includes(activeSample.value?.sample_state_id))
+      )
+      groups.set(record.test, { method: record.test, numeric: [], written: [], runs: matchingRuns })
     }
-    const group = groups.get(key)
-    const value = resultValues.value.get(record.result_id)
-    group[value?.kind === 'text' || (!value && !/^\s*(?:[<>≤≥≈~+−-]\s*)?\d/.test(record.result)) ? 'written' : 'numeric'].push(record)
+    const group = groups.get(record.test)
+    group[/^\s*(?:[<>≤≥≈~+−-]\s*)?\d/.test(record.result) ? 'numeric' : 'written'].push(record)
   }
   return [...groups.values()]
 })
 const searchResults = computed(() => {
   const terms = query.value.normalize('NFKC').toLowerCase().trim().split(/\s+/).filter(Boolean)
-  return usable.value.filter(record => record.kind === 'measurement' && (!searchSample.value || hasSample(record, searchSample.value)) &&
-    terms.every(term => [recordSampleLabel(record), metricTitle(record), record.metric, recordResult(record), record.test, recordConditions(record)].join(' ').normalize('NFKC').toLowerCase().includes(term)))
+  return usable.value.filter(record => record.kind === 'measurement' && (!searchSample.value || searchSample.value === record.sample) &&
+    terms.every(term => [record.sample, metricTitle(record), record.metric, record.result, record.test, record.conditions].join(' ').normalize('NFKC').toLowerCase().includes(term)))
 })
 const runObservations = computed(() => props.paper.observations.filter(observation =>
   observation.run_id === activeRun.value?.run_id || observation.run_ids?.includes(activeRun.value?.run_id)
 ))
-const preparationSteps = computed(() => props.paper.synthesis_routes.flatMap(route => route.operations)
-  .filter(operation => operation.applies_to_sample_state_ids?.includes(activeSampleId.value))
-  .map(operation => ({ operation, record: stepRecord(operation) })))
-const additionalPreparation = computed(() => usable.value.filter(record =>
-  record.kind === 'preparation' && !record.operation_id && hasSample(record, activeSampleId.value)))
+const preparationSteps = computed(() => (sampleRoute.value?.operations || [])
+  .map(operation => ({ operation, record: stepRecord(operation) }))
+  .filter(({ record }) => !record || (record.sample === activeSampleName.value && record.kind === 'preparation' &&
+    ['machine', 'edited', 'confirmed'].includes(record.status))))
+const additionalPreparation = computed(() => {
+  const linked = new Set((sampleRoute.value?.operations || []).map(operation => stepRecord(operation)?.record_id))
+  return usable.value.filter(record => record.kind === 'preparation' && record.sample === activeSampleName.value && !linked.has(record.record_id))
+})
 const inspection = computed(() => {
   if (selection.value?.recordId) {
-    const record = usable.value.find(item => item.record_id === selection.value.recordId)
-    const operation = preparationSteps.value.find(item => item.operation.operation_id === record?.operation_id)?.operation
-    if (record) return { ...recordInspection(record), canonicalObject: operation }
+    const record = records.value.find(item => item.record_id === selection.value.recordId)
+    if (record) return { ...recordInspection(record), canonicalObject: selection.value.canonicalObject }
   }
   if (selection.value) return selection.value
   if (view.value === 'samples') {
@@ -330,36 +295,19 @@ const inspection = computed(() => {
       if (additionalPreparation.value[0]) return recordInspection(additionalPreparation.value[0])
       return activeSample.value ? canonicalInspection(activeSample.value, '样品信息') : { sources: [] }
     }
-    const record = measurementGroups.value.flatMap(group => [...group.numeric, ...group.written])[0]
+    const record = measurementGroups.value.flatMap(group => group.numeric)[0]
     if (record) return recordInspection(record)
     return activeSample.value ? canonicalInspection(activeSample.value, '样品信息') : { sources: [] }
   }
   if (view.value === 'runs' && activeRun.value) return canonicalInspection(activeRun.value, runTitle(activeRun.value))
   return { sources: [] }
 })
-const activeSource = computed(() => {
-  const { sources, record } = inspection.value
-  return sources.find(source => source.evidence_id === sourceId.value) ||
-    (record?.kind === 'measurement' ? preferredSource(sources.filter(source => experimentEvidenceMatches(source.quote, record))) : null) || preferredSource(sources)
-})
+const activeSource = computed(() => inspection.value.sources.find(source => source.evidence_id === sourceId.value) ||
+  preferredSource(inspection.value.sources))
 const activePreview = computed(() => experimentEvidencePreview(activeSource.value?.quote, inspection.value.record))
 
 watch([() => activePreview.value.content, () => activeSource.value?.evidence_id, () => inspection.value.record?.record_id], () => {
   sourceHasHighlight.value = null
-})
-watch(() => props.paper, resetSelection)
-watch(() => props.effectiveAvailable, available => {
-  if (!available && ['samples', 'runs'].includes(view.value)) changeView('review')
-})
-watch(canViewEffectiveJson, available => {
-  if (!available && view.value === 'json' && jsonView.value === 'effective') chooseJsonView('machine')
-})
-watch(() => [props.snapshot.revision_id, props.snapshot.source_sha256, props.snapshot.review?.version], () => {
-  machineRequest += 1
-  machine.value = null
-  machineLoading.value = false
-  machineError.value = ''
-  if (view.value === 'json' && jsonView.value === 'machine') readMachine()
 })
 
 /** 默认出处和结果行页码共同使用可定位的原表。 */
@@ -367,9 +315,11 @@ function preferredSource(sources) {
   return sources.find(source => /^\s*<table\b/i.test(source.quote)) || sources[0]
 }
 
-/** 优先显示可定位结果的出处，人工修改后仍保留所选原文。 */
+/** 测量记录只展示包含当前结果的片段，保留原记录的完整关联。 */
 function recordSources(record) {
-  return (record.evidence_ids || []).map(id => sourceMap.value.get(id) || canonicalEvidence.value.get(id)).filter(Boolean)
+  const sources = record.evidence_ids.map(id => sourceMap.value.get(id)).filter(Boolean)
+  return record.kind === 'measurement'
+    ? sources.filter(source => experimentEvidenceMatches(source.quote, record)) : sources
 }
 
 /** 根据当前预览的实际高亮反馈定位状态。 */
@@ -399,14 +349,18 @@ function revealSourceResult() {
   }
 }
 
-/** 按操作和样品身份关联记录，允许重复类型的制备步骤。 */
+/** 按原机器位置关联记录，人工改名或改归属不改变身份。 */
 function stepRecord(operation) {
-  return usable.value.find(record => record.kind === 'preparation' && record.operation_id === operation.operation_id && hasSample(record, activeSampleId.value))
+  const cardIndex = props.snapshot.cards.findIndex(card => card.sample?.raw_text === activeSampleName.value)
+  const entries = props.snapshot.cards[cardIndex]?.preparation_steps || []
+  const matches = entries.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry.operation?.raw_text === operation.operation_type)
+  if (matches.length !== 1) return null
+  return records.value.find(record => record.record_id === 'preparation-' + cardIndex + '-' + matches[0].index)
 }
 
 /** 审核结果和机器原稿分别读取，选择后始终跟随服务端的新值。 */
 function recordInspection(record) {
-  return { recordId: record.record_id, object: record, record, sample: recordSampleLabel(record),
+  return { recordId: record.record_id, object: record, record, sample: record.sample,
     heading: metricTitle(record), sources: recordSources(record) }
 }
 
@@ -447,12 +401,11 @@ function changeView(key) {
   view.value = key
   query.value = ''
   resetSelection()
-  if (key === 'json' && jsonView.value === 'machine' && !machine.value) readMachine()
 }
 
 /** 选择样品时保留正在阅读的结果或制备模式。 */
-function chooseSample(id, navigate = false) {
-  selectedSample.value = id
+function chooseSample(name, navigate = false) {
+  selectedSample.value = name
   if (navigate) {
     view.value = 'samples'
     sampleMode.value = 'results'
@@ -504,33 +457,8 @@ function chooseRun(run) {
 
 /** 数量入口定位完整 JSON 字段。 */
 function showJson(field) {
-  if (!canViewEffectiveJson.value) return
-  jsonView.value = 'effective'
   changeView('json')
   jsonField.value = field
-}
-
-/** 明确切换机器原稿和已合并的当前结果。 */
-function chooseJsonView(value) {
-  jsonView.value = value
-  jsonField.value = ''
-  if (value === 'machine' && !machine.value) readMachine()
-}
-
-/** 机器原稿按当前快照独立读取，版本切换后丢弃旧响应。 */
-async function readMachine() {
-  if (machineLoading.value) return
-  const request = ++machineRequest
-  machineLoading.value = true
-  machineError.value = ''
-  try {
-    const result = await props.loadMachine()
-    if (request === machineRequest && result) machine.value = result
-  } catch (cause) {
-    if (request === machineRequest) machineError.value = cause.message || '机器原稿读取失败，请重试。'
-  } finally {
-    if (request === machineRequest) machineLoading.value = false
-  }
 }
 
 /** 搜索当前服务端可用的实验记录。 */
@@ -549,8 +477,8 @@ function clearSearch() {
 }
 
 /** 搜索范围改变时重置右侧详情。 */
-function chooseSearchSample(id) {
-  searchSample.value = id
+function chooseSearchSample(name) {
+  searchSample.value = name
   resetSelection()
 }
 
@@ -564,8 +492,7 @@ async function openEditor(record = null) {
 
 /** 补录默认绑定用户正在阅读的样品。 */
 function startNew() {
-  openEditor({ sample: view.value === 'samples' ? activeSample.value?.reported_name || '' : '',
-    sample_state_id: view.value === 'samples' ? activeSampleId.value : null, kind: 'measurement' })
+  openEditor({ sample: view.value === 'samples' ? activeSampleName.value : '', kind: 'measurement' })
 }
 
 /** 保存期间保留表单，避免截断提交结果。 */
@@ -580,48 +507,12 @@ function onSaved(record) {
   if (record.status === 'pending') {
     changeView('review')
   }
-  const current = usable.value.find(item => item.record_id === record.record_id)
-  if (current && !query.value) {
-    const id = hasSample(current, activeSampleId.value) ? activeSampleId.value : (current.sample_state_id || current.sample_state_ids?.[0])
-    if (id) chooseSample(id, true)
-    chooseSampleMode(current.kind === 'preparation' ? 'preparation' : 'results')
-    chooseRecord(current)
-  }
-}
-
-/** 元信息编辑只接收当前结构中登记的对象。 */
-function openEntity(kind, entity = null) { entityEdit.value = { kind, entity } }
-
-/** 保存期间保留固定表单。 */
-function closeEntity() { if (!entityEditor.value?.saving) entityEdit.value = null }
-
-/** 保存后只使用重新读取的实体。 */
-function onEntitySaved(result) {
-  const added = entityEdit.value?.kind === 'sample_state' && !entityEdit.value.entity
-  entityEdit.value = null
-  notice.value = added ? '样品已新增。' : '修改已保存。'
-  if (added && result.entity_id) chooseSample(result.entity_id, true)
-}
-
-/** 样品归属只通过状态编号判断。 */
-function hasSample(record, id) {
-  return Boolean(id && (record.sample_state_id === id || record.sample_state_ids?.includes(id)))
-}
-
-/** 同名样品的状态和批次由服务端标签区分。 */
-function sampleLabel(id) {
-  const option = sampleOptions.value.get(id)
-  return option?.label || samples.value.find(sample => sample.sample_state_id === id)?.reported_name || ''
-}
-
-/** 组观察显示实际整组成员，记录原始显示名仅用于出处定位。 */
-function recordSampleLabel(record) {
-  const ids = record.sample_state_ids?.length ? record.sample_state_ids : [record.sample_state_id]
-  return ids.map(sampleLabel).filter(Boolean).join('、') || record.sample
+  select(recordInspection(record))
 }
 
 /** 样品概览只使用已报告的批次因素。 */
-function sampleNote(sample) {
+function sampleNote(name) {
+  const sample = props.paper.sample_states.find(item => item.reported_name === name)
   const factors = props.paper.sample_batches.find(item => item.sample_batch_id === sample?.sample_batch_id)?.factor_assignments || {}
   return Object.entries(factors).filter(([, value]) => value != null)
     .map(([key, value]) => experimentLabel(key) + ' ' + experimentValue(value)).join(' · ')
@@ -629,33 +520,31 @@ function sampleNote(sample) {
 
 /** 指标单位随标签显示，结果保留原始取值限定词。 */
 function metricTitle(record) {
-  return experimentUnit(experimentLabel(record.metric)) + (record.metric?.endsWith('_percent') ? '（%）' : '')
+  return experimentUnit(experimentLabel(record.metric)) + (record.metric.endsWith('_percent') ? '（%）' : '')
 }
 
-/** 结果从当前 JSON 的结果编号取得，展示完整数值限定和单位。 */
+/** 原始取值缺单位时，仅补充同样品同指标同取值明确记录的唯一单位。 */
 function recordResult(record) {
-  const value = resultValues.value.get(record.result_id)
-  return value != null ? experimentValue(value) : experimentUnit(record.result)
-}
-
-/** 条件保留人工填写的原文及结构化参数。 */
-function recordConditions(record) {
-  const parameters = Object.entries(record.parameters || {}).map(([key, value]) => `${experimentLabel(key)} ${experimentValue(value)}`)
-  return [...new Set([record.conditions, ...parameters].filter(Boolean))].join(' · ')
+  if (!/^[\d\s.eE+−<>≤≥≈~–-]+$/.test(record.result)) return experimentUnit(record.result)
+  const units = observationValues.value.filter(item => item.names.includes(record.sample) &&
+    experimentLabel(item.metric) === experimentLabel(record.metric) && typeof item.value === 'object' &&
+    [item.value.raw_text, String(item.value.value)].includes(record.result)
+  ).map(item => item.value.unit_canonical || item.value.unit_raw || item.value.unit).filter(Boolean)
+  const unique = [...new Set(units)]
+  const unit = unique.length === 1 ? experimentUnit(unique[0]) : ''
+  return record.result + (unit && !record.result.includes(unit) ? ' ' + unit : '')
 }
 
 /** 当前记录的页码来自它关联的证据。 */
 function recordPage(record) {
-  const sources = recordSources(record)
-  const source = preferredSource(record.kind === 'measurement' ? sources.filter(item => experimentEvidenceMatches(item.quote, record)) : sources)
-  if (!source && sources.length) return '查看出处'
+  const source = preferredSource(recordSources(record))
   if (!source && record.kind === 'measurement') return '未定位出处'
   return source?.page ? 'PDF ' + source.page + ' 页' : '查看出处'
 }
 
 /** 实验名称优先显示实际测试技术。 */
 function runTitle(run) {
-  return experimentLabel(run.technique || run.abbreviation || run.method || run.run_type)
+  return experimentLabel(run.technique || run.abbreviation || run.run_type)
 }
 
 /** 实验目录展示可区分条件的摘要。 */
@@ -663,13 +552,14 @@ function runNote(run) {
   return [
     run.temperature && experimentValue(run.temperature),
     run.feed?.map(item => chemicalName(item.entity_id) + ' ' + (item.reported_ratio_part ?? item.mole_fraction ?? '')).join(' / '),
-    runSampleIds(run).map(sampleLabel).join('、')
+    runSampleNames(run).join('、')
   ].filter(Boolean).join(' · ')
 }
 
 /** 实验只列出明确引用的样品。 */
-function runSampleIds(run) {
-  return run?.sample_state_ids || (run?.sample_state_id ? [run.sample_state_id] : [])
+function runSampleNames(run) {
+  const ids = run?.sample_state_ids || (run?.sample_state_id ? [run.sample_state_id] : [])
+  return props.paper.sample_states.filter(sample => ids.includes(sample.sample_state_id)).map(sample => sample.reported_name)
 }
 
 /** 关联曲线只沿实验登记中的编号读取。 */
@@ -689,7 +579,8 @@ function curvePointCount(curve) {
 
 /** 观测归属只沿显式样品编号读取。 */
 function observationNames(observation) {
-  return recordSampleLabel(observation) || '未关联样品'
+  const ids = observation.sample_state_ids || (observation.sample_state_id ? [observation.sample_state_id] : [])
+  return props.paper.sample_states.filter(sample => ids.includes(sample.sample_state_id)).map(sample => sample.reported_name).join('、') || '未绑定单一样品'
 }
 
 /** 不同观测变体使用相同的完整结果读取规则。 */

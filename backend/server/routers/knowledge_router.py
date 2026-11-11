@@ -7,7 +7,7 @@ import traceback
 from typing import Annotated, Literal
 from urllib.parse import quote, unquote
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 from starlette.responses import StreamingResponse
@@ -126,7 +126,7 @@ class PendingParseDocumentsRequest(BaseModel):
 
 
 class RetryExperimentCardsRequest(BaseModel):
-    """清理重提取须明确对应的实验结果和正文版本。"""
+    """失败重试须明确对应的草稿和正文版本。"""
 
     revision_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -871,19 +871,6 @@ async def _enqueue_document_action_task(
     """提交管理端指定文件的解析或入库任务。"""
     label = "解析" if action == "parse" else "入库"
     try:
-        if action == "index":
-            task, created = await tasker.enqueue_unique_by_payload(
-                name=f"文档{label} ({db_info.name})", task_type="knowledge_index",
-                payload={
-                    "kb_id": kb_id, "file_ids": file_ids, "params": params,
-                    "operator_id": operator_id, "reparse": reparse,
-                },
-                payload_match={"kb_id": kb_id, "file_ids": sorted(file_ids), "params": params},
-            )
-            return {
-                "message": f"{label}任务已提交" if created else "同批文档已有入库任务，请等待完成",
-                "status": "queued", "task_id": task.id,
-            }
         task = await tasker.enqueue(
             name=f"文档{label} ({db_info.name})",
             task_type=f"knowledge_{action}",
@@ -1104,10 +1091,7 @@ async def get_document_experiment_cards(
 
 @knowledge.get("/databases/{kb_id}/documents/{doc_id}/experiment-cards/json")
 async def download_document_experiment_json(
-    kb_id: str, doc_id: str, response: Response, revision_id: str = Query(pattern=r"^[a-f0-9]{32}$"),
-    view: Literal["machine", "effective"] = "machine",
-    source_sha256: str | None = Query(default=None, pattern=r"^[a-f0-9]{64}$"),
-    expected_review_version: int | None = Query(default=None, ge=0),
+    kb_id: str, doc_id: str, revision_id: str = Query(pattern=r"^[a-f0-9]{32}$"),
     current_user: User = Depends(require_knowledge_base_read),
 ):
     """下载无外层包装的规范实验 JSON。"""
@@ -1116,14 +1100,7 @@ async def download_document_experiment_json(
 
     await _ensure_database_supports_documents(kb_id, "实验 JSON 下载")
     try:
-        record, snapshot = await read_experiment_json(
-            kb_id, doc_id, uid=str(current_user.uid), revision_id=revision_id, view=view,
-            expected_source_sha256=source_sha256, expected_review_version=expected_review_version,
-        )
-        response.headers["X-Experiment-Revision"] = snapshot["revision_id"]
-        response.headers["X-Experiment-Source-Sha256"] = snapshot["source_sha256"]
-        response.headers["X-Experiment-Review-Version"] = str(snapshot["review_version"])
-        return record
+        return await read_experiment_json(kb_id, doc_id, uid=str(current_user.uid), revision_id=revision_id)
     except StructureNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except StructureConflictError as exc:
@@ -1161,7 +1138,7 @@ async def retry_document_experiment_cards(
     kb_id: str, doc_id: str, body: RetryExperimentCardsRequest,
     current_user: User = Depends(require_knowledge_base_manage),
 ):
-    """管理者清理本次实验与人工记录后，从全文重新提取。"""
+    """管理者可以重试当前失败草稿，正常入库自动启动。"""
     from yuxi.repositories.knowledge_structure_repository import StructureConflictError, StructureNotFoundError
     from yuxi.services.knowledge_structure_service import retry_experiment_cards
 

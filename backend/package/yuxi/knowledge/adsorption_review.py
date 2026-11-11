@@ -2,209 +2,164 @@
 
 from __future__ import annotations
 
+import html
 import re
+import unicodedata
+from decimal import Decimal, InvalidOperation
 
-from yuxi.knowledge.adsorption_contract import (
-    Notice,
-    filter_record_references,
-    observation_result_entries,
-    operation_sample_ids,
+from yuxi.knowledge.adsorption_contract import Notice
+from yuxi.knowledge.structure_tables import table_cells
+
+_NUMBER = re.compile(
+    r"(?<![\w.])[+−-]?(?:\d+(?:\.\d+)?|\.\d+)"
+    r"(?:[eE][+−-]?\d+|\s*(?:\\times|×|⋅|·|x)\s*10\s*"
+    r"(?:\^\s*\{?\s*[+−-]?\d+\s*\}?|[+−-]\d+|[⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹]+))?(?!\d|\.\d)"
 )
-from yuxi.knowledge.adsorption_quantities import UnverifiedQuantity, ground_quantity, quantity_from_text, quantity_text
-
-_METRIC_LABELS = {
+_TEXTURAL_HEADERS = {
+    "textural.surface_area.specific": re.compile(r"\bS?\s*BET\b|surface\s+area", re.IGNORECASE),
+    "textural.pore_volume.total": re.compile(r"pore\s+volume|\bV\s*total\b", re.IGNORECASE),
+}
+_TEXTURAL_LABELS = {
     "textural.surface_area.specific": "BET 比表面积",
     "textural.pore_volume.total": "总孔容",
 }
 
 
+class _UnverifiedObservation(ValueError):
+    """模型给出的观测无法与所引原文核对。"""
+
+
 def filter_observation_values(record: dict, sources: dict, markdown: str, notices: list[Notice]) -> dict:
-    """逐个保留可核对结果，拒绝候选保留完整目标和出处。"""
-    filter_machine_quantity_values(record, sources, markdown, notices)
-    filter_record_references(record, notices)
-    states = {item["sample_state_id"]: item for item in record["sample_states"]}
-    entities = {item["entity_id"]: item for item in record["chemical_entities"]}
+    """保留有依据的观测及独立结果，并返回对应的审核显示值。"""
+    states = {item["sample_state_id"]: item["reported_name"] for item in record["sample_states"]}
+    sample_names = {name.casefold() for name in states.values()}
+    entities = {item["entity_id"]: item["reported_name"] for item in record["chemical_entities"]}
     kept = []
-    for observation in record["observations"]:
-        sample_ids = _sample_ids(observation)
-        if any(sample_id not in states for sample_id in sample_ids):
-            notices.append(("unverified_observation", "观测样品的数量出处尚未成立。",
+    values = {}
+    for index, observation in enumerate(record["observations"], 1):
+        samples = [states[sample_id] for sample_id in _sample_ids(observation)]
+        evidence = [sources[ref] for ref in observation["evidence_ids"]]
+        results = observation.get("results")
+        if isinstance(results, list):
+            accepted = []
+            try:
+                measurements = _verified_measurements(
+                    {**observation, "results": []}, evidence, samples, sample_names, entities, markdown,
+                )
+            except _UnverifiedObservation as error:
+                notices.append(("unverified_observation", f"第 {index} 条观测已剔除。{error}",
+                                {"collection": "observations", "record": observation}))
+                continue
+            for result_index, result in enumerate(results, 1):
+                try:
+                    projected = _verified_measurements(
+                        {"observation_type": observation["observation_type"], "results": [result]},
+                        evidence, samples, sample_names, entities, markdown,
+                    )
+                except _UnverifiedObservation as error:
+                    label = _TEXTURAL_LABELS.get(result.get("metric_id")) if isinstance(result, dict) else None
+                    location = f'观测 {observation["observation_id"]} 的第 {result_index} 个结果'
+                    if label:
+                        location += f"（{label}）"
+                    notices.append(("unverified_observation", f"{location}已剔除。{error}",
+                                    {"collection": "observations", "record": {**observation, "results": [result]}}))
+                else:
+                    if not projected:
+                        notices.append((
+                            "empty_observation_value", f"第 {index} 条观测的第 {result_index} 个结果为空。",
+                            {"collection": "observations", "record": {**observation, "results": [result]}},
+                        ))
+                        continue
+                    accepted.append(result)
+                    measurements.extend(projected)
+            observation = {**observation, "results": accepted}
+        else:
+            try:
+                measurements = _verified_measurements(
+                    observation, evidence, samples, sample_names, entities, markdown,
+                )
+            except _UnverifiedObservation as error:
+                notices.append(("unverified_observation", f"第 {index} 条观测已剔除。{error}",
+                                {"collection": "observations", "record": observation}))
+                continue
+        if not measurements:
+            notices.append(("empty_observation_value", f"第 {index} 条观测没有可用结果。",
                             {"collection": "observations", "record": observation}))
             continue
-        evidence = [sources[ref] for ref in observation["evidence_ids"]]
-        names = list(dict.fromkeys(states[sample_id]["reported_name"] for sample_id in sample_ids))
-        other_names = tuple({
-            state["reported_name"] for sample_id, state in states.items()
-            if sample_id not in sample_ids and state["reported_name"] not in names
-        })
-        if _ambiguous_sample(observation, states, evidence):
-            notices.append((
-                "unverified_observation", "同名样品状态无法由所引原文区分。",
-                {"collection": "observations", "record": observation},
-            ))
-            continue
-        accepted = []
-        for result in observation["results"]:
-            result_id, metric, value = result["result_id"], result["metric_id"], result["value"]
-            species = _observed_species(observation, metric, entities)
-            other_species = tuple({
-                item.get("formula_ascii") or item["reported_name"] for item in entities.values()
-                if (item.get("formula_ascii") or item["reported_name"]) not in species
-            }) if species else ()
-            metric_name = observation["observation_type"] if metric in entities else metric
-            try:
-                ground_quantity(
-                    metric_name, value, evidence, names, markdown, species=species,
-                    other_samples=other_names, other_species=other_species,
-                )
-            except UnverifiedQuantity as error:
-                notices.append((
-                    "unverified_observation", f"结果 {result_id} 未采用。{error}",
-                    {"collection": "observations", "record": {**observation, "results": [result]}},
-                ))
-            else:
-                accepted.append(result)
-        if accepted:
-            kept.append({**observation, "results": accepted})
-        elif not observation["results"]:
-            notices.append((
-                "empty_observation_value", "观测没有可用结果。",
-                {"collection": "observations", "record": observation},
-            ))
+        kept.append(observation)
+        values[observation["observation_id"]] = measurements
     record["observations"] = kept
-    return project_observation_values(record)
-
-
-def filter_machine_quantity_values(record: dict, sources: dict, markdown: str, notices: list[Notice]) -> None:
-    """机器条件和实体数量逐个回查自身出处，人工来源保留人工责任边界。"""
-    states = {item["sample_state_id"]: item for item in record["sample_states"]}
-    for collection in (
-        "chemical_entities", "sample_batches", "sample_states", "synthesis_routes", "experiment_runs", "observations",
-    ):
-        accepted = []
-        for item in record[collection]:
-            if collection == "synthesis_routes":
-                operations = []
-                for operation in item["operations"]:
-                    try:
-                        _ground_owned_quantities(operation, sources, markdown, states)
-                    except UnverifiedQuantity as error:
-                        notices.append(("unverified_quantity", f"制备操作数量未采用。{error}",
-                                        {"collection": collection, "record": {**item, "operations": [operation]}}))
-                    else:
-                        operations.append(operation)
-                item["operations"] = operations
-            try:
-                _ground_owned_quantities(item, sources, markdown, states)
-            except UnverifiedQuantity as error:
-                notices.append(("unverified_quantity", f"实体或条件数量未采用。{error}",
-                                {"collection": collection, "record": item}))
-            else:
-                accepted.append(item)
-        record[collection] = accepted
-
-
-def project_observation_values(record: dict) -> dict:
-    """从当前活动结果投影显示值，保留每个结果自己的身份。"""
-    entities = {item["entity_id"]: item["reported_name"] for item in record["chemical_entities"]}
-    return {
-        observation["observation_id"]: [
-            {"result_id": result_id, "metric": _METRIC_LABELS.get(metric, entities.get(metric, metric)),
-             "text": quantity_text(value)}
-            for result_id, metric, value in observation_result_entries(observation)
-        ]
-        for observation in record["observations"]
-    }
+    return values
 
 
 def project_experiment_cards(record: dict, sources: dict, measurement_values: dict) -> tuple[list[dict], list[dict]]:
-    """按样品状态编号投影当前制备、实验、结果和出处。"""
-    review_ids = {ref: item.get("review_evidence_id", f"e{index}") for index, (ref, item) in enumerate(sources.items(), 1)}
+    """把已校验的观测和原文位置映射到审核工作台。"""
+    review_ids = {ref: f"e{index}" for index, ref in enumerate(sources, 1)}
     evidence = [
         {
-            **{key: value for key, value in item.items() if key != "review_evidence_id"},
-            "evidence_id": review_ids[ref], "canonical_evidence_id": ref,
+            "evidence_id": review_ids[ref],
+            **{key: value for key, value in item.items() if key not in {"section", "location", "origin"}},
         }
         for ref, item in sources.items()
     ]
     states = {item["sample_state_id"]: item for item in record["sample_states"]}
-    batches = {item["sample_batch_id"]: item for item in record["sample_batches"]}
     entities = {item["entity_id"]: item["reported_name"] for item in record["chemical_entities"]}
     runs = {item["run_id"]: item for item in record["experiment_runs"]}
+    cards = {}
 
     def field(text, refs):
         """将规范出处编号映射到审核契约。"""
-        return {"raw_text": str(text), "evidence_ids": [review_ids[ref] for ref in dict.fromkeys(refs) if ref in review_ids]}
-
-    cards = {
-        sample_id: {
-            "sample_state_id": sample_id, "sample": field(state["reported_name"], state["evidence_ids"]),
-            "state": state.get("state"), "physical_form": state.get("physical_form"),
-            "sample_batch_id": state.get("sample_batch_id"),
-            "batch_number": batches.get(state.get("sample_batch_id"), {}).get("batch_number"),
-            "preparation_route_id": state.get("preparation_route_id"),
-            "preparation_steps": [], "measurements": [], "warnings": [], "review_status": "draft",
-        }
-        for sample_id, state in states.items()
-    }
+        return {"raw_text": str(text), "evidence_ids": [review_ids[ref] for ref in dict.fromkeys(refs)]}
 
     def add(sample_id, key, item, refs):
-        """登记当前卡片的样品视角及整条记录的出处。"""
-        assignment_refs = [*states[sample_id]["evidence_ids"], *refs]
-        cards[sample_id][key].append({
-            **item, "sample_state_id": sample_id, "assignment_evidence_ids": field("", assignment_refs)["evidence_ids"],
+        """用规范样品状态登记审核记录。"""
+        state = states[sample_id]
+        name = state["reported_name"]
+        assignment_refs = [*state["evidence_ids"], *refs]
+        card = cards.setdefault(name, {
+            "sample": field(name, state["evidence_ids"]), "preparation_steps": [], "measurements": [],
+            "warnings": [], "review_status": "draft",
         })
+        card[key].append({**item, "assignment_evidence_ids": field(name, assignment_refs)["evidence_ids"]})
 
     for route in record["synthesis_routes"]:
         for operation in route["operations"]:
             refs = operation["evidence_ids"]
-            sample_ids = operation_sample_ids(operation, record, route)
+            sample_ids = operation.get("output_sample_state_ids")
+            if sample_ids is None:
+                output = operation.get("output_intermediate_id")
+                sample_ids = [output] if output in states else route["target_sample_state_ids"]
             for sample_id in sample_ids:
                 conditions = dict(operation.get("conditions", {}))
                 by_sample = conditions.pop("temperature_by_sample", {})
                 if sample_temperature := by_sample.get(states[sample_id]["sample_batch_id"]):
                     conditions["temperature"] = sample_temperature
-                add(sample_id, "preparation_steps", {
-                    "canonical_id": operation["operation_id"], "operation_id": operation["operation_id"],
-                    "sample_state_ids": sample_ids, "applies_to_sample_state_ids": sample_ids,
-                    "scope": "group" if len(sample_ids) > 1 else "sample",
-                    "route_id": route["route_id"], "operation": field(operation["operation_type"], refs),
-                    "source": operation.get("source"),
-                    "parameters": conditions,
+                step = {
+                    "canonical_id": operation["operation_id"],
+                    "operation": field(operation["operation_type"], refs),
                     "conditions": [
                         {"name": name, "value": field(text, refs)}
-                        for name, value in conditions.items() if (text := quantity_text(value)) is not None
+                        for name, value in conditions.items()
+                        if (text := _display_value(value)) is not None
                     ],
-                }, refs)
+                }
+                add(sample_id, "preparation_steps", step, refs)
 
     for observation in record["observations"]:
         refs = observation["evidence_ids"]
         sample_ids = _sample_ids(observation)
-        run_id = observation.get("run_id")
-        run = runs.get(run_id, {})
-        method = observation.get("method") or run.get("method") or run.get("measurement_method") or run.get("technique") or run.get("run_type")
-        parameters = _observation_conditions(observation)
-        conditions = dict(parameters)
-        if entity_id := observation.get("entity_id"):
-            conditions["species"] = entities[entity_id]
-        if pair := observation.get("ordered_species_pair"):
-            conditions["species_pair"] = f'{entities[pair["numerator_entity_id"]]}/{entities[pair["denominator_entity_id"]]}'
-        results = {item["result_id"]: item for item in observation["results"]}
-        for item in measurement_values.get(observation["observation_id"], []):
-            result_id = item["result_id"]
+        run = runs.get(observation.get("run_id"), {})
+        method = run.get("technique") or run.get("method") or run.get("run_type")
+        conditions = [
+            {"name": name, "value": field(text, refs)}
+            for name, value in _observation_conditions(observation, entities).items()
+            if (text := _display_value(value)) is not None
+        ]
+        for label, text in measurement_values[observation["observation_id"]]:
             measurement = {
-                "canonical_id": observation["observation_id"], "result_id": result_id,
-                "sample_state_ids": sample_ids, "scope": "group" if len(sample_ids) > 1 else "sample",
-                "run_id": run_id, "run_ids": observation.get("run_ids") or ([run_id] if run_id else []),
-                "run_missing_reason": observation.get("run_missing_reason"),
-                "property": field(item["metric"], refs), "result": field(item["text"], refs),
-                "method": field(method, run.get("evidence_ids", refs)) if method else None,
-                "source": results[result_id].get("source") or observation.get("source"),
-                "parameters": parameters,
-                "conditions": [
-                    {"name": name, "value": field(text, refs)}
-                    for name, value in conditions.items() if (text := quantity_text(value)) is not None
-                ],
+                "canonical_id": observation["observation_id"],
+                "property": field(label, refs), "result": field(text, refs),
+                "method": field(method, run["evidence_ids"]) if method else None, "conditions": conditions,
             }
             for sample_id in sample_ids:
                 add(sample_id, "measurements", measurement, refs)
@@ -212,114 +167,229 @@ def project_experiment_cards(record: dict, sources: dict, measurement_values: di
 
 
 def _sample_ids(observation: dict) -> list[str]:
-    """读取观测明确登记的单个样品或样品集合。"""
-    return [observation["sample_state_id"]] if "sample_state_id" in observation else observation.get("sample_state_ids", [])
+    """读取观测显式关联的样品状态编号。"""
+    if "sample_state_id" in observation:
+        return [observation["sample_state_id"]]
+    return observation.get("sample_state_ids", [])
 
 
-def _ground_owned_quantities(owner: dict, sources: dict, markdown: str, states: dict) -> None:
-    """沿最近的出处及样品边界核对数量，不借相邻对象的值。"""
-    aliases = {
-        "temperatures": "temperature", "input_temperatures": "temperature", "temperature_by_sample": "temperature",
-        "pressure_max_explicit_in_results": "pressure", "pressure_domain": "pressure", "purity_value": "purity",
-    }
-
-    def verify(metric, quantity, refs, samples):
-        """共同方法未逐个点名样品时，仍拒绝引用其他样品的专属条件。"""
-        evidence = [sources[ref] for ref in refs if ref in sources]
-        named = samples if any(
-            re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", source["quote"], re.I)
-            for name in samples for source in evidence
-        ) else []
-        other_names = tuple({state["reported_name"] for state in states.values()} - set(samples))
-        ground_quantity(metric, quantity, evidence, named, markdown, parameter=True, other_samples=other_names)
-
-    def visit(value, metric, refs, samples, manual=False):
-        """递归保留数量Owner，结果由专用结果核对处理。"""
-        if isinstance(value, dict):
-            manual = manual or value.get("source", {}).get("kind") == "manual"
-            if manual:
-                return
-            refs = value.get("evidence_ids", refs)
-            ids = _sample_ids(value) or value.get("applies_to_sample_state_ids") or []
-            samples = list(dict.fromkeys(states[ref]["reported_name"] for ref in ids if ref in states)) or samples
-            if value.get("kind") in {"scalar", "range", "uncertainty", "text"}:
-                verify(metric, value, refs, samples)
-                return
-            if metric == "relative_pressure_interval" and {"minimum", "maximum"} <= value.keys():
-                left = "[" if value["minimum_inclusive"] else "("
-                right = "]" if value["maximum_inclusive"] else ")"
-                raw = (
-                    f'{value["minimum"]}–{value["maximum"]}' if value["minimum_inclusive"] and value["maximum_inclusive"]
-                    else f'{left}{value["minimum"]}, {value["maximum"]}{right}'
-                )
-                verify(metric, quantity_from_text(raw), refs, samples)
-                return
-            for key, child in value.items():
-                if key in {"results", "operations", "source", "sequence", "evidence_ids"}:
-                    continue
-                field = aliases.get(key, key)
-                if key in {"pressure_basis", "mass_basis", "loading_definition"} and isinstance(child, str) and child.strip():
-                    if child.casefold() not in {"not_reported", "unresolved", "unknown", "not reported"} and not any(
-                        "".join(child.casefold().split()) in "".join(sources[ref]["quote"].casefold().split())
-                        for ref in refs if ref in sources
-                    ):
-                        raise UnverifiedQuantity(f"{key} 基准未能在自身出处中定位。")
-                if metric == "temperature" and key in {state.get("sample_batch_id") for state in states.values()}:
-                    field = "temperature"
-                if type(child) in {int, float}:
-                    unit = value.get(f'{key.removesuffix("_value")}_unit') or value.get("unit")
-                    quantity = quantity_from_text(f'{child} {unit or ""}')
-                    verify(field, quantity, refs, samples)
-                else:
-                    visit(child, field, refs, samples)
-        elif isinstance(value, list):
-            for member in value:
-                visit(member, metric, refs, samples, manual)
-
-    visit(owner, "", owner.get("evidence_ids", []), [])
+def _verified_measurements(observation, evidence, samples, sample_names, entities, markdown):
+    """校验可展示的数值，并保留可在引文中定位的写法。"""
+    measurements = []
+    for metric, result in _measurement_values(observation):
+        text = _display_value(result)
+        if text is None or (isinstance(text, str) and not text.strip()):
+            continue
+        if isinstance(result, str) and not any(_phrase(result) in _phrase(source["quote"]) for source in evidence):
+            raise _UnverifiedObservation("定性结果无法在所引原文中定位。")
+        label = _TEXTURAL_LABELS.get(metric, entities.get(metric, metric))
+        if isinstance(result, dict) and result.get("kind") in {"scalar", "range"}:
+            text = _ground_quantity(metric, result, evidence, samples, sample_names, markdown)
+            if text != result["raw_text"] and result.get("unit_raw"):
+                label = f'{label} ({result["unit_raw"]})'
+        elif type(numeric := result.get("value") if isinstance(result, dict) else result) in {int, float}:
+            text = _ground_quantity(
+                metric, {"kind": "scalar", "value": numeric, "raw_text": str(text)},
+                evidence, samples, sample_names, markdown,
+            )
+        measurements.append((label, text))
+    return measurements
 
 
-def _observation_conditions(observation: dict) -> dict:
-    """保留观测明确绑定的条件；缺失条件不从相邻实验补齐。"""
+def _measurement_values(observation: dict):
+    """读取观测的结果字段，保留指标名或物种编号。"""
+    kind = observation["observation_type"]
+    results = observation.get("results")
+    if isinstance(results, list):
+        for result in results:
+            if isinstance(result, str):
+                yield kind, result
+            elif "value" in result or "position" in result:
+                label = result.get("metric_id") or result.get("entity_id") or result.get("peak_name")
+                yield label or kind, result.get("value", result.get("position"))
+            elif "binding_energy_eV" in result:
+                yield result["assignment"], {"value": result["binding_energy_eV"], "unit": "eV"}
+    elif isinstance(results, dict):
+        yield from results.items()
+    for key in (
+        "value", "selectivity", "result", "reported_observation", "reported_order", "qualitative_result",
+        "signed_value_from_figure", "magnitude_reported_in_prose", "interaction_distance_from_figure",
+    ):
+        if key in observation:
+            yield observation.get("metric_id") or (kind if key in {"value", "result"} else key), observation[key]
+    for text in observation.get("qualitative_results", []):
+        yield "qualitative_results", text
+    if kind == "equilibrium_uptake":
+        yield kind, observation["loading"]
+
+
+def _observation_conditions(observation: dict, entities: dict) -> dict:
+    """保留单条观测显式绑定的物种、条件和取值基准。"""
     conditions = dict(observation.get("conditions", {}))
     for key in ("temperature", "pressure", "loading_domain", "condition_context"):
         if key in observation:
             conditions[key] = observation[key]
+    if observation["observation_type"] == "isosteric_heat" and "loading" in observation:
+        conditions["loading"] = observation["loading"]
+    if entity_id := observation.get("entity_id"):
+        conditions["species"] = entities[entity_id]
+    if pair := observation.get("ordered_species_pair"):
+        conditions["species_pair"] = f'{entities[pair["numerator_entity_id"]]}/{entities[pair["denominator_entity_id"]]}'
     return conditions
 
 
-def _observed_species(observation: dict, metric: str, entities: dict) -> tuple[str, ...]:
-    """按观测声明读取需在结果出处核对的气体或有序气体对。"""
-    if pair := observation.get("ordered_species_pair"):
-        return tuple(entities[pair[field]].get("formula_ascii") or entities[pair[field]]["reported_name"] for field in (
-            "numerator_entity_id", "denominator_entity_id",
-        ))
-    entity_id = observation.get("entity_id") or (metric if metric in entities else None)
-    if entity_id:
-        entity = entities[entity_id]
-        return (entity.get("formula_ascii") or entity["reported_name"],)
-    return ()
+def _display_value(value):
+    """将有直接文字或数量的值转为审核页面显示文本。"""
+    if isinstance(value, dict):
+        if "raw_text" in value:
+            return value["raw_text"]
+        if "minimum" in value and "maximum" in value:
+            return f'{value["minimum"]}–{value["maximum"]} {value.get("unit") or ""}'.strip()
+        if value.get("value") is not None and not isinstance(value["value"], (dict, list)):
+            return f'{value["value"]} {value.get("unit") or ""}'.strip()
+        return None
+    return value if isinstance(value, (str, int, float)) and not isinstance(value, bool) else None
 
 
-def _ambiguous_sample(observation: dict, states: dict, evidence: list[dict]) -> bool:
-    """同名状态需要独立的出处或明确写出的状态说明。"""
-    selected = set(_sample_ids(observation))
-    refs = set(observation["evidence_ids"])
-    for sample_id in selected:
-        state = states[sample_id]
-        alternatives = [
-            item for key, item in states.items() if key not in selected
-            and item["reported_name"].casefold() == state["reported_name"].casefold()
-        ]
-        if not alternatives:
+def _ground_quantity(
+    metric: str, value: dict, sources: list[dict], samples: list[str], sample_names: set[str], markdown: str,
+) -> str:
+    """核对科学数值和所引出处，规则表格需有样品与数值交点。"""
+    numbers = (
+        [Decimal(str(value["value"]))] if value["kind"] == "scalar"
+        else [Decimal(str(value["minimum"])), Decimal(str(value["maximum"]))]
+    )
+    raw = value["raw_text"]
+    numeric_raw = raw.strip()
+    if fence := re.fullmatch(r"(\${1,2})(.*?)\1", numeric_raw, re.S):
+        numeric_raw = fence[2].strip()
+    number_only = _NUMBER.fullmatch(numeric_raw) is not None
+    expected = set(numbers)
+    if not expected <= _numbers(raw):
+        raise _UnverifiedObservation("数值与原文写法不一致。")
+    metric_header = _TEXTURAL_HEADERS.get(metric)
+    unit = value.get("unit_raw", "")
+    if metric_header is not None and (
+        not _unit_matches(unit, value.get("unit_canonical", ""))
+        or (not number_only and not _unit_matches(unit, raw))
+    ):
+        raise _UnverifiedObservation("原始单位、规范单位与结果写法不一致。")
+    if metric == "diffusion_time_constant" and (
+        not unit or not _unit_matches(unit, value.get("unit_canonical", ""), exact=True)
+        or (not number_only and not _unit_matches(unit, raw))
+    ):
+        raise _UnverifiedObservation("扩散时间常数的原文写法、原始单位与规范单位不一致。")
+    for source in sources:
+        quote = source["quote"]
+        if not expected <= _numbers(quote):
             continue
-        other_refs = {ref for item in alternatives for ref in item["evidence_ids"]}
-        if refs.intersection(state["evidence_ids"]) - other_refs:
+        grid = table_cells(markdown, source["start_char"], source["end_char"])
+        if grid and len(samples) == 1:
+            sample = samples[0].strip().casefold()
+            cells = [[html.unescape(re.sub(r"<[^>]+>", "", markdown[a:b])).strip() for a, b in row] for row in grid]
+            for row_index, row in enumerate(grid[1:], 1):
+                for column_index, (start, end) in enumerate(row[1:], 1):
+                    row_label, column_label = cells[row_index][0], cells[0][column_index]
+                    if row_label.casefold() == sample:
+                        header = column_label
+                    elif column_label.casefold() == sample:
+                        header = row_label
+                    else:
+                        continue
+                    cell = cells[row_index][column_index]
+                    if metric_header is not None and (
+                        not metric_header.search(_table_label(header)) or not _unit_matches(unit, f"{header} {cell}")
+                    ):
+                        continue
+                    if metric == "diffusion_time_constant" and not _unit_matches(unit, f"{header} {cell}"):
+                        continue
+                    if expected <= _numbers(cell):
+                        return markdown[start:end]
             continue
-        descriptor = state.get("state")
-        if descriptor and all(descriptor != item.get("state") for item in alternatives) and any(
-            re.search(rf"(?<!\w){re.escape(descriptor)}(?!\w)", source["quote"], re.I) for source in evidence
+        if metric_header is not None and (
+            grid is not None or not _matches_plain_textural(quote, metric_header, unit, expected, samples, sample_names)
         ):
             continue
-        return True
+        if metric == "diffusion_time_constant" and not any(
+            _number(match.group()) == numbers[0] and _unit_matches(unit, quote[match.end():], prefix=True)
+            for match in _NUMBER.finditer(quote)
+        ):
+            continue
+        if raw in quote:
+            return raw
+        if len(numbers) == 1:
+            return next(match.group() for match in _NUMBER.finditer(quote) if _number(match.group()) == numbers[0])
+        return raw
+    raise _UnverifiedObservation("数值或单位无法在所引原文中定位。")
+
+
+def _matches_plain_textural(
+    quote: str, metric: re.Pattern, unit: str, expected: set[Decimal], samples: list[str], sample_names: set[str],
+) -> bool:
+    """文字层表格按同一表头的样品顺序核对指标行。"""
+    if len(samples) != 1:
+        return False
+    sample = samples[0].casefold()
+    columns = []
+    for line in quote.splitlines():
+        names = sorted(
+            (match.start(), name) for name in sample_names
+            if (match := re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", line.casefold()))
+        )
+        if len(names) > 1:
+            columns = [name for _, name in names]
+        label = _table_label(line)
+        if not (header := metric.search(label)) or not _unit_matches(unit, line):
+            continue
+        if columns:
+            row = re.sub(r"^\s*\([^)]*\)", "", label[header.end():])
+            values = [_number(match.group()) for match in _NUMBER.finditer(row)]
+            if len(columns) == len(values) and sample in columns and expected == {values[columns.index(sample)]}:
+                return True
+        elif len(names) == 1 and names[0][1] == sample:
+            for match in _NUMBER.finditer(line):
+                if expected == {_number(match.group())} and _unit_matches(unit, line[match.end():], prefix=True):
+                    return True
     return False
+
+
+def _table_label(text: str) -> str:
+    """去掉表头的 Markdown 数学标记以核对指标。"""
+    return re.sub(r"[$_{}]", "", text)
+
+
+def _unit_matches(unit: str, text: str, *, prefix: bool = False, exact: bool = False) -> bool:
+    """在表头或单元格中核对原始单位，接受上标和倒数写法。"""
+    def normalize(value):
+        """统一单位中常见的数学标记。"""
+        value = unicodedata.normalize("NFKC", html.unescape(value)).casefold().replace("−", "-")
+        value = re.sub(r"[\^${}]", "", value).replace("·", " ").replace("⋅", " ")
+        value = re.sub(r"(?<=[a-z])\s+(?=[+-]?\d)|\s*(/)\s*", r"\1", value)
+        value = re.sub(r"\b(s|min|h)\s*-\s*1\b", r"1/\1", value)
+        return re.sub(r"(\d)\s*(kg|g)\s*-\s*1\b", r"\1/\2", value).strip()
+
+    normalized = normalize(unit)
+    if exact:
+        return bool(normalized and normalized == normalize(text))
+    start = "^" if prefix else r"(?<![a-z/])"
+    return bool(normalized and re.search(rf"{start}{re.escape(normalized)}(?![a-z0-9/+-])", normalize(text)))
+
+
+def _phrase(text: str) -> str:
+    """保留字面内容并忽略 PDF 排版空白。"""
+    return "".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def _numbers(text: str) -> set[Decimal]:
+    """按完整数字边界匹配，保留正负号并忽略末尾零差异。"""
+    return {_number(match.group()) for match in _NUMBER.finditer(text)}
+
+
+def _number(value: str) -> Decimal:
+    """把原文乘十幂、上标指数和数学负号转换为十进制数。"""
+    value = unicodedata.normalize("NFKC", value).replace("−", "-")
+    value = re.sub(r"\s*(?:\\times|×|⋅|·|x)\s*10\s*\^?\s*\{?\s*([+-]?\d+)\s*\}?", r"e\1", value)
+    try:
+        return Decimal(value)
+    except InvalidOperation as error:
+        raise _UnverifiedObservation("无法读取所引数值。") from error

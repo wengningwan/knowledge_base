@@ -48,10 +48,6 @@ class ModelInfo:
     # Embedding 专属
     dimension: int | None = None
     batch_size: int = 40
-    # 容量来自该模型的远端元数据或模型 extra；不按供应商或模型名猜测。
-    context_length: int | None = None
-    max_input_tokens: int | None = None
-    max_completion_tokens: int | None = None
 
     @property
     def spec(self) -> str:
@@ -72,9 +68,6 @@ class ModelInfo:
             "include_user_uid": self.include_user_uid,
             "dimension": self.dimension,
             "batch_size": self.batch_size,
-            "context_length": self.context_length,
-            "max_input_tokens": self.max_input_tokens,
-            "max_completion_tokens": self.max_completion_tokens,
         }
 
     @classmethod
@@ -93,9 +86,6 @@ class ModelInfo:
             include_user_uid=bool(data.get("include_user_uid", False)),
             dimension=data.get("dimension"),
             batch_size=data.get("batch_size", 40),
-            context_length=data.get("context_length"),
-            max_input_tokens=data.get("max_input_tokens"),
-            max_completion_tokens=data.get("max_completion_tokens"),
         )
 
 
@@ -166,11 +156,6 @@ class ModelCache:
             for model in provider.enabled_models or []:
                 model_type = model.get("type", "chat")
                 base_url = model.get("base_url_override") or self._get_base_url_for_type(provider, model_type)
-                model_extra = model.get("extra") or {}
-                capacities = {
-                    name: model_extra.get(name) if model.get(name) is None else model[name]
-                    for name in ("context_length", "max_input_tokens", "max_completion_tokens")
-                }
 
                 info = ModelInfo(
                     provider_id=provider.provider_id,
@@ -186,7 +171,6 @@ class ModelCache:
                     include_user_uid=bool(provider.include_user_uid),
                     dimension=model.get("dimension"),
                     batch_size=model.get("batch_size", 40),
-                    **capacities,
                 )
                 new_cache[info.spec] = info
 

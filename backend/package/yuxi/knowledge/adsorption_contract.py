@@ -4,24 +4,13 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from copy import deepcopy
 from functools import cache
-from hashlib import sha256
 from importlib.resources import files
 
 from jsonschema import Draft202012Validator
 
-from yuxi.knowledge.adsorption_quantities import (
-    UnverifiedQuantity,
-    canonical_unit,
-    check_quantity,
-    quantity_from_text,
-    quantity_text,
-)
-from yuxi.knowledge.adsorption_relations import observation_assignment_error, run_derivation_error
-
-STRUCTURE_VERSION = 3
-STRUCTURE_PROMPT_VERSION = "adsorption-canonical-v7"
+STRUCTURE_VERSION = 2
+STRUCTURE_PROMPT_VERSION = "adsorption-canonical-v6"
 REGISTRIES = {
     "evidence": "evidence_id",
     "chemical_entities": "entity_id",
@@ -48,10 +37,8 @@ _REFERENCE_ALIASES = {
     "source_model_run_id": "run_id", "supported_by_observation_id": "observation_id",
     "input_intermediate_id": "intermediate_id", "output_intermediate_id": "intermediate_id",
     "species_entity_id": "entity_id",
-    "applies_to_sample_state_id": "sample_state_id",
-    "sample_specific_assignment": "sample_state_id",
 }
-_TYPED_REFERENCES = set(REGISTRIES.values()) | {"document_id", "intermediate_id", "result_id"}
+_TYPED_REFERENCES = set(REGISTRIES.values()) | {"document_id", "intermediate_id"}
 _INDEPENDENT_MEMBERS = {"observations": "results", "synthesis_routes": "operations"}
 type Notice = tuple[str, str] | tuple[str, str, dict]
 type RecordPosition = tuple[str, int]
@@ -63,146 +50,18 @@ def output_schema() -> dict:
     return json.loads(files(__package__).joinpath("adsorption_schema.json").read_text(encoding="utf-8"))
 
 
-def ensure_result_ids(record: dict, namespace: str = "") -> None:
-    """在首次冻结时固定结果身份；后续编辑保留结果自身编号。"""
-    normalize_observation_results(record, namespace)
-
-
-def normalize_observation_results(record: dict, namespace: str = "") -> None:
-    """把旧稿的固定结果字段转成新版独立结果，不依据活动下标重定位。"""
-    result_fields = (
-        "value", "loading", "selectivity", "result", "reported_observation", "reported_order", "qualitative_result",
-        "signed_value_from_figure", "magnitude_reported_in_prose", "interaction_distance_from_figure",
-        "quantitative_particle_size", "numeric_mass_loss", "relative_component_fractions",
-    )
-    for observation in record.get("observations", []):
-        previous = observation.get("results")
-        normalized = []
-        if isinstance(previous, list):
-            for member in previous:
-                if isinstance(member, dict) and "metric_id" in member and isinstance(member.get("value"), dict):
-                    normalized.append(member)
-                    continue
-                if isinstance(member, dict):
-                    metric = member.get("metric_id") or member.get("entity_id") or member.get("peak_name") or member.get("assignment")
-                    if "binding_energy_eV" in member:
-                        text = f'{member["binding_energy_eV"]} ± {member["uncertainty_eV"]} eV'
-                        value = quantity_from_text(text)
-                    else:
-                        value = member.get("value", member.get("position", ""))
-                else:
-                    metric, value = observation["observation_type"], member
-                item = {"metric_id": metric or observation["observation_type"], "value": value}
-                if isinstance(member, dict) and "reported_assignment" in member:
-                    item["reported_assignment"] = member["reported_assignment"]
-                normalized.append(item)
-        elif isinstance(previous, dict):
-            for metric, value in previous.items():
-                if isinstance(value, list):
-                    normalized.extend({"metric_id": metric, "value": member} for member in value)
-                else:
-                    if metric.endswith("_percent") and type(value) in {int, float}:
-                        value = {"value": value, "unit": "%"}
-                    normalized.append({"metric_id": metric, "value": value})
-        for key in result_fields:
-            if key in observation:
-                value = observation.pop(key)
-                if key == "loading" and observation["observation_type"] == "isosteric_heat":
-                    observation.setdefault("conditions", {})[key] = value
-                    continue
-                if value is not None:
-                    metric = observation.get("metric_id") or (observation["observation_type"] if key in {
-                        "value", "loading", "selectivity", "result",
-                    } else key)
-                    normalized.append({"metric_id": metric, "value": value})
-        normalized.extend(
-            {"metric_id": "qualitative_results", "value": value}
-            for value in observation.pop("qualitative_results", [])
-        )
-        for index, member in enumerate(normalized):
-            if not member.get("result_id"):
-                identity = f'{namespace}:{observation["observation_id"]}:{index}'
-                member["result_id"] = f'result:{sha256(identity.encode()).hexdigest()[:32]}'
-            value = member["value"]
-            if not isinstance(value, dict) or value.get("kind") not in {"scalar", "range", "uncertainty", "text"}:
-                member["value"] = _legacy_quantity(value)
-            elif value["kind"] == "range":
-                value.setdefault("minimum_inclusive", True)
-                value.setdefault("maximum_inclusive", True)
-        observation["results"] = normalized
-
-
-def normalize_legacy_quantities(record: dict) -> None:
-    """把旧稿的固定数量形状转换为新版，保留不明原文供同版证据复核。"""
-    shapes = (
-        {"raw_text", "value", "unit"}, {"value", "unit"}, {"value", "unit", "pressure_type"},
-        {"minimum", "maximum", "unit"}, {"value", "unit", "unit_status"},
-    )
-
-    def normalize(value):
-        """只转换旧契约拥有的数量，不推断其他对象的单位。"""
-        if isinstance(value, dict):
-            if value.keys() in shapes or value.get("kind") in {"scalar", "range"}:
-                return _legacy_quantity(value)
-            for key, member in value.items():
-                value[key] = normalize(member)
-        elif isinstance(value, list):
-            for index, member in enumerate(value):
-                value[index] = normalize(member)
-        return value
-
-    normalize(record)
-
-
-def observation_result_entries(observation: dict) -> list[tuple[str, str, dict]]:
-    """按结果自身编号读取规范结果，不从活动列表位置推测身份。"""
-    return [(item["result_id"], item["metric_id"], item["value"]) for item in observation.get("results", [])]
-
-
-def operation_sample_ids(operation: dict, record: dict | None = None, route: dict | None = None) -> list[str]:
-    """沿明确的样品产物与中间体下游链确定操作适用样品。"""
-    explicit = operation.get("applies_to_sample_state_ids")
-    if explicit is not None:
-        return list(dict.fromkeys(explicit))
-    states = {item["sample_state_id"] for item in (record or {}).get("sample_states", [])}
-    operations = route.get("operations", []) if route else [
-        item for parent in (record or {}).get("synthesis_routes", []) for item in parent["operations"]
-    ]
-    outputs = set(operation.get("output_sample_state_ids", []))
-    pending = [operation.get("output_intermediate_id")]
-    visited = set()
-    while pending:
-        output = pending.pop()
-        if output is None or output in visited:
-            continue
-        visited.add(output)
-        if output in states:
-            outputs.add(output)
-        for downstream in operations:
-            if output in downstream.get("input_intermediate_ids", []):
-                outputs.update(downstream.get("applies_to_sample_state_ids") or downstream.get("output_sample_state_ids", []))
-                pending.append(downstream.get("output_intermediate_id"))
-    return sorted(outputs)
-
-
 def stage_schema(fields: tuple[str, ...], observation_types: tuple[str, ...] = ()) -> dict:
     """从同一契约截取当前提取阶段及其引用的定义。"""
     schema = output_schema()
-    properties = {name: deepcopy(schema["properties"][name]) for name in fields}
-    if "observations" in properties:
+    properties = {name: schema["properties"][name] for name in fields}
+    if observation_types:
         variants = properties["observations"]["items"]["anyOf"]
-        selected = []
-        for variant in variants:
-            definition = schema["$defs"][variant["$ref"].rsplit("/", 1)[-1]]
-            kind = definition["properties"]["observation_type"]["const"]
-            if kind != "reported_measurement" and (not observation_types or kind in observation_types):
-                selected.append(variant)
-        properties["observations"] = {"type": "array", "items": {"anyOf": selected}}
-    if "experiment_runs" in properties:
-        properties["experiment_runs"]["items"]["anyOf"] = [
-            variant for variant in properties["experiment_runs"]["items"]["anyOf"]
-            if variant["$ref"] != "#/$defs/experiment_runs_reported_experiment"
+        selected = [
+            variant for variant in variants
+            if schema["$defs"][variant["$ref"].rsplit("/", 1)[-1]]["properties"]["observation_type"]["const"]
+            in observation_types
         ]
+        properties["observations"] = {"type": "array", "items": {"anyOf": selected}}
 
     definitions = {}
 
@@ -212,12 +71,8 @@ def stage_schema(fields: tuple[str, ...], observation_types: tuple[str, ...] = (
             if "$ref" in value:
                 name = value["$ref"].rsplit("/", 1)[-1]
                 if name not in definitions:
-                    definitions[name] = deepcopy(schema["$defs"][name])
+                    definitions[name] = schema["$defs"][name]
                     include(definitions[name])
-            if value.get("properties", {}).get("source", {}).get("$ref") == "#/$defs/source_attribution":
-                del value["properties"]["source"]
-                if "source" in value.get("required", []):
-                    value["required"].remove("source")
             for child in value.values():
                 include(child)
         elif isinstance(value, list):
@@ -306,9 +161,6 @@ def filter_record_references(record: dict, notices: list[Notice]) -> None:
             record[collection] = [
                 item for index, item in enumerate(record[collection]) if (collection, index) not in problems
             ]
-    for route in record["synthesis_routes"]:
-        for operation in route["operations"]:
-            operation["applies_to_sample_state_ids"] = operation_sample_ids(operation, record, route)
     series_by_run = _series_by_run(record)
     for index, run in enumerate(record["experiment_runs"], 1):
         if "series_set_ids" not in run:
@@ -365,9 +217,6 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
                             register("intermediate_id", intermediate, step_position)
                     for reagent in operation.get("reagent_uses", []):
                         register("reagent_use_id", reagent["reagent_use_id"], step_position)
-            elif collection == "observations":
-                for result_index, result in enumerate(item.get("results", []), 1):
-                    register("result_id", result["result_id"], (*position, result_index))
     for value, positions in owners.items():
         if len(positions) > 1:
             if positions.count(None) > 1:
@@ -381,6 +230,7 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
                     problems[position[:2]] = f"记录编号重复（{value}），无法确定归属。"
     formulas = {item.get("formula_ascii") for item in record["chemical_entities"]} - {None}
     series_runs = {run["run_id"] for run in record["experiment_runs"] if "series_set_ids" in run}
+    runs = {run["run_id"]: run for run in record["experiment_runs"]}
     for collection in REGISTRIES:
         for index, item in enumerate(record[collection]):
             position = (collection, index)
@@ -389,25 +239,32 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
             if collection == "series_sets" and item["run_id"] not in series_runs:
                 problems[position] = "对应实验没有可登记该曲线的字段。"
                 continue
-            if collection == "experiment_runs" and (reason := run_derivation_error(item, record)):
-                problems[position] = reason
-                continue
-            if collection == "observations" and (reason := observation_assignment_error(item, record)):
-                problems[position] = reason
-                continue
-            if collection == "observations" and not item["results"]:
-                problems[position] = "观测没有可用的独立结果。"
-                continue
+            if collection == "observations" and item["observation_type"] in {
+                "kinetic_selectivity", "diffusion_time_constant",
+            }:
+                run = runs.get(item["run_id"], {})
+                if run.get("run_type") != "adsorption_kinetics" or item["sample_state_id"] not in run.get(
+                    "sample_state_ids", [],
+                ):
+                    problems[position] = "动力学观测没有关联包含当前样品的动力学实验。"
+                    continue
+                species = set(run.get("species_entity_ids", []))
+                if "entity_id" in item:
+                    observed_species = {item["entity_id"]}
+                else:
+                    pair = item["ordered_species_pair"]
+                    observed_species = {pair["numerator_entity_id"], pair["denominator_entity_id"]}
+                if species and not observed_species <= species:
+                    problems[position] = "动力学观测的气体不属于所关联实验声明的物种。"
+                    continue
             child_field = _INDEPENDENT_MEMBERS.get(collection)
             if notices is not None and child_field and isinstance(item.get(child_field), list):
                 kept = []
                 for member_index, member in enumerate(item[child_field], 1):
                     reason = (
-                        "独立记录编号重复，无法确定归属。" if member_index in duplicate_steps.get(position, ())
-                        else _reference_error(member, ids, owners, formulas) or _quantity_error(member)
+                        "步骤编号重复，无法确定归属。" if member_index in duplicate_steps.get(position, ())
+                        else _reference_error(member, ids, owners, formulas)
                     )
-                    if not reason and collection == "synthesis_routes":
-                        reason = _operation_assignment_error(member, record, item)
                     if reason:
                         notices.append((
                             "invalid_member_reference",
@@ -417,27 +274,10 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
                     else:
                         kept.append(member)
                 item[child_field] = kept
-            elif collection == "synthesis_routes":
-                for operation in item["operations"]:
-                    if reason := _operation_assignment_error(operation, record, item):
-                        problems[position] = reason
-                        break
             ignore_series = notices is not None and collection == "experiment_runs"
-            if reason := _reference_error(item, ids, owners, formulas, ignore_series=ignore_series) or _quantity_error(item):
+            if reason := _reference_error(item, ids, owners, formulas, ignore_series=ignore_series):
                 problems[position] = reason
     return problems
-
-
-def _operation_assignment_error(operation: dict, record: dict, route: dict) -> str | None:
-    """步骤的适用对象必须属于路线，产物必须属于步骤适用对象。"""
-    sample_ids = set(operation_sample_ids(operation, record, route))
-    if not sample_ids:
-        return "操作没有明确的样品适用范围或通向样品的产物链。"
-    if not sample_ids <= set(route["target_sample_state_ids"]):
-        return "操作适用样品不属于对应制备路线。"
-    if not set(operation.get("output_sample_state_ids", [])) <= sample_ids:
-        return "操作产物与适用样品集合不一致。"
-    return None
 
 
 def _reference_error(item, ids, owners, formulas, *, ignore_series=False) -> str | None:
@@ -470,34 +310,11 @@ def _series_by_run(record: dict) -> dict[str, list[str]]:
     return result
 
 
-def _quantity_error(value: dict) -> str | None:
-    """所有固定数量字段均须保留可与原文表达核对的含义。"""
-    pending = [value]
-    while pending:
-        current = pending.pop()
-        if isinstance(current, dict):
-            if current.get("kind") in {"scalar", "range", "uncertainty", "text"}:
-                try:
-                    check_quantity(current)
-                except UnverifiedQuantity as error:
-                    return str(error)
-            else:
-                pending.extend(current.values())
-        elif isinstance(current, list):
-            pending.extend(current)
-    return None
-
-
 def _fields(value):
     """遍历嵌套记录的字段和值。"""
     if isinstance(value, dict):
         for key, child in value.items():
-            if key in {"source", "legacy_mapping"}:
-                continue
-            if isinstance(child, dict) and (
-                child.keys() == {"raw_text", "value", "unit"}
-                or child.get("kind") in {"scalar", "range", "uncertainty", "text"}
-            ):
+            if isinstance(child, dict) and child.keys() == {"raw_text", "value", "unit"}:
                 # 原文参数名属于论文内容，不按名称解释为编号引用。
                 continue
             yield key, child
@@ -506,32 +323,3 @@ def _fields(value):
     elif isinstance(value, list):
         for child in value:
             yield from _fields(child)
-
-
-def _legacy_quantity(value: object) -> dict:
-    """以旧原文和明示单位恢复数量，保留旧值供校验核对。"""
-    if isinstance(value, dict):
-        if value.get("kind") in {"scalar", "range"}:
-            converted = dict(value)
-            converted["unit_canonical"] = canonical_unit(value.get("unit_raw"))
-            if converted["kind"] == "range":
-                converted.setdefault("minimum_inclusive", True)
-                converted.setdefault("maximum_inclusive", True)
-            else:
-                expression = quantity_from_text(converted["raw_text"])
-                if expression.get("kind") == "scalar" and converted["operator"] in {"eq", "approx", "≈", "~", "≤", "≥"}:
-                    converted["operator"] = expression["operator"]
-            return converted
-        if "minimum" in value and "maximum" in value:
-            return quantity_from_text(f'{value["minimum"]}–{value["maximum"]} {value.get("unit") or ""}')
-        if "unit_status" in value and not value.get("unit"):
-            return {"kind": "text", "raw_text": str(value["value"])}
-    text = quantity_text(value)
-    if isinstance(value, dict) and value.get("unit") and "raw_text" in value:
-        expression = quantity_from_text(text or "")
-        if expression.get("kind") != "text" and not expression.get("unit_raw"):
-            text = f'{text} {value["unit"]}'
-    quantity = quantity_from_text(text or "")
-    if isinstance(value, dict) and "pressure_type" in value and quantity["kind"] == "scalar":
-        quantity["basis"] = value["pressure_type"]
-    return quantity

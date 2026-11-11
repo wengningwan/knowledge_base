@@ -9,7 +9,7 @@
     <div class="correction-columns">
       <nav class="correction-list" aria-label="校对待办">
         <button v-for="task in queue" :key="task.task_id" type="button" :disabled="saving" :aria-pressed="activeTask?.task_id === task.task_id" @click="chooseTask(task.task_id)">
-          <small>{{ task.legacy_mapping_required ? '指定旧修改归属' : kindLabels[task.kind] }}</small>
+          <small>{{ kindLabels[task.kind] }}</small>
           <strong>{{ task.fields.sample || '样品待确定' }}</strong>
           <span>{{ experimentLabel(task.fields.metric) || (task.kind === 'source' ? '原文内容需确认' : '指标待确定') }}</span>
           <small v-if="task.fields.result" class="candidate-preview">{{ task.fields.result }}</small>
@@ -27,27 +27,32 @@
           </article>
         </section>
         <section class="correction-editor" aria-label="处理当前待办">
-          <header><h3>{{ activeTask.resolution ? outcomeLabels[activeTask.resolution.outcome] : legacyMapping ? '指定旧修改归属' : kindLabels[activeTask.kind] }}</h3><span>{{ queue.indexOf(activeTask) + 1 }} / {{ queue.length }}</span></header>
+          <header><h3>{{ activeTask.resolution ? outcomeLabels[activeTask.resolution.outcome] : kindLabels[activeTask.kind] }}</h3><span>{{ queue.indexOf(activeTask) + 1 }} / {{ queue.length }}</span></header>
           <p v-if="activeTask.resolution?.outcome === 'checked'" class="correction-outcome">核对状态和所选出处已保存，原文和实验数据保留原值。</p>
           <p class="correction-reason">{{ activeTask.reason }}</p>
-          <label v-if="legacyMapping">对应的当前记录
-            <a-select :value="targetRecordId || undefined" :options="targetOptions" show-search option-filter-prop="label" :disabled="saving || !canManage" placeholder="选择当前机器记录" @update:value="chooseTarget" />
-          </label>
           <div v-if="showRecordFields" class="correction-fields">
-            <ExperimentRecordFields v-model="fields" :snapshot="snapshot" :paper="paper" :allowed-sample-ids="activeTask.legacy_operation_sample_ids" :linked-run-ids="linkedRunIds" :group="fields.scope === 'group'" :disabled="saving || !canManage || (legacyMapping && !targetRecordId)" @validity="parametersValid = $event" />
+            <label>样品<a-auto-complete v-model:value="fields.sample" :options="sampleOptions" :disabled="saving || !canManage" :filter-option="filterSample" placeholder="选择或填写样品名称" /></label>
+            <label>指标或操作<a-input v-model:value="fields.metric" :maxlength="1000" :disabled="saving || !canManage" placeholder="待补充" /></label>
+            <label v-if="fields.kind === 'measurement'" class="result-field">结果<a-input v-model:value="fields.result" :maxlength="1000" :disabled="saving || !canManage" placeholder="保留原文数值、单位和限定词" /></label>
+            <label>条件<a-textarea v-model:value="fields.conditions" :maxlength="16000" :auto-size="{ minRows: 2, maxRows: 5 }" :disabled="saving || !canManage" placeholder="原文未注明可留空" /></label>
           </div>
           <details v-if="showRecordFields || activeTask.kind === 'source'" class="source-picker" :open="!selectedSources.length">
             <summary>{{ selectedSources.length ? '更换或补充出处' : '选择原文出处' }}</summary>
             <a-select v-model:value="fields.evidence_ids" mode="multiple" show-search :options="sourceOptions" :filter-option="filterSource" :disabled="saving || !canManage" placeholder="按页码或原文内容查找" />
           </details>
+          <details v-if="showRecordFields" class="more-fields">
+            <summary>记录类型与测试方法</summary>
+            <label>记录类型<a-select v-model:value="fields.kind" :options="kindOptions" :disabled="saving || !canManage" /></label>
+            <label>测试方法<a-input v-model:value="fields.test" :maxlength="1000" :disabled="saving || !canManage" /></label>
+          </details>
           <a-alert v-if="error" type="error" :message="error" show-icon />
-          <p v-if="canManage && showRecordFields && !readyToSave" class="save-hint">{{ legacyMapping && !targetRecordId ? '先选择本次机器记录，以确定旧修改的归属。' : '补齐归属、指标或操作和原文出处后即可保存。' }}</p>
+          <p v-if="canManage && showRecordFields && !readyToSave" class="save-hint">补齐样品、指标或操作{{ fields.kind === 'measurement' ? '、结果' : '' }}，并选择出处后即可保存。</p>
           <div v-if="canManage" class="correction-actions">
             <a-button v-if="activeTask.kind === 'missing' && !recordingMissing" :disabled="saving" @click="recordingMissing = true">填写数据</a-button>
             <a-button v-if="showRecordFields" type="primary" :loading="saving" :disabled="!readyToSave" @click="submit('save')">{{ activeTask.resolution ? '保存修改' : '保存并下一条' }}</a-button>
-            <a-button v-if="!legacyMapping && activeTask.kind === 'source'" :loading="saving" :disabled="!selectedSources.length" @click="submit('resolve', 'checked')">{{ activeTask.resolution?.outcome === 'checked' ? '保存核对出处' : '完成核对，保留现状' }}</a-button>
-            <a-button v-if="!legacyMapping && activeTask.kind === 'missing'" :type="recordingMissing ? 'default' : 'primary'" :disabled="saving" @click="submit('resolve', 'unreported')">原文未提供</a-button>
-            <a-button v-if="!legacyMapping && !activeTask.legacy_operation_sample_ids" :disabled="saving" @click="submit('resolve', 'ignored')">{{ activeTask.record_id ? '排除记录' : '不采用此项' }}</a-button>
+            <a-button v-if="activeTask.kind === 'source'" :loading="saving" :disabled="!selectedSources.length" @click="submit('resolve', 'checked')">{{ activeTask.resolution?.outcome === 'checked' ? '保存核对出处' : '完成核对，保留现状' }}</a-button>
+            <a-button v-if="activeTask.kind === 'missing'" :type="recordingMissing ? 'default' : 'primary'" :disabled="saving" @click="submit('resolve', 'unreported')">原文未提供</a-button>
+            <a-button :disabled="saving" @click="submit('resolve', 'ignored')">{{ activeTask.record_id ? '排除记录' : '不采用此项' }}</a-button>
           </div>
         </section>
       </template>
@@ -63,8 +68,7 @@
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
-import ExperimentRecordFields from './ExperimentRecordFields.vue'
-import { experimentEvidenceMarkdown, experimentLabel, experimentReviewFields } from '@/utils/experimentPresentation'
+import { experimentEvidenceMarkdown, experimentLabel } from '@/utils/experimentPresentation'
 
 const props = defineProps({
   snapshot: { type: Object, required: true },
@@ -74,13 +78,12 @@ const props = defineProps({
 })
 const kindLabels = { candidate: '确认提取结果', missing: '确认资料缺口', source: '核对原文疑点' }
 const outcomeLabels = { saved: '已保存数据', unreported: '原文未提供', ignored: '已不采用', checked: '已核对，保留现状' }
+const kindOptions = [{ value: 'measurement', label: '测量结果' }, { value: 'preparation', label: '制备操作' }]
 const mode = ref('pending')
 const selectedId = ref('')
-const targetRecordId = ref('')
 const fields = ref({ evidence_ids: [] })
 const drafts = new Map()
 const saving = ref(false)
-const parametersValid = ref(true)
 const error = ref('')
 const recordingMissing = ref(false)
 const tasks = computed(() => props.snapshot.review?.tasks || [])
@@ -88,24 +91,15 @@ const pending = computed(() => tasks.value.filter(task => !task.resolution))
 const processed = computed(() => tasks.value.filter(task => task.resolution))
 const queue = computed(() => mode.value === 'pending' ? pending.value : processed.value)
 const activeTask = computed(() => queue.value.find(task => task.task_id === selectedId.value) || queue.value[0])
-const legacyMapping = computed(() => Boolean(activeTask.value?.legacy_mapping_required || activeTask.value?.fields.legacy_mapping_required))
-const targets = computed(() => (props.snapshot.review?.records || []).filter(record =>
-  record.kind === activeTask.value?.fields.kind && record.status === 'machine' && !record.legacy_mapping_required))
-const linkedRunIds = computed(() => {
-  const id = targetRecordId.value || activeTask.value?.record_id
-  const record = (props.snapshot.review?.records || []).find(item => item.record_id === id)
-  return record?.run_id ? [] : record?.run_ids || []
-})
-const targetOptions = computed(() => targets.value.map(record => ({ value: record.record_id,
-  label: [(record.sample_state_ids?.length ? record.sample_state_ids : [record.sample_state_id]).map(id =>
-    props.snapshot.sample_options?.find(sample => sample.sample_state_id === id)?.label || '').filter(Boolean).join('、') || record.sample,
-  experimentLabel(record.metric), record.result || record.conditions, record.run_id].filter(Boolean).join(' · ') })))
 const canRecord = computed(() => activeTask.value && (activeTask.value.kind !== 'source' || activeTask.value.record_id))
-const showRecordFields = computed(() => legacyMapping.value || (canRecord.value && (activeTask.value.kind !== 'missing' || recordingMissing.value)))
+const showRecordFields = computed(() => canRecord.value && (activeTask.value.kind !== 'missing' || recordingMissing.value))
 const selectedSources = computed(() => (props.snapshot.evidence || []).filter(source => fields.value.evidence_ids.includes(source.evidence_id)))
-const readyToSave = computed(() => parametersValid.value && (!legacyMapping.value || targetRecordId.value) &&
-  (fields.value.scope === 'group' ? fields.value.sample_state_ids?.length : fields.value.sample_state_id) && fields.value.metric?.trim() &&
-  (fields.value.kind === 'preparation' || (fields.value.result?.trim() && (fields.value.run_id || fields.value.run_missing_reason))) && selectedSources.value.length)
+const readyToSave = computed(() => fields.value.sample?.trim() && fields.value.metric?.trim() &&
+  (fields.value.kind === 'preparation' || fields.value.result?.trim()) && selectedSources.value.length)
+const sampleOptions = computed(() => [...new Set([
+  ...props.paper.sample_states.map(item => item.reported_name),
+  ...(props.snapshot.review?.records || []).map(item => item.sample).filter(Boolean)
+])].map(value => ({ value })))
 const sourceOptions = computed(() => (props.snapshot.evidence || []).map(source => ({
   value: source.evidence_id,
   label: (source.page ? 'PDF 第 ' + source.page + ' 页 · ' : '') + source.quote.replace(/<[^>]*>/g, ' ').slice(0, 110)
@@ -113,11 +107,9 @@ const sourceOptions = computed(() => (props.snapshot.evidence || []).map(source 
 
 watch(activeTask, task => {
   error.value = ''
-  parametersValid.value = true
   if (!task) return
   const savedDraft = drafts.get(task.task_id)
-  fields.value = savedDraft?.fields || experimentReviewFields(task.fields)
-  targetRecordId.value = savedDraft?.targetRecordId || ''
+  fields.value = savedDraft?.fields || { ...task.fields, metric: experimentLabel(task.fields.metric), evidence_ids: [...task.fields.evidence_ids] }
   recordingMissing.value = savedDraft ? savedDraft.recordingMissing : task.resolution?.outcome === 'saved'
 }, { immediate: true })
 
@@ -126,7 +118,6 @@ function chooseTask(id) {
   if (saving.value) return
   if (activeTask.value) drafts.set(activeTask.value.task_id, {
     fields: { ...fields.value, evidence_ids: [...fields.value.evidence_ids] },
-    targetRecordId: targetRecordId.value,
     recordingMissing: recordingMissing.value
   })
   selectedId.value = id
@@ -138,13 +129,9 @@ function changeMode(value) {
   mode.value = value
 }
 
-/** 用户明确指定旧修改目标；保留旧内容，身份来自所选机器记录。 */
-function chooseTarget(id) {
-  const target = targets.value.find(record => record.record_id === id)
-  if (!target) return
-  targetRecordId.value = id
-  fields.value = experimentReviewFields({ ...fields.value, sample: target.sample, sample_state_id: target.sample_state_id,
-    sample_state_ids: target.sample_state_ids, scope: target.scope, run_id: target.run_id, run_missing_reason: target.run_missing_reason })
+/** 样品选择支持按已有名称筛选。 */
+function filterSample(input, option) {
+  return option.value.toLowerCase().includes(input.toLowerCase())
 }
 
 /** 出处搜索覆盖完整原文，选项摘要只用于列表阅读。 */
@@ -156,7 +143,6 @@ function filterSource(input, option) {
 /** 以服务器提交结果推进队列，失败时保留输入。 */
 async function submit(action, resolution) {
   if (saving.value || !props.canManage || !activeTask.value) return
-  if (action === 'save' && !readyToSave.value) return
   const task = activeTask.value
   const index = queue.value.indexOf(task)
   const nextId = queue.value[index + 1]?.task_id || queue.value.find(item => item.task_id !== task.task_id)?.task_id || ''
@@ -165,14 +151,12 @@ async function submit(action, resolution) {
   try {
     const result = await props.saveReview({
       task_id: task.task_id, action, resolution,
-      record_id: task.record_id || task.legacy_record_id || null,
-      ...(legacyMapping.value ? { target_record_id: targetRecordId.value } : {}),
-      fields: action === 'save' || resolution === 'checked' ? experimentReviewFields(fields.value) : null
+      fields: action === 'save' || resolution === 'checked' ? { ...fields.value, result: fields.value.kind === 'preparation' ? '' : fields.value.result } : null
     })
     if (!result) return
     drafts.delete(task.task_id)
     selectedId.value = nextId
-    let successText = action === 'save' ? (result.record?.status === 'pending' ? '已保存，实验关联待确定。' : '数据已保存。') : outcomeLabels[resolution] + '。'
+    let successText = action === 'save' ? '数据已保存。' : outcomeLabels[resolution] + '。'
     if (resolution === 'checked') {
       successText = task.resolution ? '核对状态和出处已更新，数据保持原值。' : '已移到「已处理」，原文和实验数据保持原值。'
     }
@@ -212,11 +196,13 @@ header > span { color: var(--color-text-secondary); font-size: 12px; }
 .source-empty, .queue-empty { padding: 18px 6px; color: var(--color-text-secondary); }
 .correction-reason { padding: 12px 0; line-height: 1.65; }
 .correction-outcome { margin-top: 12px; color: var(--main-color); font-size: 12px; }
-.correction-fields { margin-top: 12px; }
+.correction-fields, .more-fields { display: flex; flex-direction: column; gap: 12px; }
 label { display: flex; flex-direction: column; gap: 5px; color: var(--color-text-secondary); font-size: 12px; }
+.result-field :deep(input) { font-weight: 600; }
 details { margin-top: 15px; }
 summary { cursor: pointer; color: var(--color-text-secondary); font-size: 12px; }
-.source-picker .ant-select { width: 100%; margin-top: 10px; }
+.source-picker .ant-select, .more-fields .ant-select { width: 100%; }
+.source-picker .ant-select, .more-fields label { margin-top: 10px; }
 .save-hint { margin-top: 12px; color: var(--color-text-secondary); font-size: 12px; }
 .correction-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
 .correction-finished { grid-column: 2 / -1; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 180px; border: 1px solid var(--gray-150); border-radius: 8px; padding: 20px; }

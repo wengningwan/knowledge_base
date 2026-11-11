@@ -244,10 +244,9 @@ export const documentApi = {
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards`)
   },
 
-  /** 按明确视图和人工版本读取本次结构化快照。 */
-  getExperimentJson: async (kbId, docId, revisionId, options = {}) => {
-    const query = buildQuery({ revision_id: revisionId, view: options.view,
-      source_sha256: options.sourceSha256, expected_review_version: options.expectedReviewVersion })
+  /** 读取指定草稿版本的规范机器 JSON。 */
+  getExperimentJson: async (kbId, docId, revisionId) => {
+    const query = buildQuery({ revision_id: revisionId })
     return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/json?${query}`)
   },
 
@@ -256,7 +255,7 @@ export const documentApi = {
     return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/review`, change)
   },
 
-  /** 清理指定正文版本的实验结果和人工修改后重新提取。 */
+  /** 仅重试指定正文版本的失败或取消任务。 */
   retryExperimentCards: async (kbId, docId, snapshot) => {
     return apiAdminPost(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/retry`, snapshot)
   },

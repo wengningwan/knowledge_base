@@ -716,19 +716,12 @@ class MilvusKB(KnowledgeBase):
         processing_owner: str | None = None,
     ) -> dict:
         """同文件发布、索引写入和删除共用操作锁。"""
-        from yuxi.services.knowledge_structure_service import cancel_structure_tasks
-
-        cleared_structure_tasks = []
-        try:
-            async with KnowledgeFileRepository().lock_file_operation(kb_id, file_id):
-                return await self._index_file_owned(
-                    kb_id, file_id, operator_id, params,
-                    embedding_model_spec=embedding_model_spec, additional_params=additional_params,
-                    processing_task_id=processing_task_id, processing_owner=processing_owner,
-                    cleared_structure_tasks=cleared_structure_tasks,
-                )
-        finally:
-            await cancel_structure_tasks(cleared_structure_tasks)
+        async with KnowledgeFileRepository().lock_file_operation(kb_id, file_id):
+            return await self._index_file_owned(
+                kb_id, file_id, operator_id, params,
+                embedding_model_spec=embedding_model_spec, additional_params=additional_params,
+                processing_task_id=processing_task_id, processing_owner=processing_owner,
+            )
 
     async def _index_file_owned(
         self,
@@ -739,7 +732,6 @@ class MilvusKB(KnowledgeBase):
         *,
         embedding_model_spec: str | None,
         additional_params: dict[str, Any],
-        cleared_structure_tasks: list[str],
         processing_task_id: str | None = None,
         processing_owner: str | None = None,
     ) -> dict:
@@ -756,8 +748,12 @@ class MilvusKB(KnowledgeBase):
             Updated file metadata
         """
         file_meta = await self._load_file_meta(kb_id, file_id)
-        if not file_meta.get("markdown_file"):
-            raise ValueError("文件尚未解析，请先生成正文")
+        allowed_statuses = {
+            FileStatus.PARSED,
+            FileStatus.ERROR_INDEXING,
+            FileStatus.INDEXED,
+            "done",
+        }
         params = resolve_processing_params(
             kb_additional_params=additional_params,
             file_processing_params=file_meta.get("processing_params"),
@@ -780,45 +776,76 @@ class MilvusKB(KnowledgeBase):
         if operator_id:
             claim_data["updated_by"] = operator_id
 
-        chunk_parser_config = dict(params.get("chunk_parser_config") or {})
-        chunk_parser_config.setdefault("embed_model_id", (await system_options.get())["embed_model"])
-        params["chunk_parser_config"] = chunk_parser_config
-        markdown_content = await self._read_markdown_from_minio(file_meta["markdown_file"])
-        filename = file_meta.get("filename")
-        parse_assets = None
-        pointer = file_meta.get("parse_assets_file")
-        if pointer:
-            parse_assets = json.loads((await self._read_minio_bytes(pointer)).decode("utf-8"))
-            attempt_id = pointer.rsplit("/", 2)[-2]
-            if (
-                not isinstance(parse_assets, dict) or parse_assets.get("schema_version") != 1
-                or parse_assets.get("kb_id") != kb_id or parse_assets.get("file_id") != file_id
-                or parse_assets.get("attempt_id") != attempt_id
-                or pointer.rsplit("/", 1)[0] != file_meta["markdown_file"].rsplit("/", 1)[0]
-            ):
-                raise ValueError("解析附属数据与当前 Markdown 不属于同次解析，请重新解析")
-        chunks = self._split_text_into_chunks(
-            markdown_content, file_id, filename, params, parse_assets=parse_assets,
+        claimed_record = await file_repo.update_fields_if_status(
+            kb_id=kb_id,
+            file_id=file_id,
+            allowed_statuses=allowed_statuses,
+            data=claim_data,
         )
-        self._validate_chunk_capacity(chunks)
-        chunk_stats = self._calculate_chunk_stats(chunks)
-        logger.info(
-            f"Split {filename} into {len(chunks)} chunks with params: "
-            f"chunk_preset_id={params.get('chunk_preset_id')}, "
-            f"chunk_parser_config={params.get('chunk_parser_config')}"
-        )
+        if claimed_record is None:
+            current_meta = await self._load_file_meta(kb_id, file_id)
+            current_status = current_meta.get("status")
+            raise ValueError(
+                f"Cannot index file with status '{current_status}'. "
+                f"File must be parsed first (status should be one of: {', '.join(allowed_statuses)})"
+            )
 
-        from yuxi.services.knowledge_structure_service import begin_index_with_structure_reset
-
-        claimed_record, old_tasks = await begin_index_with_structure_reset(
-            kb_id=kb_id, file_id=file_id, operator_id=operator_id,
-            markdown_file=file_meta["markdown_file"], data=claim_data,
-            processing_task_id=processing_task_id, processing_owner=processing_owner,
-        )
-        cleared_structure_tasks.extend(old_tasks)
         file_meta = self._file_record_to_meta(claimed_record)
+        if not file_meta.get("markdown_file"):
+            reset_data = {
+                "status": FileStatus.UPLOADED,
+                "error_message": None,
+                "processing_task_id": None,
+                "processing_owner": None,
+            }
+            if operator_id:
+                reset_data["updated_by"] = operator_id
+            updated_record = await file_repo.update_fields_if_status(
+                kb_id=kb_id,
+                file_id=file_id,
+                allowed_statuses={FileStatus.INDEXING},
+                data=reset_data,
+                **owner_filter,
+            )
+            if updated_record is None and processing_owner is not None:
+                raise asyncio.CancelledError("File processing owner was lost")
+            raise ValueError("File has not been parsed yet (no markdown_file)")
+
+        logger.debug(f"[index_file] file_id={file_id}, processing_params={params}")
 
         try:
+            chunk_parser_config = dict(params.get("chunk_parser_config") or {})
+            chunk_parser_config.setdefault("embed_model_id", (await system_options.get())["embed_model"])
+            params["chunk_parser_config"] = chunk_parser_config
+            # Read markdown
+            markdown_content = await self._read_markdown_from_minio(file_meta["markdown_file"])
+            filename = file_meta.get("filename")
+            parse_assets = None
+            pointer = file_meta.get("parse_assets_file")
+            if pointer:
+                parse_assets = json.loads((await self._read_minio_bytes(pointer)).decode("utf-8"))
+                attempt_id = pointer.rsplit("/", 2)[-2]
+                if (
+                    not isinstance(parse_assets, dict) or parse_assets.get("schema_version") != 1
+                    or parse_assets.get("kb_id") != kb_id or parse_assets.get("file_id") != file_id
+                    or parse_assets.get("attempt_id") != attempt_id
+                    or pointer.rsplit("/", 1)[0] != file_meta["markdown_file"].rsplit("/", 1)[0]
+                ):
+                    raise ValueError("解析附属数据与当前 Markdown 不属于同次解析，请重新解析")
+
+            # Split
+            chunks = self._split_text_into_chunks(
+                markdown_content, file_id, filename, params, parse_assets=parse_assets,
+            )
+            self._validate_chunk_capacity(chunks)
+            logger.info(
+                f"Split {filename} into {len(chunks)} chunks with params: "
+                f"chunk_preset_id={params.get('chunk_preset_id')}, "
+                f"chunk_parser_config={params.get('chunk_parser_config')}"
+            )
+
+            chunk_stats = self._calculate_chunk_stats(chunks)
+
             # 集合管理可能重建旧集合，必须等来源和完整证据容量校验通过。
             collection = await self._get_or_create_milvus_collection(kb_id, embedding_model_spec)
             if not collection:
