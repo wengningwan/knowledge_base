@@ -66,10 +66,10 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
     tasks = deepcopy(coverage.get("correction_tasks", []))
     resolutions = coverage.get("manual_review", {}).get("resolutions", {})
     canonical = coverage.get("canonical") or {}
+    canonical_ids = {item["evidence_id"] for item in canonical.get("evidence", [])}
     refs = {
-        item["evidence_id"]: source["evidence_id"]
-        for item in canonical.get("evidence", []) for source in evidence
-        if item["quote_raw"] == source["quote"] and item["pdf_page"] == source.get("page")
+        ref: source["evidence_id"] for source in evidence
+        if (ref := source.get("canonical_evidence_id")) in canonical_ids
     }
     linked_records = {
         item[key]: item

@@ -9,6 +9,7 @@ from hashlib import sha256
 
 from yuxi.knowledge.adsorption_contract import (
     REGISTRIES,
+    evidence_references,
     normalize_legacy_quantities,
     normalize_observation_results,
     operation_sample_ids,
@@ -40,6 +41,7 @@ class ExperimentResult:
     cards: list[dict]
     records: dict[str, dict]
     review: dict
+    evidence: list[dict]
     export_error: str | None = None
 
 
@@ -52,11 +54,11 @@ def assemble_experiment_result(
     review.pop("unresolved_entities", None)
     raw = coverage.get("canonical")
     if not isinstance(raw, dict):
-        return ExperimentResult(None, cards, experiment_review_records(cards, coverage), review)
+        return ExperimentResult(None, cards, experiment_review_records(cards, coverage), review, evidence)
 
     paper = deepcopy(raw)
     legacy = paper["schema_version"] == "1.0.0-draft"
-    sources, evidence_refs = _source_index(paper, evidence)
+    sources, evidence_refs = _source_index(paper, evidence, markdown)
     if legacy:
         normalize_observation_results(paper, revision_id)
         normalize_legacy_quantities(paper)
@@ -203,6 +205,9 @@ def assemble_experiment_result(
     export_error = errors[0] if errors else None
     if any(row.get("legacy_mapping_required") for row in inactive.values()):
         export_error = "部分旧人工修改尚未指定目标，请在人工校对中处理后再下载"
+    missing_sources = evidence_references(paper) - sources.keys()
+    if missing_sources:
+        export_error = export_error or f"有 {len(missing_sources)} 处实验出处无法与本次正文唯一核对，当前结果暂不能下载"
     try:
         validate_shape(paper, output_schema())
         validate_references(paper)
@@ -211,7 +216,9 @@ def assemble_experiment_result(
     except ValueError as exc:
         export_error = export_error or f"当前结果仍需核对或重新入库：{exc}"
 
-    current_cards, _ = project_experiment_cards(paper, sources, project_observation_values(paper))
+    if missing_sources:
+        paper["evidence"] = [item for item in paper["evidence"] if item["evidence_id"] not in missing_sources]
+    current_cards, current_evidence = project_experiment_cards(paper, sources, project_observation_values(paper))
     records = {}
     for record in experiment_review_records(current_cards, {}).values():
         key = (
@@ -266,7 +273,7 @@ def assemble_experiment_result(
     for record in records.values():
         record.pop("original_result_count", None)
         record["parameters"] = review_parameters(record.get("parameters", {}))
-    return ExperimentResult(paper, current_cards, records, review, export_error)
+    return ExperimentResult(paper, current_cards, records, review, current_evidence, export_error)
 
 
 def sample_options(paper: dict | None) -> list[dict]:
@@ -305,16 +312,36 @@ def review_target(record: dict | None) -> dict:
     }
 
 
-def _source_index(paper, evidence):
-    """用已保存的 eN 标识连接规范出处和人工选择。"""
-    by_ref = {item["evidence_id"]: item for item in paper["evidence"]}
-    sources, refs = {}, {}
+def _source_index(paper, evidence, markdown):
+    """按同版原文核对证据，旧审查编号仅用于保留人工选择。"""
+    canonical = {item["evidence_id"]: item for item in paper["evidence"]}
+    by_quote = {}
+    for item in canonical.values():
+        by_quote.setdefault((item["quote_raw"], item["pdf_page"]), []).append(item)
+
+    matches = []
     for item in evidence:
+        start, end, quote = item.get("start_char"), item.get("end_char"), item.get("quote")
+        if type(start) is not int or type(end) is not int or not (0 <= start < end <= len(markdown)) or markdown[start:end] != quote:
+            continue
+        candidates = [
+            row["evidence_id"] for row in by_quote.get((quote, item.get("page")), [])
+            if row.get("start_char", start) == start and row.get("end_char", end) == end
+        ]
+        ref = item.get("canonical_evidence_id")
+        if ref:
+            if ref in canonical and ref not in candidates:
+                ref = None
+        else:
+            ref = candidates[0] if len(candidates) == 1 else None
+        matches.append((item, ref))
+
+    counts = Counter(ref for _, ref in matches if ref)
+    sources, refs = {}, {}
+    for item, ref in matches:
         evidence_id = item["evidence_id"]
-        ref = item.get("canonical_evidence_id") or f"ev:source-{evidence_id[1:]}"
-        existing = by_ref.get(ref)
-        if existing and (existing["quote_raw"] != item["quote"] or existing["pdf_page"] != item.get("page")):
-            raise ValueError("实验出处与当前正文证据不一致")
+        if not ref or counts[ref] != 1:
+            ref = f"ev:review:{evidence_id}"
         refs[evidence_id] = ref
         sources[ref] = {**item, "review_evidence_id": evidence_id}
     return sources, refs

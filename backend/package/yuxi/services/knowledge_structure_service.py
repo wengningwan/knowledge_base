@@ -146,12 +146,13 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
             result.update(status="stale", message="正文内容与抽取版本不一致，请重新入库。")
             return result
         if revision.status == "draft":
-            cards, result["evidence"] = await repo.read_result(session, revision)
+            cards, evidence = await repo.read_result(session, revision)
             current = assemble_experiment_result(
-                coverage, cards, result["evidence"], markdown,
+                coverage, cards, evidence, markdown,
                 revision_id=revision.revision_id, source_hash=revision.source_sha256,
             )
             result["cards"] = current.cards
+            result["evidence"] = current.evidence
             result["canonical_available"] = isinstance(coverage.get("canonical"), dict)
             result["current_result"] = current.paper
             result["effective_available"] = current.paper is not None and current.export_error is None
@@ -259,12 +260,14 @@ async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentRevie
             markdown = await _read_structure_markdown(revision.markdown_file, kb_id=kb_id, file_id=file_id)
             if source_sha256(markdown) != change.source_sha256:
                 raise StructureConflictError("正文内容已变化，请重新入库")
-            cards, evidence = await repo.read_result(session, revision)
+            cards, stored_evidence = await repo.read_result(session, revision)
             current = assemble_experiment_result(
-                coverage, cards, evidence, markdown, revision_id=revision.revision_id, source_hash=revision.source_sha256,
+                coverage, cards, stored_evidence, markdown,
+                revision_id=revision.revision_id, source_hash=revision.source_sha256,
             )
             if current.paper is None:
                 raise StructureConflictError("旧结果缺少规范结构，请重新入库")
+            evidence = current.evidence
             records = current.records
             review = current.review
             version = change.version + 1
@@ -293,7 +296,7 @@ async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentRevie
                 }
                 updated_review = {**review, "version": version, "entities": entities}
                 updated = assemble_experiment_result(
-                    {**coverage, "manual_review": updated_review}, cards, evidence, markdown,
+                    {**coverage, "manual_review": updated_review}, cards, stored_evidence, markdown,
                     revision_id=revision.revision_id, source_hash=revision.source_sha256,
                 )
                 unresolved = next((
@@ -435,7 +438,7 @@ async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentRevie
                 }
             review = {**review, "version": version, "items": items, "resolutions": resolutions}
             updated = assemble_experiment_result(
-                {**coverage, "manual_review": review}, cards, evidence, markdown,
+                {**coverage, "manual_review": review}, cards, stored_evidence, markdown,
                 revision_id=revision.revision_id, source_hash=revision.source_sha256,
             )
             if updated.export_error and not current.export_error:
@@ -447,7 +450,7 @@ async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentRevie
                 record = saved
             await repo.save_review(session, revision, review)
             tasks = experiment_correction_tasks(
-                {**coverage, "canonical": updated.paper, "manual_review": review}, evidence, updated.records,
+                {**coverage, "canonical": updated.paper, "manual_review": review}, updated.evidence, updated.records,
             )
     return {"version": version, "record": record, "tasks": tasks}
 
