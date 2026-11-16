@@ -89,6 +89,12 @@ def validate_inline_change(before: str, after: str, *, script_evidence: bool = F
             for gap in re.finditer(r"\s+", left):
                 start, end = a + gap.start(), a + gap.end()
                 if start and end < len(before) and before[end].isascii() and before[end].isalnum():
+                    word = re.match(r"[A-Za-z0-9]+", before[end:])
+                    if right and word[0][0] not in right:
+                        # 词干首字符在替换侧完全消失属整词替换（幻觉词删除，
+                        # 真实案例 repair_95d4a10c），非删空格致词界粘连；纯删除
+                        # 块（right 为空）不走此豁免，词界压缩仍由下方拦截。
+                        continue
                     # 作者标记/数学包装不能替代原文词间空格。
                     around = after[max(0, c - 1):min(len(after), d + 1)]
                     if not any(char.isspace() for char in around):

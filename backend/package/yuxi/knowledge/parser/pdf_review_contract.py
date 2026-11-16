@@ -40,6 +40,13 @@ from yuxi.knowledge.parser.pdf_review_messages import readable_review_reason
 _STRUCTURE_KINDS = {"reading_flow", "title_hierarchy", "missing_region", "table_math", "formula_fragment_cluster"}
 _STRUCTURE_CAPTION = re.compile(r"^\s*(?:©|Copyright|Figure|Fig\.|Table|Scheme|Plate)\b", re.I)
 _STRUCTURE_SHORT = 60
+_DELIMITATION_LINEBREAK = re.compile(r"[\u0002\u0003][ \t]*\r?\n")
+
+
+def _delimitation_fold(text: str) -> str:
+    """折叠行尾断词伪影：断词控制符紧邻换行是原生层连字点（environ-mental
+    断行形态），删除后与 OCR 合并词可比；行中控制符代表真连字符，不折叠。"""
+    return _DELIMITATION_LINEBREAK.sub("", text)
 
 
 def _structure_auto_kept(kind: str, content: str) -> bool:
@@ -111,6 +118,14 @@ def prepare_review_issues(blocks: list[dict], issues: list[dict], *, vision_fina
         if candidate and "".join(before.split()) == "".join(candidate.split()):
             issue.update(status="proven_equivalent", review_route="none", validation="whitespace_equivalent",
                          reason="去空白后逐字一致，仅排版空白表示不同")
+            issue["targets"] = []
+            continue
+        # 行尾断词折叠豁免：断词伪影两侧合并后逐字一致才自动结案；行中控制符不折叠，差异保留人工。
+        if candidate and ("".join(_delimitation_fold(before).split())
+                          == "".join(_delimitation_fold(candidate).split())):
+            issue.update(status="proven_equivalent", review_route="none",
+                         validation="delimitation_equivalent",
+                         reason="折叠行尾断词伪影后逐字一致，仅断词合并表示不同")
             issue["targets"] = []
             continue
         strong = bool(native) and covers_block_region(block["bbox"], native) and all(entry.get("quality") == "high" and entry.get("page") == block["page"] and overlap_fraction(entry.get("bbox"), block["bbox"]) >= .98 and sum(other["page"] == entry["page"] and overlap_fraction(entry.get("bbox"), other.get("bbox")) >= .85 for other in blocks) == 1 for entry in native)
@@ -378,11 +393,11 @@ def validate_issue_results(blocks: list[dict], payload, issues: list[dict], *, b
             # 排版白名单：剥标点、空白与大小写后内容字符流完全一致，
             # 视觉终裁放行标点级差异；数学损伤与词界硬伤在上方已被拦截。
             error = ""
-        if (error == "introduced_line_break" and visual and vision_final
-                and "".join(before.split()) == "".join(after.split())):
-            # 纯换行结构差异：剥换行后补丁与原文去空白逐字一致（入口剥 new
-            # 换行的必达形态），模型未提出任何内容修改——按规则三语义自动
-            # 保留 OCR 现状不占人工；去空白不等的混合意图仍转人工。
+        if error == "introduced_line_break" and visual and vision_final:
+            # 换行结构差异在视觉终裁下不再占人工：纯删换行与混合意图均保
+            # 留 OCR 现状（与规则四 surplus 未获自动应用时 declined_kept
+            # 对称）；公式降级等保护内容真变仍报 protected_content_changed
+            # 转人工。终扫未确认时仍 technical_failed 诚实标签。
             outcome = _outcome(issue, "checked", "model_change_declined_kept", item["reason"])
             outcome["vision_final"] = True
             outcomes.append(outcome)
@@ -528,6 +543,27 @@ def _typography_only_change(before: str, after: str) -> bool:
     return fold(before) == fold(after)
 
 
+def _typography_flat_lines(text: str) -> list[str]:
+    """按行折合排印形态：换行结构逐位一致 + 行内剥标点空白大小写等价。
+
+    split("\n") 归一 \r 后保留空尾串，纯删尾换行与换行重排都不等价；
+    每行独立折合，行内标点/空白/大小写差异不影响逐行比较。
+    """
+    fold = lambda line: _TYPOGRAPHY_FOLD.sub("", fold_equivalent_typography(line)).lower()
+    return [fold(line) for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+
+
+def _structure_preserving_typography_equal(before: str, after: str) -> bool:
+    """换行结构逐位一致前提下的纯标点级排版等价。
+
+    数学定界符数量必须一致；纯删换行、换行重排、公式降级均不等价，
+    不得借列表标记误判的豁免通道绕过换行守卫。
+    """
+    if before == after or before.count("$") != after.count("$"):
+        return False
+    return _typography_flat_lines(before) == _typography_flat_lines(after)
+
+
 def _typography_exempt(error: str, before: str, after: str, *, visual: bool,
                        vision_final: bool) -> bool:
     """排版白名单豁免判定：标点守卫拦截 + 内容字符流不变 + 视觉终裁开启。
@@ -624,7 +660,7 @@ def _unchanged_native_arbitration(issue: dict, block: dict | None, *,
     diff 恰好收敛为一个 ≤12 字符且含字母数字的多出块（OCR 比 native 多，
     即 delete 块），且在 OCR 原文中删除位置唯一（相邻同字符删除效果等价
     视作唯一）、删除后归一化恰等于 native、保护与局部性校验通过，才执行
-    machine_corrected；任何歧义返回 None，交回视觉终裁或人工兑底。目标场
+    machine_corrected；任何歧义返回 None，交回视觉终裁或人工兜底。目标场
     景是模型无差异结论漏检的引用标记误插与词内单字符幻觉（review 98512
     实证 corrected+全等形态同样会漏检）。
     """
@@ -727,8 +763,15 @@ def _rebuilt_error(block: dict, before: str, after: str, *, visual: bool,
         # 保护内容逐字守恒而换行/缩进失衡时，代码、链接本身未被触碰，
         # 换用精确标签避免误导用户去找不存在的代码/链接差异。
         if whitespace_structure_divergence(before, after):
-            return "introduced_line_break"
-        return "protected_content_changed"
+            if _structure_preserving_typography_equal(before, after):
+                # 换行结构逐位一致时的纯标点级修正（全角编号/逗号转半角）
+                # 不得被列表标记误判压过：交下方 inline 链按标点语义判定，
+                # 排版白名单兜底；真实案例 repair_b6c46feb。
+                pass
+            else:
+                return "introduced_line_break"
+        else:
+            return "protected_content_changed"
     error = validate_inline_change(
         before, after,
         script_evidence=_native_baseline_proof(issue, targets),

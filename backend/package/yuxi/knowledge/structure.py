@@ -442,8 +442,12 @@ def _source_index(markdown: str, sections, assets: dict | None, pages: list[str]
 
 
 def _compact(text: str) -> str:
-    """消除 PDF 文字层与 Markdown 的排版空白差异。"""
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text).replace("\u00ad", "")).casefold()
+    """消除 PDF 文本层与 Markdown 的排版空白差异；短横线变体折叠为 ASCII 连字符。"""
+    # 出版社文本层使用 en dash、非断行连字符等排印形态，模型回显题录统一为 U+002D；
+    # 该集合在 NFKC 前后折叠结果一致（仅 U+2011 经 NFKC 映射为集合内的 U+2010），
+    # 题录核对两侧须视为同一字符。
+    folded = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2212]", "-", text)
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", folded).replace("\u00ad", "")).casefold()
 
 
 def _catalog(record: dict, *collections: str) -> dict:

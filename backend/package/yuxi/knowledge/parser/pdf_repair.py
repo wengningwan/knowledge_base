@@ -29,7 +29,7 @@ from yuxi.knowledge.parser.pdf_repair_rules import (
 from yuxi.knowledge.parser.result import ParsedDocument
 
 
-RULE_VERSION = "yuxi-r2-9"
+RULE_VERSION = "yuxi-r2-10"
 
 # 跨页浮图断裂自动合并阈值：齐行比与字号比来自真实案例（file_0fd24b 六条）验证值。
 _SENTENCE_END = re.compile(r"[.!?。！？]\s*$")
@@ -702,6 +702,12 @@ def _region_role(region: dict, publication_regions: list[dict]) -> str:
     return "unknown"
 
 
+def _strip_pagination_token(text: str) -> str:
+    """剥去行首或行尾单个独立页码 token（期刊页眉外侧页码形态），用于跨页比较；
+    行中数字、紧贴标点的页码范围终点与非页码行不变形。"""
+    return re.sub(r"^\s*\d{1,6}\s+|\s+\d{1,6}$", "", text)
+
+
 def _publication_regions(blocks: list[dict], native_blocks: list[dict]) -> list[dict]:
     """收集明确页眉页脚与有跨页、版权邻接证据的原生页边行。"""
     regions = [block for block in blocks if block["type"] in {"page_header", "page_footer"}]
@@ -740,7 +746,18 @@ def _publication_regions(blocks: list[dict], native_blocks: list[dict]) -> list[
             item["page"] == native["page"] and abs(item["bbox"][1] - box[1]) <= .06
             for item in copyrights
         )
-        if native in copyrights or repeated or page_sequence or doi_by_copyright:
+        # 剥端页码后跨页逐字相同：页码同行（行首或行尾外侧页码）、期刊名不变的页眉
+        # 唯一证据；DOI 守卫与 repeated 同款（完整引用、DOI 说明不因重复排除），
+        # 页边带、跨页 bbox 一致与剥后长度下限约束照常生效。
+        sans_pagination = (
+            bool(content) and not content.isdecimal()
+            and (not contains_doi or standalone_doi)
+            and len(_strip_pagination_token(content)) >= 12
+            and any(_strip_pagination_token(layout_text(item.get("content", "")))
+                    == _strip_pagination_token(content)
+                    for item in peers)
+        )
+        if native in copyrights or repeated or page_sequence or doi_by_copyright or sans_pagination:
             regions.append(native)
     return regions
 
