@@ -18,7 +18,11 @@
                 />
               </span>
             </div>
-            <div class="detail-row">
+            <div v-if="sourceFileCount" class="detail-row">
+              <span class="detail-label">合看来源</span>
+              <span class="detail-value">{{ sourceFileCount }} 篇论文</span>
+            </div>
+            <div v-else class="detail-row">
               <span class="detail-label">ID</span>
               <span class="detail-value detail-id">{{ item.id }}</span>
             </div>
@@ -56,6 +60,10 @@
                 />
               </span>
             </div>
+            <div v-if="sourceFileId" :class="rowClass(sourceFileName)">
+              <span class="detail-label">来源文件</span>
+              <span class="detail-value">{{ sourceFileName || '正在加载…' }}</span>
+            </div>
             <template v-if="item.data?.original?.properties">
               <div
                 v-for="(value, key) in filteredEdgeProperties"
@@ -76,8 +84,9 @@
 </template>
 
 <script setup>
-import { computed, reactive, watch, defineComponent, h } from 'vue'
+import { computed, reactive, ref, watch, defineComponent, h } from 'vue'
 import { X } from '@lucide/vue'
+import { documentApi } from '@/apis/knowledge_api'
 
 const STACK_THRESHOLD = 50
 const TRUNCATE_LIMIT = 100
@@ -130,12 +139,33 @@ const DetailValue = defineComponent({
 const props = defineProps({
   visible: Boolean,
   item: Object,
-  type: String
+  type: String,
+  kbId: String
 })
 
 defineEmits(['close'])
 
 const expandedKeys = reactive(new Set())
+const sourceFileCount = computed(() => props.item?.data?.original?.sourceFileCount)
+const sourceFileId = computed(() =>
+  props.type === 'edge' ? props.item?.data?.original?.properties?.file_id : null
+)
+const sourceFileName = ref('')
+
+watch([() => props.kbId, sourceFileId], async ([kbId, fileId], _, onCleanup) => {
+  sourceFileName.value = ''
+  if (!kbId || !fileId) return
+  let current = true
+  onCleanup(() => {
+    current = false
+  })
+  try {
+    const data = await documentApi.getDocumentBasicInfo(kbId, fileId)
+    if (current) sourceFileName.value = data?.meta?.filename || '文件名暂不可用'
+  } catch {
+    if (current) sourceFileName.value = '文件名暂不可用'
+  }
+})
 
 watch(
   () => props.item,

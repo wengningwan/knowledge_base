@@ -11,7 +11,7 @@
       <div v-else class="graph-wrapper">
         <GraphCanvas
           ref="graphRef"
-          :graph-data="graph.graphData"
+          :graph-data="displayGraphData"
           @node-click="handleGraphNodeClick"
           @edge-click="handleGraphEdgeClick"
           @canvas-click="graph.handleCanvasClick"
@@ -137,6 +137,7 @@
           :visible="graph.showDetailDrawer"
           :item="graph.selectedItem"
           :type="graph.selectedItemType"
+          :kb-id="kbId"
           @close="graph.handleCanvasClick"
         />
 
@@ -166,9 +167,13 @@
                     style="width: 100%"
                   />
                 </a-form-item>
-                <div class="settings-exclude-row">
+                <div class="settings-switch-row">
                   <span class="settings-field-label">排除 Chunk 节点</span>
                   <a-switch v-model:checked="subgraphParams.excludeChunk" />
+                </div>
+                <div v-if="!graphFileId" class="settings-switch-row">
+                  <span class="settings-field-label">合看同名项</span>
+                  <a-switch v-model:checked="groupSameNames" aria-label="合看同名项" />
                 </div>
                 <div class="settings-actions">
                   <a-button @click="loadGraph" :disabled="graph.fetching">
@@ -433,6 +438,10 @@ const props = defineProps({
   readonly: {
     type: Boolean,
     default: false
+  },
+  initialPaper: {
+    type: Object,
+    default: null
   }
 })
 
@@ -454,9 +463,10 @@ const subgraphParams = reactive({
   excludeChunk: true
 })
 const searchInput = ref('')
-const graphFileId = ref('')
+const graphFileId = ref(props.initialPaper?.value ?? '')
+const groupSameNames = ref(true)
 const paperMatches = ref([])
-const selectedPaper = ref(null)
+const selectedPaper = ref(props.initialPaper)
 const papersLoading = ref(false)
 const paperPageSize = 50
 let paperQuery = ''
@@ -657,6 +667,45 @@ const graphConfigForm = reactive({
 
 const graph = reactive(useGraph(graphRef))
 const graphLoaded = ref(false)
+
+/** 把总览中的同名同类实体画在一起，保留每条关系的原始来源。 */
+const groupGraphNodes = (data) => {
+  const groups = new Map()
+  for (const node of data.nodes) {
+    const { normalized_name: name, label, file_id: fileId } = node.properties || {}
+    if (!name || !label || !fileId) continue
+    const key = JSON.stringify([name, label])
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(node)
+  }
+
+  const groupedNodes = []
+  const displayIds = new Map()
+  for (const members of groups.values()) {
+    const sourceFileCount = new Set(members.map((node) => node.properties.file_id)).size
+    if (sourceFileCount < 2) continue
+    const { id, name, type, labels } = members[0]
+    groupedNodes.push({ id, name, type, labels, sourceFileCount })
+    for (const member of members) displayIds.set(member.id, id)
+  }
+
+  if (!displayIds.size) return data
+  return {
+    nodes: [...data.nodes.filter((node) => !displayIds.has(node.id)), ...groupedNodes],
+    edges: data.edges.map((edge) => ({
+      ...edge,
+      source_id: displayIds.get(edge.source_id) ?? edge.source_id,
+      target_id: displayIds.get(edge.target_id) ?? edge.target_id
+    }))
+  }
+}
+
+const displayGraphData = computed(() =>
+  !graphFileId.value && groupSameNames.value ? groupGraphNodes(graph.graphData) : graph.graphData
+)
+
+// G6 会合并同 ID 边的旧样式，切换合看时重新绘制画布。
+watch(groupSameNames, graph.refreshGraph)
 
 // 计算属性：是否支持知识图谱
 const isGraphSupported = computed(() => GRAPH_SUPPORTED_KB_TYPES.has(kbType.value?.toLowerCase()))
@@ -1281,7 +1330,7 @@ onUnmounted(() => {
     }
   }
 
-  .settings-exclude-row {
+  .settings-switch-row {
     display: flex;
     align-items: center;
     justify-content: space-between;

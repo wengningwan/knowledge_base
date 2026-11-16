@@ -230,12 +230,37 @@ function handleStatsOutsideClick(event) {
   if (!statsWrapper?.contains(event.target)) activeStatsPanel.value = ''
 }
 
+/** 分开合看节点之间的平行线，保留每一条线的点击目标。 */
+function separateGroupedEdges(edges, groupedIds) {
+  const parallelEdges = new Map()
+  for (const edge of edges) {
+    if (!groupedIds.has(edge.source) && !groupedIds.has(edge.target)) continue
+    const key = JSON.stringify([edge.source, edge.target].sort())
+    if (!parallelEdges.has(key)) parallelEdges.set(key, [])
+    parallelEdges.get(key).push(edge)
+  }
+
+  for (const group of parallelEdges.values()) {
+    if (group.length < 2) continue
+    for (const [index, edge] of group.entries()) {
+      const direction = edge.source < edge.target ? 1 : -1
+      edge.style =
+        edge.source === edge.target
+          ? { loopDist: 34 + index * 20 }
+          : { curveOffset: (2 * index + 1 - group.length) * 18 * direction }
+    }
+  }
+}
+
 function formatData() {
   const data = props.graphData || { nodes: [], edges: [] }
   const degrees = new Map()
+  const groupedIds = new Set()
 
   for (const n of data.nodes) {
-    degrees.set(String(n.id), 0)
+    const id = String(n.id)
+    degrees.set(id, 0)
+    if (n.sourceFileCount) groupedIds.add(id)
   }
   for (const e of data.edges) {
     const s = String(e.source_id)
@@ -266,6 +291,8 @@ function formatData() {
       original: e // 保存原始数据
     }
   }))
+
+  if (groupedIds.size) separateGroupedEdges(edges, groupedIds)
 
   return { nodes, edges }
 }

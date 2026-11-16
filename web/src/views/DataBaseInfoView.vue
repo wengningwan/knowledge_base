@@ -194,6 +194,7 @@
             :readonly="!canManageDatabase"
             @mindmap="mindmapModalVisible = true"
             @search="fileSearchModalVisible = true"
+            @open-graph="openFileGraph"
           />
         </div>
       </template>
@@ -214,6 +215,7 @@
             :visible="true"
             :active="activeTab === 'graph'"
             :readonly="!canManageDatabase"
+            :initial-paper="initialGraphPaper"
             @toggle-visible="() => {}"
           />
         </div>
@@ -536,6 +538,7 @@ const visibleTabs = computed(() =>
     : tabs.value.filter((tab) => ['filetable', 'query', 'graph'].includes(tab.key))
 )
 const activeTab = ref('filetable')
+const initialGraphPaper = ref(null)
 
 watch(
   () => [kbId.value, route.query.section, visibleTabs.value, isCurrentDatabaseLoaded.value],
@@ -559,6 +562,18 @@ const handleActiveTabChange = (tab) => {
   if (route.query.section !== tab) {
     router.replace({ query: { ...route.query, section: tab } })
   }
+}
+
+watch([kbId, activeTab], ([databaseId, tab], [previousDatabaseId]) => {
+  if (databaseId !== previousDatabaseId || tab !== 'graph') {
+    initialGraphPaper.value = null
+  }
+})
+
+/** 从文件管理进入图谱页时带上本篇论文。 */
+const openFileGraph = (file) => {
+  initialGraphPaper.value = { value: file.file_id, label: file.filename }
+  handleActiveTabChange('graph')
 }
 
 const pendingParseCount = computed(() => {

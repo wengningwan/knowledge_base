@@ -438,6 +438,16 @@
                 </template>
                 <template v-else>
                   <a-button
+                    v-if="row.status === 'indexed' || row.status === 'done'"
+                    type="text"
+                    block
+                    @click="openFileGraph(row)"
+                  >
+                    <template #icon><component :is="h(Network)" size="14" /></template>
+                    知识图谱
+                  </a-button>
+
+                  <a-button
                     type="text"
                     block
                     @click="handleDownloadFile(row)"
@@ -565,6 +575,7 @@ import {
   Database,
   Filter,
   MoreHorizontal,
+  Network,
   Pencil,
   Search,
   Map as MapIcon
@@ -572,7 +583,7 @@ import {
 
 const store = useDatabaseStore()
 
-const emit = defineEmits(['mindmap', 'search'])
+const emit = defineEmits(['mindmap', 'search', 'open-graph'])
 
 const props = defineProps({
   readonly: { type: Boolean, default: false }
@@ -690,6 +701,12 @@ const closePopover = (fileId) => {
   if (fileId) {
     popoverVisibleMap.value[fileId] = false
   }
+}
+
+/** 从文件行打开对应的单篇图谱。 */
+const openFileGraph = (file) => {
+  closePopover(file.file_id)
+  emit('open-graph', file)
 }
 
 // 新建文件夹相关
