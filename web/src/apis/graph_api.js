@@ -1,4 +1,4 @@
-import { apiGet } from './base'
+import { apiGet, buildQuery } from './base'
 
 export const graphApi = {
   getGraphs: async () => {
@@ -8,6 +8,7 @@ export const graphApi = {
   getSubgraph: async (params) => {
     const {
       kb_id,
+      file_id,
       node_label = '*',
       max_depth = 2,
       max_nodes = 100,
@@ -18,33 +19,27 @@ export const graphApi = {
       throw new Error('kb_id is required')
     }
 
-    const queryParams = new URLSearchParams({
-      kb_id,
-      node_label,
-      max_depth: max_depth.toString(),
-      max_nodes: max_nodes.toString(),
-      exclude_chunk: exclude_chunk.toString()
-    })
+    const queryParams = buildQuery({ kb_id, file_id, node_label, max_depth, max_nodes, exclude_chunk })
 
-    return await apiGet(`/api/graph/subgraph?${queryParams.toString()}`, {}, true)
+    return await apiGet(`/api/graph/subgraph?${queryParams}`, {}, true)
   },
 
-  getStats: async (kb_id) => {
+  getStats: async (kb_id, file_id) => {
     if (!kb_id) {
       throw new Error('kb_id is required')
     }
 
-    const queryParams = new URLSearchParams({ kb_id })
-    return await apiGet(`/api/graph/stats?${queryParams.toString()}`, {}, true)
+    const queryParams = buildQuery({ kb_id, file_id })
+    return await apiGet(`/api/graph/stats?${queryParams}`, {}, true)
   },
 
-  getLabels: async (kb_id) => {
+  getLabels: async (kb_id, file_id) => {
     if (!kb_id) {
       throw new Error('kb_id is required')
     }
 
-    const queryParams = new URLSearchParams({ kb_id })
-    return await apiGet(`/api/graph/labels?${queryParams.toString()}`, {}, true)
+    const queryParams = buildQuery({ kb_id, file_id })
+    return await apiGet(`/api/graph/labels?${queryParams}`, {}, true)
   }
 }
 

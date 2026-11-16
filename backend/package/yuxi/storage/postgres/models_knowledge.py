@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -51,7 +52,10 @@ class KnowledgeFile(Base):
     """知识文件模型"""
 
     __tablename__ = "knowledge_files"
-    __table_args__ = (UniqueConstraint("file_id", name="uq_knowledge_files_file_id"),)
+    __table_args__ = (
+        UniqueConstraint("file_id", name="uq_knowledge_files_file_id"),
+        UniqueConstraint("kb_id", "file_id", name="uq_knowledge_file_graph_scope"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     file_id = Column(String(64), unique=True, nullable=False, index=True)
@@ -88,6 +92,7 @@ class KnowledgeChunk(Base):
     __tablename__ = "knowledge_chunks"
     __table_args__ = (
         UniqueConstraint("chunk_id", name="uq_knowledge_chunks_chunk_id"),
+        UniqueConstraint("kb_id", "file_id", "chunk_id", name="uq_knowledge_chunk_graph_scope"),
         Index("ix_knowledge_chunks_file_id", "file_id"),
         Index("ix_knowledge_chunks_kb_id", "kb_id"),
         Index("ix_knowledge_chunks_graph_indexed", "graph_indexed"),
@@ -172,7 +177,14 @@ class KnowledgeGraphEntity(Base):
     __tablename__ = "knowledge_graph_entities"
     __table_args__ = (
         UniqueConstraint("entity_id", name="uq_knowledge_graph_entities_entity_id"),
-        UniqueConstraint("kb_id", "normalized_name", "label", name="uq_knowledge_graph_entities_identity"),
+        UniqueConstraint("kb_id", "file_id", "normalized_name", "label", name="uq_graph_entity_identity_scope"),
+        UniqueConstraint("kb_id", "file_id", "entity_id", name="uq_graph_entity_scope"),
+        ForeignKeyConstraint(
+            ["kb_id", "file_id"],
+            ["knowledge_files.kb_id", "knowledge_files.file_id"],
+            name="fk_graph_entity_file_scope",
+            ondelete="CASCADE",
+        ),
         Index("ix_knowledge_graph_entities_kb_id", "kb_id"),
         Index("ix_knowledge_graph_entities_vector_pending", "kb_id", "vector_status", "vector_next_retry_at"),
     )
@@ -180,6 +192,7 @@ class KnowledgeGraphEntity(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     entity_id = Column(String(64), nullable=False)
     kb_id = Column(String(80), ForeignKey("knowledge_bases.kb_id", ondelete="CASCADE"), nullable=False)
+    file_id = Column(String(64), nullable=False)
     normalized_name = Column(String(512), nullable=False)
     label = Column(String(128), nullable=False)
     name = Column(String(512), nullable=False)
@@ -200,16 +213,28 @@ class KnowledgeGraphEntityMention(Base):
     __tablename__ = "knowledge_graph_entity_mentions"
     __table_args__ = (
         UniqueConstraint("entity_id", "chunk_id", name="uq_knowledge_graph_entity_mentions_entity_chunk"),
+        ForeignKeyConstraint(
+            ["kb_id", "file_id", "entity_id"],
+            ["knowledge_graph_entities.kb_id", "knowledge_graph_entities.file_id", "knowledge_graph_entities.entity_id"],
+            name="fk_graph_entity_mention_record_scope",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["kb_id", "file_id", "chunk_id"],
+            ["knowledge_chunks.kb_id", "knowledge_chunks.file_id", "knowledge_chunks.chunk_id"],
+            name="fk_graph_entity_mention_chunk_scope",
+            ondelete="CASCADE",
+        ),
         Index("ix_knowledge_graph_entity_mentions_kb_id", "kb_id"),
         Index("ix_knowledge_graph_entity_mentions_file_id", "file_id"),
         Index("ix_knowledge_graph_entity_mentions_chunk_id", "chunk_id"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    entity_id = Column(String(64), ForeignKey("knowledge_graph_entities.entity_id", ondelete="CASCADE"), nullable=False)
-    kb_id = Column(String(80), ForeignKey("knowledge_bases.kb_id", ondelete="CASCADE"), nullable=False)
-    file_id = Column(String(64), ForeignKey("knowledge_files.file_id", ondelete="CASCADE"), nullable=False)
-    chunk_id = Column(String(128), ForeignKey("knowledge_chunks.chunk_id", ondelete="CASCADE"), nullable=False)
+    entity_id = Column(String(64), nullable=False)
+    kb_id = Column(String(80), nullable=False)
+    file_id = Column(String(64), nullable=False)
+    chunk_id = Column(String(128), nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
 
@@ -219,6 +244,19 @@ class KnowledgeGraphTriple(Base):
     __tablename__ = "knowledge_graph_triples"
     __table_args__ = (
         UniqueConstraint("triple_id", name="uq_knowledge_graph_triples_triple_id"),
+        UniqueConstraint("kb_id", "file_id", "triple_id", name="uq_graph_triple_scope"),
+        ForeignKeyConstraint(
+            ["kb_id", "file_id", "source_entity_id"],
+            ["knowledge_graph_entities.kb_id", "knowledge_graph_entities.file_id", "knowledge_graph_entities.entity_id"],
+            name="fk_graph_triple_source_scope",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["kb_id", "file_id", "target_entity_id"],
+            ["knowledge_graph_entities.kb_id", "knowledge_graph_entities.file_id", "knowledge_graph_entities.entity_id"],
+            name="fk_graph_triple_target_scope",
+            ondelete="CASCADE",
+        ),
         Index("ix_knowledge_graph_triples_kb_id", "kb_id"),
         Index("ix_knowledge_graph_triples_vector_pending", "kb_id", "vector_status", "vector_next_retry_at"),
     )
@@ -226,12 +264,9 @@ class KnowledgeGraphTriple(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     triple_id = Column(String(64), nullable=False)
     kb_id = Column(String(80), ForeignKey("knowledge_bases.kb_id", ondelete="CASCADE"), nullable=False)
-    source_entity_id = Column(
-        String(64), ForeignKey("knowledge_graph_entities.entity_id", ondelete="CASCADE"), nullable=False
-    )
-    target_entity_id = Column(
-        String(64), ForeignKey("knowledge_graph_entities.entity_id", ondelete="CASCADE"), nullable=False
-    )
+    file_id = Column(String(64), nullable=False)
+    source_entity_id = Column(String(64), nullable=False)
+    target_entity_id = Column(String(64), nullable=False)
     relation_type = Column(String(256), nullable=False)
     content = Column(Text, nullable=False)
     vector_status = Column(String(16), nullable=False, default="pending")
@@ -250,16 +285,28 @@ class KnowledgeGraphTripleMention(Base):
     __tablename__ = "knowledge_graph_triple_mentions"
     __table_args__ = (
         UniqueConstraint("triple_id", "chunk_id", name="uq_knowledge_graph_triple_mentions_triple_chunk"),
+        ForeignKeyConstraint(
+            ["kb_id", "file_id", "triple_id"],
+            ["knowledge_graph_triples.kb_id", "knowledge_graph_triples.file_id", "knowledge_graph_triples.triple_id"],
+            name="fk_graph_triple_mention_record_scope",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["kb_id", "file_id", "chunk_id"],
+            ["knowledge_chunks.kb_id", "knowledge_chunks.file_id", "knowledge_chunks.chunk_id"],
+            name="fk_graph_triple_mention_chunk_scope",
+            ondelete="CASCADE",
+        ),
         Index("ix_knowledge_graph_triple_mentions_kb_id", "kb_id"),
         Index("ix_knowledge_graph_triple_mentions_file_id", "file_id"),
         Index("ix_knowledge_graph_triple_mentions_chunk_id", "chunk_id"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    triple_id = Column(String(64), ForeignKey("knowledge_graph_triples.triple_id", ondelete="CASCADE"), nullable=False)
-    kb_id = Column(String(80), ForeignKey("knowledge_bases.kb_id", ondelete="CASCADE"), nullable=False)
-    file_id = Column(String(64), ForeignKey("knowledge_files.file_id", ondelete="CASCADE"), nullable=False)
-    chunk_id = Column(String(128), ForeignKey("knowledge_chunks.chunk_id", ondelete="CASCADE"), nullable=False)
+    triple_id = Column(String(64), nullable=False)
+    kb_id = Column(String(80), nullable=False)
+    file_id = Column(String(64), nullable=False)
+    chunk_id = Column(String(128), nullable=False)
     text = Column(Text)
     extractor_type = Column(String(128))
     created_at = Column(DateTime(timezone=True), default=utc_now)

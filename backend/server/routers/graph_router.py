@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from server.utils.auth_middleware import get_admin_user
 from server.utils.knowledge_permissions import require_knowledge_base_read
 from server.utils.knowledge_response import serialize_knowledge_base
-from yuxi.knowledge.graphs.milvus_graph_service import MilvusGraphService
+from yuxi.knowledge.graphs.milvus_graph_service import GraphFileNotFoundError, MilvusGraphService
 from yuxi.knowledge.runtime import knowledge_base
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils.logging_config import logger
@@ -55,6 +55,7 @@ async def get_graphs(current_user: User = Depends(get_admin_user)):
 @graph.get("/subgraph")
 async def get_subgraph(
     kb_id: str = Query(..., description="Milvus 知识库ID"),
+    file_id: str | None = Query(None, min_length=1, max_length=64),
     node_label: str = Query("*", description="节点标签或查询关键词"),
     max_depth: int = Query(2, description="最大深度", ge=1, le=5),
     max_nodes: int = Query(100, description="最大节点数", ge=1, le=1000),
@@ -66,12 +67,15 @@ async def get_subgraph(
         logger.info(f"Querying subgraph - kb_id: {kb_id}, label: {node_label}")
         service = await _get_graph_service(kb_id)
         result_data = await service.query_nodes(
+            file_id=file_id,
             keyword=node_label,
             max_depth=max_depth,
             max_nodes=max_nodes,
             exclude_chunk=exclude_chunk,
         )
         return {"success": True, "data": result_data}
+    except GraphFileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception as e:
@@ -82,13 +86,16 @@ async def get_subgraph(
 @graph.get("/labels")
 async def get_graph_labels(
     kb_id: str = Query(..., description="Milvus 知识库ID"),
+    file_id: str | None = Query(None, min_length=1, max_length=64),
     current_user: User = Depends(require_knowledge_base_read),
 ):
     """获取 Milvus 知识库图谱的所有标签"""
     try:
         service = await _get_graph_service(kb_id)
-        labels = await service.get_labels()
+        labels = await service.get_labels(file_id=file_id)
         return {"success": True, "data": {"labels": labels}}
+    except GraphFileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception as e:
@@ -99,13 +106,16 @@ async def get_graph_labels(
 @graph.get("/stats")
 async def get_graph_stats(
     kb_id: str = Query(..., description="Milvus 知识库ID"),
+    file_id: str | None = Query(None, min_length=1, max_length=64),
     current_user: User = Depends(require_knowledge_base_read),
 ):
     """获取 Milvus 知识库图谱统计信息"""
     try:
         service = await _get_graph_service(kb_id)
-        stats_data = await service.get_stats()
+        stats_data = await service.get_stats(file_id=file_id)
         return {"success": True, "data": stats_data}
+    except GraphFileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception as e:

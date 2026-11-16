@@ -82,7 +82,10 @@ class MilvusGraphVectorStore:
         if triple_ids:
             tasks.append(asyncio.to_thread(self._delete_ids, graph_triple_collection_name(kb_id), triple_ids))
         if tasks:
-            await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
 
     async def search_entities(
         self,
@@ -204,6 +207,7 @@ class MilvusGraphVectorStore:
         collection_name = graph_entity_collection_name(kb_id)
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=100, is_primary=True),
+            FieldSchema(name="file_id", dtype=DataType.VARCHAR, max_length=64),
             FieldSchema(
                 name="content",
                 dtype=DataType.VARCHAR,
@@ -220,6 +224,7 @@ class MilvusGraphVectorStore:
         collection_name = graph_triple_collection_name(kb_id)
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=100, is_primary=True),
+            FieldSchema(name="file_id", dtype=DataType.VARCHAR, max_length=64),
             FieldSchema(
                 name="content",
                 dtype=DataType.VARCHAR,
@@ -238,7 +243,10 @@ class MilvusGraphVectorStore:
         self, collection_name: str, fields: list[FieldSchema], embedding_info: Any
     ) -> Collection:
         if utility.has_collection(collection_name, using=self.connection_alias):
-            return Collection(name=collection_name, using=self.connection_alias)
+            collection = Collection(name=collection_name, using=self.connection_alias)
+            if not any(field.name == "file_id" for field in collection.schema.fields):
+                raise ValueError("图谱向量集合缺少文件归属字段，请确认无旧图数据后重置整库图谱")
+            return collection
 
         bm25_function = Function(
             name="content_bm25",
@@ -269,6 +277,7 @@ class MilvusGraphVectorStore:
         collection.upsert(
             [
                 [record["id"] for record in records],
+                [record["file_id"] for record in records],
                 [record["content"] for record in records],
                 embeddings,
             ]
@@ -278,6 +287,7 @@ class MilvusGraphVectorStore:
         collection.upsert(
             [
                 [record["id"] for record in records],
+                [record["file_id"] for record in records],
                 [record["content"] for record in records],
                 [record["source_id"] for record in records],
                 [record["target_id"] for record in records],

@@ -369,33 +369,34 @@ export const documentApi = {
 // === 图谱构建分组 ===
 // =============================================================================
 
-function graphBuildUrl(kbId, action) {
-  return `/api/knowledge/databases/${kbId}/graph-build/${action}`
+function graphBuildUrl(kbId, action, params = {}) {
+  const query = buildQuery(params)
+  return `/api/knowledge/databases/${kbId}/graph-build/${action}${query ? `?${query}` : ''}`
 }
 
 export const graphBuildApi = {
-  getStatus: async (kbId) => {
-    return apiAdminGet(graphBuildUrl(kbId, 'status'))
+  getStatus: async (kbId, fileId) => {
+    return apiAdminGet(graphBuildUrl(kbId, 'status', { file_id: fileId }))
   },
 
-  getFailedChunks: async (kbId, limit = 10) => {
-    return apiAdminGet(`${graphBuildUrl(kbId, 'failed-chunks')}?limit=${limit}`)
+  getFailedChunks: async (kbId, limit = 10, fileId) => {
+    return apiAdminGet(graphBuildUrl(kbId, 'failed-chunks', { limit, file_id: fileId }))
   },
 
   configure: async (kbId, data) => {
     return apiAdminPost(graphBuildUrl(kbId, 'config'), data)
   },
 
-  startIndex: async (kbId) => {
-    return apiAdminPost(graphBuildUrl(kbId, 'index'), {})
+  startIndex: async (kbId, fileId) => {
+    return apiAdminPost(graphBuildUrl(kbId, 'index', { file_id: fileId }), {})
   },
 
-  reset: async (kbId, data) => {
-    return apiAdminPost(graphBuildUrl(kbId, 'reset'), data)
+  reset: async (kbId, data, fileId) => {
+    return apiAdminPost(graphBuildUrl(kbId, 'reset', { file_id: fileId }), data)
   },
 
-  reconcile: async (kbId, mode = 'failed') => {
-    return apiAdminPost(graphBuildUrl(kbId, 'reconcile'), { mode })
+  reconcile: async (kbId, mode = 'failed', fileId) => {
+    return apiAdminPost(graphBuildUrl(kbId, 'reconcile', { file_id: fileId }), { mode })
   }
 }
 

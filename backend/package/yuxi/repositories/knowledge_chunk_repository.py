@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_knowledge import KnowledgeChunk
@@ -136,36 +137,40 @@ class KnowledgeChunkRepository:
             result = await session.execute(delete(KnowledgeChunk).where(KnowledgeChunk.kb_id == kb_id))
             return int(result.rowcount or 0)
 
-    async def count_by_kb_id(self, kb_id: str) -> int:
-        return await self._count_by_kb_id(kb_id)
+    async def count_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> int:
+        return await self._count_by_kb_id(kb_id, file_id=file_id)
 
-    async def count_graph_indexed_by_kb_id(self, kb_id: str) -> int:
-        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_indexed.is_(True))
+    async def count_graph_indexed_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> int:
+        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_indexed.is_(True), file_id=file_id)
 
-    async def count_graph_structure_indexed_by_kb_id(self, kb_id: str) -> int:
-        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_structure_indexed.is_(True))
+    async def count_graph_structure_indexed_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> int:
+        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_structure_indexed.is_(True), file_id=file_id)
 
-    async def count_graph_extraction_statuses_by_kb_id(self, kb_id: str) -> dict[str, int]:
+    async def count_graph_extraction_statuses_by_kb_id(
+        self, kb_id: str, *, file_id: str | None = None
+    ) -> dict[str, int]:
         counts = {"pending": 0, "succeeded": 0, "failed": 0}
         status = func.coalesce(KnowledgeChunk.graph_extraction_details["status"].as_string(), "pending")
         async with pg_manager.get_async_session_context() as session:
             rows = (
                 await session.execute(
-                    select(status, func.count()).where(KnowledgeChunk.kb_id == kb_id).group_by(status)
+                    select(status, func.count()).where(*self._graph_scope(kb_id, file_id)).group_by(status)
                 )
             ).all()
         for value, count in rows:
             counts[str(value)] = int(count or 0)
         return counts
 
-    async def list_graph_extraction_failed_samples(self, kb_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    async def list_graph_extraction_failed_samples(
+        self, kb_id: str, limit: int = 10, *, file_id: str | None = None
+    ) -> list[dict[str, Any]]:
         status = KnowledgeChunk.graph_extraction_details["status"].as_string()
         async with pg_manager.get_async_session_context() as session:
             chunks = list(
                 (
                     await session.execute(
                         select(KnowledgeChunk)
-                        .where(KnowledgeChunk.kb_id == kb_id, status == "failed")
+                        .where(*self._graph_scope(kb_id, file_id), status == "failed")
                         .order_by(KnowledgeChunk.id.desc())
                         .limit(max(1, min(limit, 10)))
                     )
@@ -185,7 +190,7 @@ class KnowledgeChunkRepository:
         ]
 
     async def has_graph_data_by_file_id(self, file_id: str) -> bool:
-        """结构已提交、向量未完成的块同样需要清理图谱。"""
+        """抽取成功后可能已有外部图写入，文件变更时一并清理。"""
         from sqlalchemy import or_
         from yuxi.storage.postgres.models_knowledge import KnowledgeGraphEntityMention, KnowledgeGraphTripleMention
 
@@ -195,7 +200,11 @@ class KnowledgeChunkRepository:
                     return True
             return await session.scalar(select(KnowledgeChunk.id).where(
                 KnowledgeChunk.file_id == file_id,
-                or_(KnowledgeChunk.graph_indexed.is_(True), KnowledgeChunk.graph_structure_indexed.is_(True)),
+                or_(
+                    KnowledgeChunk.graph_indexed.is_(True),
+                    KnowledgeChunk.graph_structure_indexed.is_(True),
+                    KnowledgeChunk.graph_extraction_details["status"].as_string() == "succeeded",
+                ),
             ).limit(1)) is not None
 
     async def count_graph_indexed_by_file_id(self, file_id: str) -> int:
@@ -207,15 +216,22 @@ class KnowledgeChunkRepository:
             )
             return int(result.scalar() or 0)
 
-    async def count_graph_pending_by_kb_id(self, kb_id: str) -> int:
-        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_indexed.is_not(True))
+    async def count_graph_pending_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> int:
+        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_indexed.is_not(True), file_id=file_id)
 
-    async def _count_by_kb_id(self, kb_id: str, *conditions: Any) -> int:
+    async def _count_by_kb_id(self, kb_id: str, *conditions: Any, file_id: str | None = None) -> int:
         async with pg_manager.get_async_session_context() as session:
             result = await session.execute(
-                select(func.count()).select_from(KnowledgeChunk).where(KnowledgeChunk.kb_id == kb_id, *conditions)
+                select(func.count()).select_from(KnowledgeChunk).where(*self._graph_scope(kb_id, file_id), *conditions)
             )
             return int(result.scalar() or 0)
+
+    @staticmethod
+    def _graph_scope(kb_id: str, file_id: str | None) -> tuple:
+        """生成当前知识库及可选文件的分块条件。"""
+        if file_id is None:
+            return (KnowledgeChunk.kb_id == kb_id,)
+        return KnowledgeChunk.kb_id == kb_id, KnowledgeChunk.file_id == file_id
 
     async def list_graph_pending_by_kb_id(
         self,
@@ -223,12 +239,13 @@ class KnowledgeChunkRepository:
         limit: int,
         *,
         after_id: int = 0,
+        file_id: str | None = None,
     ) -> list[KnowledgeChunk]:
         async with pg_manager.get_async_session_context() as session:
             result = await session.execute(
                 select(KnowledgeChunk)
                 .where(
-                    KnowledgeChunk.kb_id == kb_id,
+                    *self._graph_scope(kb_id, file_id),
                     KnowledgeChunk.graph_indexed.is_not(True),
                     KnowledgeChunk.id > after_id,
                 )
@@ -302,18 +319,21 @@ class KnowledgeChunkRepository:
                 .values(graph_structure_indexed=True, ent_ids=ent_ids)
             )
 
-    async def reset_graph_state_by_kb_id(self, kb_id: str, clear_extraction_result: bool) -> int:
-        values: dict[str, Any] = {"graph_structure_indexed": False, "graph_indexed": False}
+    async def reset_graph_state_in_session(
+        self, session: AsyncSession, kb_id: str, clear_extraction_result: bool, *, file_id: str | None = None
+    ) -> int:
+        """在图谱清理事务中重置所选分块的构建状态。"""
+        values: dict[str, Any] = {"graph_structure_indexed": False, "graph_indexed": False, "ent_ids": None}
         if clear_extraction_result:
             values.update(
                 {
                     "extraction_result": None,
                     "graph_extraction_details": {"status": "pending", "attempt_count": 0},
-                    "ent_ids": None,
                     "tags": None,
                 }
             )
 
-        async with pg_manager.get_async_session_context() as session:
-            result = await session.execute(update(KnowledgeChunk).where(KnowledgeChunk.kb_id == kb_id).values(**values))
-            return int(result.rowcount or 0)
+        result = await session.execute(
+            update(KnowledgeChunk).where(*self._graph_scope(kb_id, file_id)).values(**values)
+        )
+        return int(result.rowcount or 0)

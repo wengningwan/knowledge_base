@@ -8,6 +8,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.schema import AddConstraint
 from yuxi.config import get_int_env
 from yuxi.storage.postgres.models_business import (
     AGENT_RUN_SHAPE_CONSTRAINT_NAME,
@@ -24,7 +25,7 @@ from yuxi.utils.singleton import SingletonMeta
 
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
 BUSINESS_SCHEMA_VERSION = 9
-KNOWLEDGE_SCHEMA_VERSION = 5
+KNOWLEDGE_SCHEMA_VERSION = 6
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS worker_id VARCHAR(128)",
@@ -589,6 +590,37 @@ class PostgresManager(metaclass=SingletonMeta):
         )]
         async with self.async_engine.begin() as conn:
             await conn.run_sync(lambda connection: KnowledgeBase.metadata.create_all(connection, tables=tables))
+
+    async def upgrade_knowledge_schema_v5_to_v6(self) -> None:
+        """给图谱实体和关系增加文件归属，保留知识库及文档数据。"""
+        self._check_initialized()
+        async with self.async_engine.begin() as conn:
+            for table in ("knowledge_graph_entities", "knowledge_graph_triples"):
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS file_id VARCHAR(64)"))
+                if await conn.scalar(text(f"SELECT EXISTS (SELECT 1 FROM {table} WHERE file_id IS NULL)")):
+                    raise RuntimeError("图谱存在未按文件归属的历史数据，无法执行空图升级")
+                await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN file_id SET NOT NULL"))
+
+            await conn.execute(
+                text(
+                    "ALTER TABLE knowledge_graph_entities DROP CONSTRAINT"
+                    " IF EXISTS uq_knowledge_graph_entities_identity"
+                )
+            )
+
+            # 按依赖顺序复用模型约束，升级重试与新库使用同一口径。
+            for table in KnowledgeBase.metadata.sorted_tables:
+                constraints = [item for item in table.constraints if (item.name or "").endswith("_scope")]
+                if not constraints:
+                    continue
+                names = await conn.scalars(
+                    text("SELECT conname FROM pg_constraint WHERE conrelid = CAST(:name AS regclass)"),
+                    {"name": table.name},
+                )
+                existing = set(names.all())
+                for constraint in sorted(constraints, key=lambda item: item.name):
+                    if constraint.name not in existing:
+                        await conn.execute(AddConstraint(constraint))
 
     async def drop_tables(self):
         """删除所有表（慎用！）"""

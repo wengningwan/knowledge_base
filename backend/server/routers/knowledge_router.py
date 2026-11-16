@@ -15,7 +15,7 @@ from yuxi.config.options import system_options
 from yuxi.knowledge.base import KBNameConflictError, KBNotFoundError
 from yuxi.knowledge.chunking.ragflow_like.presets import get_chunk_preset_options
 from yuxi.knowledge.experiment_review import ExperimentReviewRequest
-from yuxi.knowledge.graphs.milvus_graph_service import GRAPH_TASK_TYPE, MilvusGraphService
+from yuxi.knowledge.graphs.milvus_graph_service import GraphFileNotFoundError, MilvusGraphService
 from yuxi.knowledge.read_models import KnowledgeBaseDetail
 from yuxi.knowledge.parser.capabilities import SUPPORTED_FILE_EXTENSIONS, is_supported_file_extension
 from yuxi.knowledge.runtime import knowledge_base
@@ -40,6 +40,7 @@ from yuxi.permissions import (
     resolve_knowledge_base_permission,
 )
 from yuxi.services.knowledge_folder_service import knowledge_folder_service
+from yuxi.services.knowledge_task_service import GraphBuildConflictError, enqueue_knowledge_graph, reset_knowledge_graph
 from yuxi.services.ocr_service import parse_document
 from yuxi.services.task_service import tasker
 from yuxi.services.workspace_service import read_workspace_file_bytes
@@ -59,7 +60,6 @@ from server.utils.knowledge_permissions import (
 
 knowledge = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
-ACTIVE_GRAPH_BUILD_STATUSES = {"pending", "running"}
 MAX_DIRECT_DOCUMENT_ACTION_FILE_IDS = 1000
 PENDING_PARSE_STATUSES = ["uploaded"]
 PENDING_INDEX_STATUSES = ["parsed", "error_indexing"]
@@ -223,17 +223,6 @@ def _validate_uploaded_document_items(items: list[str], params: dict) -> None:
         has_preprocessed_hash = isinstance(preprocessed, dict) and bool(preprocessed.get("content_hash"))
         if not has_content_hash and not has_preprocessed_hash:
             raise HTTPException(status_code=400, detail=f"Missing content_hash for file: {item}")
-
-
-async def _has_running_graph_build_task(kb_id: str) -> bool:
-    return (
-        await tasker.find_task_by_payload(
-            task_type=GRAPH_TASK_TYPE,
-            payload_match={"kb_id": kb_id},
-            statuses=ACTIVE_GRAPH_BUILD_STATUSES,
-        )
-        is not None
-    )
 
 
 # =============================================================================
@@ -469,9 +458,15 @@ async def delete_database(kb_id: str, current_user: User = Depends(require_knowl
 
 
 @knowledge.get("/databases/{kb_id}/graph-build/status")
-async def get_graph_build_status(kb_id: str, current_user: User = Depends(require_knowledge_base_read)):
+async def get_graph_build_status(
+    kb_id: str,
+    file_id: str | None = Query(None, min_length=1, max_length=64),
+    current_user: User = Depends(require_knowledge_base_read),
+):
     try:
-        return await MilvusGraphService().get_status(kb_id, tasker=tasker)
+        return await MilvusGraphService().get_status(kb_id, file_id=file_id, tasker=tasker)
+    except GraphFileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -508,30 +503,19 @@ async def configure_graph_build(
 @knowledge.post("/databases/{kb_id}/graph-build/index")
 async def index_graph_build(
     kb_id: str,
+    file_id: str | None = Query(None, min_length=1, max_length=64),
+    data: dict | None = Body(default=None),
     current_user: User = Depends(require_knowledge_base_manage),
 ):
+    if data and "file_id" in data:
+        raise HTTPException(status_code=400, detail="file_id 必须通过 URL 查询参数传递")
     try:
-        if await _has_running_graph_build_task(kb_id):
-            raise HTTPException(status_code=409, detail="该知识库已有正在运行的图谱构建任务")
-
-        database = await knowledge_base.get_database_info(kb_id)
-        if not database:
-            raise HTTPException(status_code=404, detail=f"知识库 {kb_id} 不存在")
-
-        service = MilvusGraphService()
-        graph_status = await service.get_status(kb_id)
-        if not graph_status.get("locked"):
-            raise HTTPException(status_code=400, detail="请先确认并锁定图谱抽取配置")
-
-        task, created = await tasker.enqueue_unique_by_payload(
-            name=f"图谱构建 ({database.name})",
-            task_type=GRAPH_TASK_TYPE,
-            payload={"kb_id": kb_id, "action": "build"},
-            payload_match={"kb_id": kb_id},
-        )
-        if not created:
-            raise HTTPException(status_code=409, detail="该知识库已有正在运行的图谱构建任务")
+        task = await enqueue_knowledge_graph(kb_id, file_id=file_id)
         return {"message": "图谱构建任务已提交", "status": "queued", "task_id": task.id}
+    except GraphFileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except GraphBuildConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except HTTPException:
         raise
     except ValueError as e:
@@ -545,10 +529,13 @@ async def index_graph_build(
 async def get_graph_build_failed_chunks(
     kb_id: str,
     limit: int = 10,
+    file_id: str | None = Query(None, min_length=1, max_length=64),
     current_user: User = Depends(require_knowledge_base_read),
 ):
     try:
-        return await MilvusGraphService().get_failed_chunk_samples(kb_id, limit=max(1, min(limit, 10)))
+        return await MilvusGraphService().get_failed_chunk_samples(kb_id, limit=limit, file_id=file_id)
+    except GraphFileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -562,18 +549,23 @@ async def get_graph_build_failed_chunks(
 async def reset_graph_build(
     kb_id: str,
     data: dict | None = Body(default=None),
+    file_id: str | None = Query(None, min_length=1, max_length=64),
     current_user: User = Depends(require_knowledge_base_manage),
 ):
     data = data or {}
+    if "file_id" in data:
+        raise HTTPException(status_code=400, detail="file_id 必须通过 URL 查询参数传递")
     try:
-        if await _has_running_graph_build_task(kb_id):
-            raise HTTPException(status_code=409, detail="该知识库存在正在运行的图谱构建任务，无法重置")
-
-        return await MilvusGraphService().reset(
+        return await reset_knowledge_graph(
             kb_id,
+            file_id=file_id,
             clear_extraction_result=bool(data.get("clear_extraction_result", True)),
             clear_config=bool(data.get("clear_config", False)),
         )
+    except GraphFileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except GraphBuildConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except HTTPException:
         raise
     except ValueError as e:
@@ -587,34 +579,27 @@ async def reset_graph_build(
 async def reconcile_graph_build(
     kb_id: str,
     data: dict | None = Body(default=None),
+    file_id: str | None = Query(None, min_length=1, max_length=64),
     current_user: User = Depends(require_knowledge_base_manage),
 ):
     data = data or {}
+    if "file_id" in data:
+        raise HTTPException(status_code=400, detail="file_id 必须通过 URL 查询参数传递")
     mode = data.get("mode") or "failed"
     if mode not in {"failed", "all_vectors"}:
         raise HTTPException(status_code=400, detail="mode 必须是 failed 或 all_vectors")
     try:
-        if await _has_running_graph_build_task(kb_id):
-            raise HTTPException(status_code=409, detail="该知识库已有正在运行的图谱构建任务")
-
-        database = await knowledge_base.get_database_info(kb_id)
-        if not database:
-            raise HTTPException(status_code=404, detail=f"知识库 {kb_id} 不存在")
-
-        task, created = await tasker.enqueue_unique_by_payload(
-            name=f"图谱向量索引修复 ({database.name})",
-            task_type=GRAPH_TASK_TYPE,
-            payload={"kb_id": kb_id, "action": "reconcile", "reconcile_mode": mode},
-            payload_match={"kb_id": kb_id},
-        )
-        if not created:
-            raise HTTPException(status_code=409, detail="该知识库已有正在运行的图谱构建任务")
+        task = await enqueue_knowledge_graph(kb_id, file_id=file_id, reconcile_mode=mode)
         return {
             "message": "图谱向量索引修复任务已提交",
             "status": "queued",
             "task_id": task.id,
             "mode": mode,
         }
+    except GraphFileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except GraphBuildConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except HTTPException:
         raise
     except ValueError as e:
@@ -688,6 +673,7 @@ async def list_documents(
 async def search_documents(
     kb_id: str,
     query: str = Query("", description="文件名关键词，仅匹配文件名不匹配内容"),
+    status: str | None = Query(None, description="文件状态筛选"),
     offset: int = Query(0, ge=0, description="偏移量，从 0 开始"),
     limit: int = Query(100, ge=1, le=500, description="每页数量"),
     current_user: User = Depends(require_knowledge_base_read),
@@ -707,6 +693,7 @@ async def search_documents(
         query=normalized_query,
         offset=offset,
         limit=limit,
+        status=status,
         include_parent_id=True,
     )
 

@@ -1,6 +1,6 @@
 # 文档导入与查询 API
 
-本页说明如何通过 HTTP 或 CLI 把文档加入知识库，以及如何查询已经处理的内容。它面向管理员和集成开发者；知识库运行机制见[知识库机制](../mechanisms/knowledge-base.md)，导图和图谱见[知识导图与知识图谱](./knowledge-base-graph.md)。
+本页说明如何通过 HTTP 或 CLI 把文档加入知识库，以及如何查询已经处理的内容。它面向管理员和集成开发者。知识库运行机制见[知识库机制](../mechanisms/knowledge-base.md)。图谱按论文查看、构建和维护的接口见[知识导图与知识图谱](./knowledge-base-graph.md#api-入口)。
 
 ## 权限
 

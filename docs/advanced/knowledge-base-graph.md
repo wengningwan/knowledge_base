@@ -23,7 +23,7 @@
 - 当前账号有知识库管理权限；
 - Neo4j 和 Milvus 服务可访问。
 
-在知识库详情页配置抽取器并提交构建任务。任务会从已索引的 chunk 中抽取实体和关系，随后写入结构数据和向量索引。详情页可以查看抽取、结构写入、向量索引进度和失败 chunk。
+在知识库详情页打开「知识图谱」，选择「全部论文」或一篇已入库论文。页面按所选范围显示图谱、索引进度和失败分块。需要构建时，先配置知识库共用的抽取器，再打开「索引管理」提交任务。等任务结束后查看画布和失败分块，核对当前范围的实际结果。
 
 三类存储分别拥有不同事实：
 
@@ -45,7 +45,7 @@
 4. 检查 Milvus 的图向量索引；
 5. 再决定重试、修复向量索引或重置图谱。
 
-Durable Task 的 `success` 只表示 worker 已完成编排，不能单独证明三类存储已经一致。
+单篇重置清除该论文的图谱和抽取结果，保留知识库的共用配置。单篇向量修复重写该论文的向量记录。构建与修复沿用知识库级互斥，其他范围有活动任务时，页面显示知识库忙碌。核对抽取、结构和向量状态后再判断图谱的覆盖范围。
 
 ## API 入口
 
@@ -60,9 +60,13 @@ Durable Task 的 `success` 只表示 worker 已完成编排，不能单独证明
 | `POST` | `/api/knowledge/databases/{kb_id}/graph-build/reset` | 重置图谱状态 |
 | `POST` | `/api/knowledge/databases/{kb_id}/graph-build/reconcile` | 修复图向量索引 |
 
-接口字段和权限以部署实例的 Swagger 页面为准。只读用户可以调用读取接口，不能通过改 URL 绕过管理权限。
+`/api/graph/subgraph`、`/api/graph/labels`、`/api/graph/stats` 及图谱构建的状态、失败分块、构建、重置和修复接口接受查询参数 `file_id`。省略该参数时操作范围是整个知识库。传入文件时，后端校验文件归属和操作权限。单篇重置要求 `clear_config` 为 `false`。接口字段以部署实例的 Swagger 页面为准。
 
-## 源码和测试
+## 首次部署
+
+适用于没有历史图数据的部署。由 `storage-migrator` 升级知识库表结构。首次构建按需创建 Neo4j 文件索引和包含 `file_id` 的 Milvus 图向量集合。若已有缺少该字段的空图向量集合，确认集合为空后可用整库向量修复的 `all_vectors` 模式重新创建。这个模式会重写该知识库的图向量。
+
+## 源码和验证
 
 - [知识库路由](https://github.com/xerrors/Yuxi/blob/main/backend/server/routers/knowledge_router.py)
 - [导图工具](https://github.com/xerrors/Yuxi/blob/main/backend/package/yuxi/knowledge/utils/mindmap_utils.py)

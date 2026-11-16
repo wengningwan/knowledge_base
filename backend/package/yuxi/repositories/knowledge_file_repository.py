@@ -311,9 +311,12 @@ class KnowledgeFileRepository:
             result = await session.execute(select(KnowledgeFile))
             return list(result.scalars().all())
 
-    async def get_by_file_id(self, file_id: str) -> KnowledgeFile | None:
+    async def get_by_file_id(self, file_id: str, *, kb_id: str | None = None) -> KnowledgeFile | None:
+        statement = select(KnowledgeFile).where(KnowledgeFile.file_id == file_id)
+        if kb_id is not None:
+            statement = statement.where(KnowledgeFile.kb_id == kb_id)
         async with pg_manager.get_async_session_context() as session:
-            result = await session.execute(select(KnowledgeFile).where(KnowledgeFile.file_id == file_id))
+            result = await session.execute(statement)
             return result.scalar_one_or_none()
 
     async def list_by_file_ids(self, file_ids: list[str]) -> list[KnowledgeFile]:

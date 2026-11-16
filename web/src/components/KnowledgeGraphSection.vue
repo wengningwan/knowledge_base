@@ -19,6 +19,18 @@
           <template #top>
             <div class="compact-actions">
               <div class="actions-left">
+                <a-select
+                  v-model:value="graphFileId"
+                  class="graph-file-select"
+                  aria-label="选择论文"
+                  show-search
+                  :filter-option="false"
+                  :options="paperOptions"
+                  :loading="papersLoading"
+                  @search="searchPapers"
+                  @dropdown-visible-change="onPaperDropdown"
+                  @popup-scroll="loadMorePapers"
+                />
                 <a-button
                   class="action-btn search-action-btn"
                   @click="onSearch"
@@ -103,13 +115,15 @@
               清空搜索
             </a-button>
             <a-button
-              v-else-if="!readonly && hasPendingGraphChunks && !isBuildActive"
+              v-else-if="
+                !readonly && !isKnowledgeBaseBusy && (hasPendingGraphChunks || vectorFailedCount)
+              "
               type="primary"
               class="lucide-icon-btn"
-              @click="startGraphBuild"
+              @click="vectorFailedCount ? retryGraphVectors() : startGraphBuild()"
             >
               <Database :size="16" />
-              开始索引
+              {{ vectorFailedCount ? '重试失败向量' : '开始索引' }}
             </a-button>
             <a-button v-else class="lucide-icon-btn" @click="loadGraph">
               <RefreshCw :size="16" :class="{ spin: graph.fetching }" />
@@ -174,7 +188,7 @@
             <div class="panel-header">
               <span class="panel-title">索引管理</span>
               <a-button
-                v-if="graphBuildStatus?.locked && !isBuildActive"
+                v-if="graphBuildStatus?.locked && !isKnowledgeBaseBusy"
                 size="small"
                 type="text"
                 title="修改配置"
@@ -251,11 +265,14 @@
                 <a-button v-else-if="isBuildActive" type="primary" block disabled>
                   构建中 {{ graphBuildStatus?.build_task_progress ?? 0 }}%
                 </a-button>
+                <a-button v-else-if="isKnowledgeBaseBusy" type="primary" block disabled>
+                  知识库正在处理其他图谱任务
+                </a-button>
                 <a-button
-                  v-else-if="isBuildFailed"
+                  v-else-if="vectorFailedCount || isBuildFailed"
                   type="primary"
                   block
-                  :disabled="!graphBuildStatus?.pending_chunks"
+                  :disabled="!vectorFailedCount && !hasPendingGraphChunks"
                   @click="vectorFailedCount ? retryGraphVectors() : startGraphBuild()"
                 >
                   {{ vectorFailedCount ? '重试失败向量' : '重试索引' }}
@@ -336,7 +353,14 @@
       </a-form>
       <template #footer>
         <div class="graph-config-footer">
-          <a-button v-if="isEditingGraphConfig" danger @click="confirmResetGraph">重置</a-button>
+          <a-button
+            v-if="isEditingGraphConfig"
+            danger
+            :disabled="isKnowledgeBaseBusy"
+            @click="confirmResetGraph"
+          >
+            {{ graphFileId ? '重置本篇图谱' : '重置整库图谱' }}
+          </a-button>
           <div class="graph-config-footer-actions">
             <a-button @click="showGraphConfig = false">取消</a-button>
             <a-button type="primary" @click="configureGraphBuild">确认</a-button>
@@ -392,7 +416,7 @@ import GraphDetailPanel from '@/components/GraphDetailPanel.vue'
 import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
 import { getKbTypeLabel } from '@/utils/kb_utils'
 import { unifiedApi } from '@/apis/graph_api'
-import { graphBuildApi } from '@/apis/knowledge_api'
+import { documentApi, graphBuildApi } from '@/apis/knowledge_api'
 import { Modal, message } from 'ant-design-vue'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
 import { useGraph } from '@/composables/useGraph'
@@ -430,6 +454,84 @@ const subgraphParams = reactive({
   excludeChunk: true
 })
 const searchInput = ref('')
+const graphFileId = ref('')
+const paperMatches = ref([])
+const selectedPaper = ref(null)
+const papersLoading = ref(false)
+const paperPageSize = 50
+let paperQuery = ''
+let paperPage = 0
+let paperHasMore = false
+let paperRequest = 0
+let paperSearchTimer = null
+
+const paperOptions = computed(() => [
+  { value: '', label: '全部论文' },
+  ...paperMatches.value,
+  ...(selectedPaper.value && !paperMatches.value.some((paper) => paper.value === graphFileId.value)
+    ? [selectedPaper.value]
+    : [])
+])
+
+const loadPapers = async (request, page) => {
+  const databaseId = kbId.value
+  if (!databaseId) return
+  papersLoading.value = true
+  const offset = (page - 1) * paperPageSize
+  try {
+    const data = paperQuery
+      ? await documentApi.searchDocuments(databaseId, {
+          query: paperQuery,
+          status: 'indexed',
+          offset,
+          limit: paperPageSize
+        })
+      : await documentApi.listDocuments(databaseId, {
+          status: 'indexed',
+          recursive: true,
+          page,
+          page_size: paperPageSize
+        })
+    if (request !== paperRequest || databaseId !== kbId.value) return
+    const files = data.files || data.items || []
+    const seen = new Set(paperMatches.value.map((paper) => paper.value))
+    for (const file of files) {
+      if (file.is_folder || seen.has(file.file_id)) continue
+      paperMatches.value.push({ value: file.file_id, label: file.filename })
+      seen.add(file.file_id)
+    }
+    paperPage = page
+    paperHasMore = offset + files.length < data.total && files.length > 0
+  } catch (e) {
+    if (request === paperRequest && databaseId === kbId.value) {
+      message.error(getErrorDetail(e, '加载论文列表失败'))
+    }
+  } finally {
+    if (request === paperRequest) papersLoading.value = false
+  }
+}
+
+const searchPapers = (query) => {
+  const request = ++paperRequest
+  clearTimeout(paperSearchTimer)
+  paperQuery = query.trim()
+  paperPage = 0
+  paperHasMore = false
+  paperMatches.value = []
+  papersLoading.value = true
+  paperSearchTimer = setTimeout(() => loadPapers(request, 1), 200)
+}
+
+const onPaperDropdown = (open) => {
+  if (open) searchPapers('')
+}
+
+const loadMorePapers = (event) => {
+  const { scrollTop, clientHeight, scrollHeight } = event.target
+  if (paperHasMore && !papersLoading.value && scrollTop + clientHeight >= scrollHeight - 24) {
+    loadPapers(paperRequest, paperPage + 1)
+  }
+}
 const graphBuildStatus = ref(null)
 const graphBuildLoading = ref(false)
 const showGraphConfig = ref(false)
@@ -443,6 +545,10 @@ const isBuildActive = computed(() => {
   const s = graphBuildStatus.value?.build_task_status
   return s === 'pending' || s === 'running'
 })
+
+const isKnowledgeBaseBusy = computed(
+  () => isBuildActive.value || Boolean(graphBuildStatus.value?.kb_busy)
+)
 
 const isBuildFailed = computed(() => {
   return graphBuildStatus.value?.build_task_status === 'failed'
@@ -465,6 +571,7 @@ const vectorFailedCount = computed(() => Number(graphBuildStatus.value?.vector_c
 const isGraphIndexComplete = computed(() => {
   return (
     Boolean(graphBuildStatus.value?.locked) &&
+    Number(graphBuildStatus.value?.total_chunks) > 0 &&
     !isBuildActive.value &&
     pendingGraphChunks.value === 0
   )
@@ -529,7 +636,7 @@ const startBuildStatusPoll = () => {
 }
 
 watch(
-  isBuildActive,
+  () => props.active && isKnowledgeBaseBusy.value,
   (active) => {
     if (active) {
       startBuildStatusPoll()
@@ -571,13 +678,17 @@ const graphDataEmptyTitle = computed(() =>
 const graphDataEmptyDescription = computed(() => {
   if (searchInput.value.trim()) return '换个关键词或调整图谱设置后再搜索。'
   if (isBuildActive.value) return '图谱索引正在运行，完成后会展示实体与关系。'
+  if (isKnowledgeBaseBusy.value) return '知识库正在处理其他图谱任务。'
   if (hasPendingGraphChunks.value) return '当前还有待索引 Chunk，完成索引后会展示实体与关系。'
-  return '当前知识库还没有可展示的实体与关系。'
+  return graphFileId.value
+    ? '本篇论文还没有可展示的实体与关系。'
+    : '当前知识库还没有可展示的实体与关系。'
 })
 
 let pendingLoadTimer = null
 let graphStatusRequestSeq = 0
 let graphLoadRequestSeq = 0
+let failedChunksRequestSeq = 0
 
 const getErrorDetail = (e, fallback) => {
   return e?.response?.data?.detail || e?.response?.data?.message || e?.message || fallback
@@ -587,15 +698,22 @@ const loadGraphBuildStatus = async () => {
   if (!kbId.value || !isMilvus.value) return
   const requestSeq = ++graphStatusRequestSeq
   const currentDatabaseId = kbId.value
+  const currentFileId = graphFileId.value
   graphBuildLoading.value = true
   try {
-    const status = await graphBuildApi.getStatus(currentDatabaseId)
-    if (requestSeq === graphStatusRequestSeq && currentDatabaseId === kbId.value) {
+    const status = await graphBuildApi.getStatus(currentDatabaseId, currentFileId)
+    if (
+      requestSeq === graphStatusRequestSeq &&
+      currentDatabaseId === kbId.value &&
+      currentFileId === graphFileId.value
+    ) {
+      const wasBusy = isKnowledgeBaseBusy.value
       graphBuildStatus.value = status
+      if (wasBusy && !isKnowledgeBaseBusy.value) scheduleGraphLoad()
     }
   } catch (e) {
     console.error('Failed to load graph build status:', e)
-    message.error('加载图谱构建状态失败')
+    if (requestSeq === graphStatusRequestSeq) message.error('加载图谱构建状态失败')
   } finally {
     if (requestSeq === graphStatusRequestSeq) {
       graphBuildLoading.value = false
@@ -664,16 +782,18 @@ const configureGraphBuild = async () => {
 
 const startGraphBuild = async () => {
   const registerTask = taskerStore.createTaskRegistration()
+  const databaseId = kbId.value
+  const fileId = graphFileId.value
   try {
-    const data = await graphBuildApi.startIndex(kbId.value)
+    const data = await graphBuildApi.startIndex(databaseId, fileId)
     message.success(data.message || '图谱构建任务已提交')
     if (data.task_id) {
       registerTask({
         task_id: data.task_id,
-        name: `图谱构建 (${kbId.value})`,
+        name: `图谱构建 (${databaseId})`,
         task_type: GRAPH_BUILD_TASK_TYPE,
         message: data.message,
-        payload: { kb_id: kbId.value }
+        payload: { kb_id: databaseId, file_id: fileId || null }
       })
     }
     await loadGraphBuildStatus()
@@ -685,16 +805,18 @@ const startGraphBuild = async () => {
 
 const retryGraphVectors = async () => {
   const registerTask = taskerStore.createTaskRegistration()
+  const databaseId = kbId.value
+  const fileId = graphFileId.value
   try {
-    const data = await graphBuildApi.reconcile(kbId.value, 'failed')
+    const data = await graphBuildApi.reconcile(databaseId, 'failed', fileId)
     message.success(data.message || '图谱向量索引修复任务已提交')
     if (data.task_id) {
       registerTask({
         task_id: data.task_id,
-        name: `图谱向量索引修复 (${kbId.value})`,
+        name: `图谱向量索引修复 (${databaseId})`,
         task_type: GRAPH_BUILD_TASK_TYPE,
         message: data.message,
-        payload: { kb_id: kbId.value, reconcile_mode: 'failed' }
+        payload: { kb_id: databaseId, file_id: fileId || null, reconcile_mode: 'failed' }
       })
     }
     await loadGraphBuildStatus()
@@ -710,39 +832,57 @@ const openFailedChunkSamples = async () => {
   failedChunkSamplesLoading.value = true
   failedChunkSamples.value = []
   activeFailedChunkKey.value = ''
+  const request = ++failedChunksRequestSeq
+  const databaseId = kbId.value
+  const fileId = graphFileId.value
   try {
-    const data = await graphBuildApi.getFailedChunks(kbId.value, 10)
+    const data = await graphBuildApi.getFailedChunks(databaseId, 10, fileId)
+    if (
+      request !== failedChunksRequestSeq ||
+      databaseId !== kbId.value ||
+      fileId !== graphFileId.value
+    ) {
+      return
+    }
     failedChunkSamples.value = data.samples || []
     activeFailedChunkKey.value = failedChunkSamples.value[0]?.chunk_id || ''
   } catch (e) {
-    console.error('Failed to load graph extraction failed chunks:', e)
-    message.error(getErrorDetail(e, '加载抽取失败 Chunk 失败'))
+    if (request === failedChunksRequestSeq) message.error(getErrorDetail(e, '加载抽取失败 Chunk 失败'))
   } finally {
-    failedChunkSamplesLoading.value = false
+    if (request === failedChunksRequestSeq) failedChunkSamplesLoading.value = false
   }
 }
 
 const confirmResetGraph = () => {
+  const databaseId = kbId.value
+  const fileId = graphFileId.value
   Modal.confirm({
-    title: '清空并重建图谱',
-    content: '将删除该知识库在 Neo4j 中的图谱，重置 Chunk 图谱状态，并清空抽取结果与配置。',
+    title: fileId ? '重置本篇论文图谱' : '重置整个知识库图谱',
+    content: fileId
+      ? `将清除「${selectedPaper.value?.label || fileId}」的图谱和抽取结果。`
+      : '将清除整个知识库的图谱、抽取结果与图谱配置。',
     okText: '确认重置',
     cancelText: '取消',
-    onOk: resetGraphBuild
+    onOk: () => resetGraphBuild(databaseId, fileId)
   })
 }
 
-const resetGraphBuild = async () => {
+const resetGraphBuild = async (databaseId, fileId) => {
   try {
-    await graphBuildApi.reset(kbId.value, {
-      clear_extraction_result: true,
-      clear_config: true
-    })
+    await graphBuildApi.reset(
+      databaseId,
+      { clear_extraction_result: true, clear_config: !fileId },
+      fileId
+    )
     message.success('图谱构建状态已重置')
+    if (databaseId !== kbId.value || fileId !== graphFileId.value) return
+    graphLoadRequestSeq += 1
+    graph.fetching = false
     showGraphConfig.value = false
-    graphLoaded.value = false
     graph.clearGraph()
+    graphLoaded.value = true
     await loadGraphBuildStatus()
+    scheduleGraphLoad()
   } catch (e) {
     console.error('Failed to reset graph build:', e)
     message.error(getErrorDetail(e, '重置图谱构建状态失败'))
@@ -754,6 +894,7 @@ const loadGraph = async () => {
 
   const requestSeq = ++graphLoadRequestSeq
   const currentDatabaseId = kbId.value
+  const currentFileId = graphFileId.value
   graph.fetching = true
   if (!hasGraphNodes.value) {
     graphLoaded.value = false
@@ -761,6 +902,7 @@ const loadGraph = async () => {
   try {
     const res = await unifiedApi.getSubgraph({
       kb_id: currentDatabaseId,
+      file_id: currentFileId,
       node_label: searchInput.value || '*',
       max_nodes: subgraphParams.maxNodes,
       max_depth: subgraphParams.maxDepth,
@@ -770,6 +912,7 @@ const loadGraph = async () => {
     if (
       requestSeq === graphLoadRequestSeq &&
       currentDatabaseId === kbId.value &&
+      currentFileId === graphFileId.value &&
       res.success &&
       res.data
     ) {
@@ -777,7 +920,7 @@ const loadGraph = async () => {
     }
   } catch (e) {
     console.error('Failed to load graph:', e)
-    message.error('加载图谱失败')
+    if (requestSeq === graphLoadRequestSeq) message.error('加载图谱失败')
   } finally {
     if (requestSeq === graphLoadRequestSeq) {
       graph.fetching = false
@@ -831,18 +974,32 @@ watch(
 )
 
 watch(kbId, () => {
+  paperRequest += 1
+  clearTimeout(paperSearchTimer)
+  paperHasMore = false
+  paperMatches.value = []
+  papersLoading.value = false
+  selectedPaper.value = null
+  graphFileId.value = ''
+})
+
+watch([kbId, graphFileId], () => {
+  selectedPaper.value = paperMatches.value.find((paper) => paper.value === graphFileId.value) || null
   graphStatusRequestSeq += 1
   graphLoadRequestSeq += 1
+  failedChunksRequestSeq += 1
   graphLoaded.value = false
+  graph.fetching = false
   graph.clearGraph()
   graphBuildStatus.value = null
+  graphBuildLoading.value = false
+  showGraphConfig.value = false
   showFailedChunkSamples.value = false
+  failedChunkSamplesLoading.value = false
   failedChunkSamples.value = []
-  if (isMilvus.value) {
+  if (props.active && isGraphSupported.value) {
     loadGraphBuildStatus()
-  }
-  if (isGraphSupported.value) {
-    scheduleGraphLoad(300)
+    scheduleGraphLoad()
   }
 })
 
@@ -860,6 +1017,11 @@ watch(isGraphSupported, (supported) => {
 })
 
 onUnmounted(() => {
+  paperRequest += 1
+  graphStatusRequestSeq += 1
+  graphLoadRequestSeq += 1
+  failedChunksRequestSeq += 1
+  clearTimeout(paperSearchTimer)
   if (pendingLoadTimer) {
     clearTimeout(pendingLoadTimer)
     pendingLoadTimer = null
@@ -889,8 +1051,11 @@ onUnmounted(() => {
   height: 100%;
   width: 100%;
   position: relative;
-  --graph-search-input-width: 240px;
-  --graph-search-toolbar-width: calc(var(--graph-search-input-width) + 78px);
+  --graph-search-input-width: 200px;
+  --graph-file-select-width: 164px;
+  --graph-search-toolbar-width: calc(
+    var(--graph-file-select-width) + var(--graph-search-input-width) + 78px
+  );
 }
 
 .graph-empty-state {
@@ -947,9 +1112,20 @@ onUnmounted(() => {
     }
   }
 
+  .actions-left {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .graph-file-select {
+    width: var(--graph-file-select-width);
+    min-width: 92px;
+    padding-inline: 2px;
+  }
+
   .graph-search-input {
-    flex: 0 0 var(--graph-search-input-width);
     width: var(--graph-search-input-width);
+    min-width: 55px;
     border-radius: 0;
   }
 
@@ -962,6 +1138,7 @@ onUnmounted(() => {
   }
 
   .action-btn {
+    flex-shrink: 0;
     width: 32px;
     height: 32px;
     padding: 0;

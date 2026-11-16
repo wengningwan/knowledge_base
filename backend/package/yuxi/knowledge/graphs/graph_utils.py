@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from yuxi.utils import hashstr
@@ -16,20 +17,21 @@ def normalize_entity_name(text: str) -> str:
     return " ".join(text.strip().lower().split())
 
 
-def compute_entity_id(kb_id: str, normalized_name: str, label: str) -> str:
-    return hashstr(f"{kb_id}:{normalized_name}:{label}", length=32)
+def compute_entity_id(kb_id: str, file_id: str, normalized_name: str, label: str) -> str:
+    """按文件、实体名称和类型生成实体标识。"""
+    return hashstr(json.dumps([kb_id, file_id, normalized_name, label], ensure_ascii=False), length=32)
 
 
 def compute_triple_id(
     kb_id: str,
-    source_normalized_name: str,
-    source_label: str,
+    file_id: str,
+    source_entity_id: str,
     relation_type: str,
-    target_normalized_name: str,
-    target_label: str,
+    target_entity_id: str,
 ) -> str:
+    """按文件、两个端点和关系类型生成三元组标识。"""
     return hashstr(
-        f"{kb_id}:{source_normalized_name}:{source_label}:{relation_type}:{target_normalized_name}:{target_label}",
+        json.dumps([kb_id, file_id, source_entity_id, relation_type, target_entity_id], ensure_ascii=False),
         length=32,
     )
 
@@ -97,10 +99,8 @@ def build_graph_payload(normalized_result: dict[str, Any]) -> dict[str, Any]:
 def cypher_merge_chunk(db_label: str) -> str:
     """MERGE Chunk 节点并写入元数据。"""
     return f"""
-    MERGE (c:Chunk:MilvusKB:`{db_label}` {{chunk_id: $chunk_id}})
-    SET c.file_id = $file_id,
-        c.kb_id = $kb_id,
-        c.chunk_index = $chunk_index,
+    MERGE (c:Chunk:MilvusKB:`{db_label}` {{kb_id: $kb_id, file_id: $file_id, chunk_id: $chunk_id}})
+    SET c.chunk_index = $chunk_index,
         c.content_preview = $content_preview,
         c.start_char_pos = $start_char_pos,
         c.end_char_pos = $end_char_pos
@@ -110,13 +110,14 @@ def cypher_merge_chunk(db_label: str) -> str:
 def cypher_merge_entity_mention(db_label: str) -> str:
     """MERGE Entity 节点并创建 Chunk → Entity 的 MENTIONS 关系。"""
     return f"""
-    MATCH (c:Chunk:MilvusKB:`{db_label}` {{chunk_id: $chunk_id}})
+    MATCH (c:Chunk:MilvusKB:`{db_label}` {{kb_id: $kb_id, file_id: $file_id, chunk_id: $chunk_id}})
     MERGE (e:Entity:MilvusKB:`{db_label}` {{
         kb_id: $kb_id,
-        normalized_name: $normalized_name,
-        label: $entity_label
+        file_id: $file_id,
+        entity_id: $entity_id
     }})
-    SET e.entity_id = $entity_id,
+    SET e.normalized_name = $normalized_name,
+        e.label = $entity_label,
         e.name = $name,
         e.attributes = $attributes
     MERGE (c)-[m:MENTIONS {{chunk_id: $chunk_id, file_id: $file_id, kb_id: $kb_id}}]->(e)
@@ -128,23 +129,23 @@ def cypher_merge_relation(db_label: str) -> str:
     return f"""
     MATCH (source:Entity:MilvusKB:`{db_label}` {{
         kb_id: $kb_id,
-        normalized_name: $source_name,
-        label: $source_label
+        file_id: $file_id,
+        entity_id: $source_id
     }})
     MATCH (target:Entity:MilvusKB:`{db_label}` {{
         kb_id: $kb_id,
-        normalized_name: $target_name,
-        label: $target_label
+        file_id: $file_id,
+        entity_id: $target_id
     }})
     MERGE (source)-[r:RELATION {{
         kb_id: $kb_id,
+        file_id: $file_id,
         chunk_id: $chunk_id,
-        source_name: $source_name,
-        target_name: $target_name,
-        type: $relation_type
+        triple_id: $triple_id
     }}]->(target)
-    SET r.triple_id = $triple_id,
+    SET r.type = $relation_type,
+        r.source_name = source.normalized_name,
+        r.target_name = target.normalized_name,
         r.text = $text,
-        r.file_id = $file_id,
         r.extractor_type = $extractor_type
     """

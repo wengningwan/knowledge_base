@@ -64,7 +64,9 @@ class TaskRepository:
         filters = [TaskRecord.type == task_type]
         if statuses is not None:
             filters.append(TaskRecord.status.in_(statuses))
-        filters.extend(TaskRecord.payload[key].as_string() == str(value) for key, value in payload_match.items())
+        for key, value in payload_match.items():
+            field = TaskRecord.payload[key].as_string()
+            filters.append(field.is_(None) if value is None else field == str(value))
         async with pg_manager.get_async_session_context() as session:
             return await session.scalar(
                 select(TaskRecord).where(*filters).order_by(TaskRecord.created_at.desc(), TaskRecord.id.desc()).limit(1)

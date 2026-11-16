@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from yuxi.knowledge.graphs.milvus_graph_service import MilvusGraphService
+from yuxi.knowledge.graphs.milvus_graph_service import GRAPH_TASK_TYPE, MilvusGraphService
 from yuxi.knowledge.runtime import knowledge_base
 from yuxi.knowledge.utils import params_for_uploaded_document
 from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
 from yuxi.services.knowledge_folder_service import knowledge_folder_service
-from yuxi.services.task_service import TaskContext
+from yuxi.services.task_service import Task, TaskContext, tasker
 from yuxi.utils.logging_config import logger
 
 DOCUMENT_ACTION_BATCH_SIZE = 500
@@ -366,28 +366,59 @@ async def run_virtual_folder_migration(context: TaskContext) -> dict:
     )
 
 
+class GraphBuildConflictError(ValueError):
+    """同一知识库已经有活动图谱任务。"""
+
+
+async def enqueue_knowledge_graph(
+    kb_id: str, *, file_id: str | None = None, reconcile_mode: str | None = None
+) -> Task:
+    """校验图谱任务范围并按知识库提交持久任务。"""
+    name = await MilvusGraphService().get_build_target(kb_id, file_id)
+    action = "reconcile" if reconcile_mode is not None else "build"
+    label = "图谱向量索引修复" if action == "reconcile" else "图谱构建"
+    task, created = await tasker.enqueue_unique_by_payload(
+        name=f"{label} ({name})",
+        task_type=GRAPH_TASK_TYPE,
+        payload={"kb_id": kb_id, "file_id": file_id, "action": action, "reconcile_mode": reconcile_mode},
+        payload_match={"kb_id": kb_id},
+    )
+    if not created:
+        raise GraphBuildConflictError("该知识库已有正在运行的图谱构建任务")
+    return task
+
+
+async def reset_knowledge_graph(
+    kb_id: str, *, file_id: str | None, clear_extraction_result: bool, clear_config: bool
+) -> dict:
+    """在当前知识库没有活动图任务时重置指定范围。"""
+    if await tasker.find_task_by_payload(
+        task_type=GRAPH_TASK_TYPE, payload_match={"kb_id": kb_id}, statuses={"pending", "running"}
+    ):
+        raise GraphBuildConflictError("该知识库存在正在运行的图谱构建任务，无法重置")
+    return await MilvusGraphService().reset(
+        kb_id, file_id=file_id, clear_extraction_result=clear_extraction_result, clear_config=clear_config
+    )
+
+
 async def run_knowledge_graph(context: TaskContext) -> dict:
-    """根据持久 action 重建图谱构建或向量修复任务。"""
+    """根据持久 action 和文件归属执行图谱构建或向量修复。"""
     payload = context.payload
-    kb_id = payload["kb_id"]
-    service = MilvusGraphService()
+    mode = None
     if payload.get("action") == "reconcile":
         mode = payload.get("reconcile_mode") or "failed"
-        await context.set_progress(5.0, "准备修复图谱向量索引")
-        reconcile_result = await service.reconcile_vectors(kb_id, all_vectors=mode == "all_vectors")
-        result = await service.build_pending_chunks(kb_id, context=context)
-        await context.raise_if_cancelled()
-        result["reconcile"] = reconcile_result
-        await context.set_result(result)
-        await context.set_progress(100.0, "图谱向量索引修复完成")
-        return result
-
-    await context.set_progress(5.0, "准备构建图谱")
-    result = await service.build_pending_chunks(kb_id, context=context)
+        if mode not in {"failed", "all_vectors"}:
+            raise ValueError("不支持的图谱向量修复模式")
+    await context.set_progress(5.0, "准备修复图谱向量索引" if mode else "准备构建图谱")
+    result = await MilvusGraphService().build_pending_chunks(
+        payload["kb_id"], file_id=payload.get("file_id"), reconcile_mode=mode, context=context
+    )
     await context.raise_if_cancelled()
     await context.set_result(result)
-    await context.set_progress(
-        100.0,
-        f"图谱构建执行完成，成功 {result['success']} 个，抽取失败 {result['extraction_failed']} 个",
+    message = (
+        "图谱向量索引修复完成"
+        if mode
+        else f"图谱构建执行完成，成功 {result['success']} 个，抽取失败 {result['extraction_failed']} 个"
     )
+    await context.set_progress(100.0, message)
     return result

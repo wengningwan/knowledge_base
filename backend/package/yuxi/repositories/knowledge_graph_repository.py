@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import case, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_knowledge import (
@@ -17,27 +18,36 @@ from yuxi.storage.postgres.models_knowledge import (
 )
 
 
+def _graph_scope(model, kb_id: str, file_id: str | None) -> tuple:
+    """生成知识库及可选文件的图记录范围。"""
+    if file_id is None:
+        return (model.kb_id == kb_id,)
+    return model.kb_id == kb_id, model.file_id == file_id
+
+
 class KnowledgeGraphRepository:
     VECTOR_MAX_ATTEMPTS = 3
 
-    async def count_by_kb_id(self, kb_id: str) -> tuple[int, int]:
+    async def count_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> tuple[int, int]:
         async with pg_manager.get_async_session_context() as session:
             entity_count = await session.scalar(
-                select(func.count()).select_from(KnowledgeGraphEntity).where(KnowledgeGraphEntity.kb_id == kb_id)
+                select(func.count()).select_from(KnowledgeGraphEntity)
+                .where(*_graph_scope(KnowledgeGraphEntity, kb_id, file_id))
             )
             triple_count = await session.scalar(
-                select(func.count()).select_from(KnowledgeGraphTriple).where(KnowledgeGraphTriple.kb_id == kb_id)
+                select(func.count()).select_from(KnowledgeGraphTriple)
+                .where(*_graph_scope(KnowledgeGraphTriple, kb_id, file_id))
             )
             return int(entity_count or 0), int(triple_count or 0)
 
-    async def count_vector_statuses_by_kb_id(self, kb_id: str) -> dict[str, int]:
+    async def count_vector_statuses_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> dict[str, int]:
         counts = {"pending": 0, "processing": 0, "indexed": 0, "failed": 0}
         async with pg_manager.get_async_session_context() as session:
             for model in (KnowledgeGraphEntity, KnowledgeGraphTriple):
                 rows = (
                     await session.execute(
                         select(model.vector_status, func.count())
-                        .where(model.kb_id == kb_id)
+                        .where(*_graph_scope(model, kb_id, file_id))
                         .group_by(model.vector_status)
                     )
                 ).all()
@@ -52,6 +62,7 @@ class KnowledgeGraphRepository:
         record_type: str,
         limit: int,
         lease_seconds: int,
+        file_id: str | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         model, id_field = self._vector_model(record_type)
         now = datetime.now(UTC)
@@ -68,7 +79,7 @@ class KnowledgeGraphRepository:
                 (
                     await session.execute(
                         select(model)
-                        .where(model.kb_id == kb_id, claimable)
+                        .where(*_graph_scope(model, kb_id, file_id), claimable)
                         .order_by(model.id.asc())
                         .limit(max(limit, 1))
                         .with_for_update(skip_locked=True)
@@ -141,7 +152,7 @@ class KnowledgeGraphRepository:
                 )
             )
 
-    async def finalize_graph_indexed_chunks(self, kb_id: str) -> int:
+    async def finalize_graph_indexed_chunks(self, kb_id: str, *, file_id: str | None = None) -> int:
         entity_not_indexed = exists().where(
             KnowledgeGraphEntityMention.chunk_id == KnowledgeChunk.chunk_id,
             KnowledgeGraphEntity.entity_id == KnowledgeGraphEntityMention.entity_id,
@@ -156,7 +167,7 @@ class KnowledgeGraphRepository:
             result = await session.execute(
                 update(KnowledgeChunk)
                 .where(
-                    KnowledgeChunk.kb_id == kb_id,
+                    *_graph_scope(KnowledgeChunk, kb_id, file_id),
                     KnowledgeChunk.graph_structure_indexed.is_(True),
                     KnowledgeChunk.graph_indexed.is_not(True),
                     ~entity_not_indexed,
@@ -166,20 +177,22 @@ class KnowledgeGraphRepository:
             )
             return int(result.rowcount or 0)
 
-    async def reconcile_vector_records(self, kb_id: str, *, all_vectors: bool) -> int:
+    async def reconcile_vector_records(self, kb_id: str, *, all_vectors: bool, file_id: str | None = None) -> int:
         now = datetime.now(UTC)
         total = 0
         async with pg_manager.get_async_session_context() as session:
             for model in (KnowledgeGraphEntity, KnowledgeGraphTriple):
-                condition = model.kb_id == kb_id
+                conditions = list(_graph_scope(model, kb_id, file_id))
                 if not all_vectors:
-                    condition = condition & or_(
-                        model.vector_status == "failed",
-                        ((model.vector_status == "processing") & (model.vector_locked_until < now)),
+                    conditions.append(
+                        or_(
+                            model.vector_status == "failed",
+                            (model.vector_status == "processing") & (model.vector_locked_until < now),
+                        )
                     )
                 result = await session.execute(
                     update(model)
-                    .where(condition)
+                    .where(*conditions)
                     .values(
                         vector_status="pending",
                         vector_attempt_count=0,
@@ -192,7 +205,9 @@ class KnowledgeGraphRepository:
                 total += int(result.rowcount or 0)
             if all_vectors:
                 await session.execute(
-                    update(KnowledgeChunk).where(KnowledgeChunk.kb_id == kb_id).values(graph_indexed=False)
+                    update(KnowledgeChunk)
+                    .where(*_graph_scope(KnowledgeChunk, kb_id, file_id))
+                    .values(graph_indexed=False)
                 )
         return total
 
@@ -208,6 +223,7 @@ class KnowledgeGraphRepository:
     def _vector_payload(record_type: str, record, id_field) -> dict[str, Any]:
         payload = {
             "id": getattr(record, id_field.key),
+            "file_id": record.file_id,
             "content": record.normalized_name if record_type == "entity" else record.content,
         }
         if record_type == "triple":
@@ -223,13 +239,17 @@ class KnowledgeGraphRepository:
         entities: list[dict[str, Any]],
         triples: list[dict[str, Any]],
     ) -> None:
+        scope = {"kb_id": kb_id, "file_id": file_id}
         async with pg_manager.get_async_session_context() as session:
             if entities:
-                entity_rows = [{key: value for key, value in entity.items() if key != "content"} for entity in entities]
+                entity_rows = [
+                    {**{key: value for key, value in entity.items() if key != "content"}, **scope}
+                    for entity in entities
+                ]
                 entity_stmt = insert(KnowledgeGraphEntity).values(entity_rows)
                 await session.execute(
                     entity_stmt.on_conflict_do_update(
-                        index_elements=["entity_id"],
+                        index_elements=["kb_id", "file_id", "entity_id"],
                         set_={
                             "name": entity_stmt.excluded.name,
                             "attributes": entity_stmt.excluded.attributes,
@@ -255,13 +275,13 @@ class KnowledgeGraphRepository:
 
             if triples:
                 triple_rows = [
-                    {key: value for key, value in triple.items() if key not in {"text", "extractor_type"}}
+                    {**{key: value for key, value in triple.items() if key not in {"text", "extractor_type"}}, **scope}
                     for triple in triples
                 ]
                 triple_stmt = insert(KnowledgeGraphTriple).values(triple_rows)
                 await session.execute(
                     triple_stmt.on_conflict_do_update(
-                        index_elements=["triple_id"],
+                        index_elements=["kb_id", "file_id", "triple_id"],
                         set_={
                             "content": triple_stmt.excluded.content,
                             "relation_type": triple_stmt.excluded.relation_type,
@@ -287,97 +307,23 @@ class KnowledgeGraphRepository:
                     .on_conflict_do_nothing(index_elements=["triple_id", "chunk_id"])
                 )
 
-    async def delete_file_references(self, file_id: str, *, before_commit=None) -> tuple[list[str], list[str]]:
-        """外部清理成功后提交引用删除，失败回滚并保留待删归属。"""
-        async with pg_manager.get_async_session_context() as session:
-            affected_entity_ids = list(
-                (
-                    await session.execute(
-                        select(KnowledgeGraphEntityMention.entity_id)
-                        .where(KnowledgeGraphEntityMention.file_id == file_id)
-                        .distinct()
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            affected_triple_ids = list(
-                (
-                    await session.execute(
-                        select(KnowledgeGraphTripleMention.triple_id)
-                        .where(KnowledgeGraphTripleMention.file_id == file_id)
-                        .distinct()
-                    )
-                )
-                .scalars()
-                .all()
-            )
+    async def delete_file_references(
+        self, session: AsyncSession, kb_id: str, file_id: str
+    ) -> tuple[list[str], list[str]]:
+        """删除文件的图记录，返回需要清理的向量标识。"""
+        triples = await session.scalars(
+            delete(KnowledgeGraphTriple)
+            .where(*_graph_scope(KnowledgeGraphTriple, kb_id, file_id))
+            .returning(KnowledgeGraphTriple.triple_id)
+        )
+        entities = await session.scalars(
+            delete(KnowledgeGraphEntity)
+            .where(*_graph_scope(KnowledgeGraphEntity, kb_id, file_id))
+            .returning(KnowledgeGraphEntity.entity_id)
+        )
+        return list(entities.all()), list(triples.all())
 
-            await session.execute(
-                delete(KnowledgeGraphTripleMention).where(KnowledgeGraphTripleMention.file_id == file_id)
-            )
-            await session.execute(
-                delete(KnowledgeGraphEntityMention).where(KnowledgeGraphEntityMention.file_id == file_id)
-            )
-
-            orphan_triple_ids: list[str] = []
-            if affected_triple_ids:
-                triple_has_mentions = exists().where(
-                    KnowledgeGraphTripleMention.triple_id == KnowledgeGraphTriple.triple_id
-                )
-                orphan_triple_ids = list(
-                    (
-                        await session.execute(
-                            select(KnowledgeGraphTriple.triple_id).where(
-                                KnowledgeGraphTriple.triple_id.in_(affected_triple_ids),
-                                ~triple_has_mentions,
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if orphan_triple_ids:
-                    await session.execute(
-                        delete(KnowledgeGraphTriple).where(KnowledgeGraphTriple.triple_id.in_(orphan_triple_ids))
-                    )
-
-            orphan_entity_ids: list[str] = []
-            if affected_entity_ids:
-                entity_has_mentions = exists().where(
-                    KnowledgeGraphEntityMention.entity_id == KnowledgeGraphEntity.entity_id
-                )
-                entity_has_triples = exists().where(
-                    or_(
-                        KnowledgeGraphTriple.source_entity_id == KnowledgeGraphEntity.entity_id,
-                        KnowledgeGraphTriple.target_entity_id == KnowledgeGraphEntity.entity_id,
-                    )
-                )
-                orphan_entity_ids = list(
-                    (
-                        await session.execute(
-                            select(KnowledgeGraphEntity.entity_id).where(
-                                KnowledgeGraphEntity.entity_id.in_(affected_entity_ids),
-                                ~entity_has_mentions,
-                                ~entity_has_triples,
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if orphan_entity_ids:
-                    await session.execute(
-                        delete(KnowledgeGraphEntity).where(KnowledgeGraphEntity.entity_id.in_(orphan_entity_ids))
-                    )
-
-            if before_commit is not None:
-                await before_commit(orphan_entity_ids, orphan_triple_ids)
-            return orphan_entity_ids, orphan_triple_ids
-
-    async def delete_by_kb_id(self, kb_id: str) -> None:
-        async with pg_manager.get_async_session_context() as session:
-            await session.execute(delete(KnowledgeGraphTripleMention).where(KnowledgeGraphTripleMention.kb_id == kb_id))
-            await session.execute(delete(KnowledgeGraphEntityMention).where(KnowledgeGraphEntityMention.kb_id == kb_id))
-            await session.execute(delete(KnowledgeGraphTriple).where(KnowledgeGraphTriple.kb_id == kb_id))
-            await session.execute(delete(KnowledgeGraphEntity).where(KnowledgeGraphEntity.kb_id == kb_id))
+    async def delete_by_kb_id(self, session: AsyncSession, kb_id: str) -> None:
+        """删除整个知识库的图记录，来源引用由外键一并删除。"""
+        await session.execute(delete(KnowledgeGraphTriple).where(KnowledgeGraphTriple.kb_id == kb_id))
+        await session.execute(delete(KnowledgeGraphEntity).where(KnowledgeGraphEntity.kb_id == kb_id))
