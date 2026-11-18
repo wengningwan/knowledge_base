@@ -3,6 +3,7 @@ import mimetypes
 import os
 import re
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 from yuxi.knowledge.chunking.ragflow_like.presets import ensure_chunk_defaults_in_additional_params
@@ -75,12 +76,16 @@ class KnowledgeBase(ABC):
         os.makedirs(work_dir, exist_ok=True)
 
     def _file_record_to_meta(self, record: Any) -> dict:
+        file_type = record.file_type
+        source = record.minio_url or record.path
+        if source and not record.is_folder and file_type != "url":
+            file_type = Path(source.split("?", 1)[0]).suffix.lower().removeprefix(".")
         return {
             "file_id": record.file_id,
             "kb_id": record.kb_id,
             "parent_id": record.parent_id,
             "filename": record.filename,
-            "file_type": record.file_type,
+            "file_type": file_type,
             "path": record.path,
             "markdown_file": record.markdown_file,
             "parse_assets_file": getattr(record, "parse_assets_file", None),
@@ -91,7 +96,7 @@ class KnowledgeBase(ABC):
             "chunk_count": int(getattr(record, "chunk_count", 0) or 0),
             "token_count": int(getattr(record, "token_count", 0) or 0),
             "content_type": record.content_type,
-            "processing_params": sanitize_processing_params(record.processing_params),
+            "processing_params": sanitize_processing_params(record.processing_params, file_type=file_type),
             "is_folder": record.is_folder,
             "error": record.error_message,
             "created_by": record.created_by,
@@ -120,7 +125,9 @@ class KnowledgeBase(ABC):
             "chunk_count": int(meta.get("chunk_count") or 0),
             "token_count": int(meta.get("token_count") or 0),
             "content_type": meta.get("content_type"),
-            "processing_params": sanitize_processing_params(meta.get("processing_params")),
+            "processing_params": sanitize_processing_params(
+                meta.get("processing_params"), file_type=meta.get("file_type")
+            ),
             "is_folder": meta.get("is_folder", False),
             "error_message": meta.get("error"),
             "created_by": str(meta.get("created_by")) if meta.get("created_by") else None,
@@ -393,7 +400,9 @@ class KnowledgeBase(ABC):
 
         from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
 
-        update_data = {"processing_params": sanitize_processing_params(current_params)}
+        update_data = {
+            "processing_params": sanitize_processing_params(current_params, file_type=file_meta.get("file_type")),
+        }
         if operator_id:
             update_data["updated_by"] = operator_id
         record = await KnowledgeFileRepository().update_fields(file_id=file_id, kb_id=kb_id, data=update_data)

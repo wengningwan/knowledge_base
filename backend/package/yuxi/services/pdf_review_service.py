@@ -426,15 +426,16 @@ async def _attach_cluster_crops(result, file_path, rows) -> None:
 
 
 async def _suggest_cluster_formulas(result, rows, executor) -> None:
-    """对照裁图识别公式生成草稿；仅写 suggested_content，永不修改 blocks。"""
-    for row in rows:
-        if row.get("kind") != "formula_fragment_cluster":
-            continue
+    """按配置并发识别公式草稿，结果仅写当前问题，正文保留人工确认。"""
+    clusters = [row for row in rows if row.get("kind") == "formula_fragment_cluster"]
+
+    async def suggest(row):
+        """每个消费者只更新自己的公式簇草稿与失败诊断。"""
         asset = result.assets.get(str(row.get("source_image") or "").removeprefix("asset://"))
         if not asset:
             row["suggestion_status"] = "failed"
             result.diagnostics.append({"kind": "cluster_suggestion_failed", "issue_id": row["id"], "error_type": "crop_unavailable"})
-            continue
+            return
         prompt = FORMULA_SUGGEST_PROMPT + "\n" + json.dumps(
             {
                 "issue_id": row["id"],
@@ -452,7 +453,7 @@ async def _suggest_cluster_formulas(result, rows, executor) -> None:
             row["suggestion_status"] = "failed"
             result.diagnostics.append({"kind": "cluster_suggestion_failed", "issue_id": row["id"], "error_type": getattr(exc, "error_type", type(exc).__name__)})
             logger.warning(f"[pdf_review] issue_id={row['id']} cluster_suggestion_failed error={type(exc).__name__}")
-            continue
+            return
         suggestion = _validate_suggestion(response.text)
         if suggestion:
             row["suggested_content"] = suggestion
@@ -461,6 +462,8 @@ async def _suggest_cluster_formulas(result, rows, executor) -> None:
             row["suggestion_status"] = "failed"
             result.diagnostics.append({"kind": "cluster_suggestion_failed", "issue_id": row["id"], "error_type": "suggestion_protocol_rejected"})
             logger.warning(f"[pdf_review] issue_id={row['id']} cluster_suggestion_failed validation=suggestion_protocol_rejected")
+
+    await run_pdf_workers(clusters, suggest, executor.concurrency)
 
 
 def _fail_cluster_suggestions(result, rows, error_type: str) -> None:

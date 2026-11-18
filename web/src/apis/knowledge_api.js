@@ -139,12 +139,12 @@ export const documentApi = {
    */
   listDocuments: async (kbId, params = {}) => {
     const query = buildQuery(params)
-    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents${query ? `?${query}` : ''}`)
+    return apiGet(`/api/knowledge/databases/${kbId}/documents${query ? `?${query}` : ''}`)
   },
 
   searchDocuments: async (kbId, params = {}) => {
     const query = buildQuery(params)
-    return apiAdminGet(
+    return apiGet(
       `/api/knowledge/databases/${kbId}/documents/search${query ? `?${query}` : ''}`
     )
   },
@@ -221,7 +221,7 @@ export const documentApi = {
    * @returns {Promise} - 文档信息
    */
   getDocumentInfo: async (kbId, docId) => {
-    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}`)
+    return apiGet(`/api/knowledge/databases/${kbId}/documents/${docId}`)
   },
 
   /**
@@ -231,23 +231,23 @@ export const documentApi = {
    * @returns {Promise} - 文档基本信息
    */
   getDocumentBasicInfo: async (kbId, docId) => {
-    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/basic`)
+    return apiGet(`/api/knowledge/databases/${kbId}/documents/${docId}/basic`)
   },
 
   /** 按需读取与解析 attempt 绑定的图片和校对结果。 */
   getDocumentParseAssets: async (kbId, docId) => {
-    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/parse-assets`)
+    return apiGet(`/api/knowledge/databases/${kbId}/documents/${docId}/parse-assets`)
   },
 
   /** 读取与当前正文绑定的实验卡片机器草稿。 */
   getExperimentCards: async (kbId, docId) => {
-    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards`)
+    return apiGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards`)
   },
 
   /** 读取指定草稿版本的规范机器 JSON。 */
   getExperimentJson: async (kbId, docId, revisionId) => {
     const query = buildQuery({ revision_id: revisionId })
-    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/json?${query}`)
+    return apiGet(`/api/knowledge/databases/${kbId}/documents/${docId}/experiment-cards/json?${query}`)
   },
 
   /** 保存当前草稿的一条人工审核记录。 */
@@ -267,7 +267,7 @@ export const documentApi = {
 
   /** 获取解析正文、读取错误和分块，正文不由分块拼接替代。 */
   getDocumentContent: async (kbId, docId) => {
-    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/content`)
+    return apiGet(`/api/knowledge/databases/${kbId}/documents/${docId}/content`)
   },
 
   /**
@@ -308,7 +308,7 @@ export const documentApi = {
    * @returns {Promise} - Response对象
    */
   downloadDocument: async (kbId, docId) => {
-    return apiAdminGet(`/api/knowledge/databases/${kbId}/documents/${docId}/download`, {}, 'blob')
+    return apiGet(`/api/knowledge/databases/${kbId}/documents/${docId}/download`, {}, true, 'blob')
   },
 
   /**

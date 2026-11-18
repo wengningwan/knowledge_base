@@ -14,7 +14,7 @@ from starlette.responses import StreamingResponse
 from yuxi.config.options import system_options
 from yuxi.knowledge.base import KBNameConflictError, KBNotFoundError
 from yuxi.knowledge.chunking.ragflow_like.presets import get_chunk_preset_options
-from yuxi.knowledge.experiment_review import ExperimentReviewRequest
+from yuxi.knowledge.experiment_review import ExperimentReviewRequest, ExperimentReviewValidationError
 from yuxi.knowledge.graphs.milvus_graph_service import GraphFileNotFoundError, MilvusGraphService
 from yuxi.knowledge.read_models import KnowledgeBaseDetail
 from yuxi.knowledge.parser.capabilities import SUPPORTED_FILE_EXTENSIONS, is_supported_file_extension
@@ -1110,6 +1110,10 @@ async def review_document_experiment_record(
     await _ensure_database_supports_documents(kb_id, "实验记录审核")
     try:
         return await save_experiment_review(kb_id, doc_id, uid=str(current_user.uid), change=body)
+    except ExperimentReviewValidationError as exc:
+        raise HTTPException(
+            status_code=400, detail={"code": "experiment_review_invalid", "message": str(exc)},
+        ) from exc
     except StructureNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except StructureConflictError as exc:

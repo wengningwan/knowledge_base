@@ -1,5 +1,6 @@
 import hashlib
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 from yuxi.knowledge.chunking.ragflow_like.presets import resolve_chunk_processing_params
@@ -16,12 +17,15 @@ _DROPPED_PROCESSING_PARAM_KEYS = {
 }
 
 
-def sanitize_processing_params(params: dict | None) -> dict | None:
+def sanitize_processing_params(params: dict | None, *, file_type: str | None = None) -> dict | None:
     """移除不应写入单文件元数据的参数。"""
     if not params:
         return None
 
-    return {key: value for key, value in params.items() if key not in _DROPPED_PROCESSING_PARAM_KEYS}
+    excluded = _DROPPED_PROCESSING_PARAM_KEYS
+    if file_type is not None and file_type.lower() != "pdf":
+        excluded = excluded | {"pdf_parse_mode", "document_recognition_model"}
+    return {key: value for key, value in params.items() if key not in excluded}
 
 
 def params_for_uploaded_document(item: str, params: dict) -> dict:
@@ -103,7 +107,7 @@ async def prepare_item_metadata(item: str, content_type: str, kb_id: str, params
         }
 
         if params:
-            safe_params = sanitize_processing_params(params) or {}
+            safe_params = sanitize_processing_params(params, file_type=file_type) or {}
             # 覆盖 content_type 为 file，确保后续解析走文件流程（MinIO 下载 -> HTML 解析）
             # 而不是再次尝试作为 URL 抓取
             safe_params["content_type"] = "file"
@@ -129,7 +133,7 @@ async def prepare_item_metadata(item: str, content_type: str, kb_id: str, params
         if source_path:
             filename_display = source_path
 
-        file_type = filename_display.rsplit(".", 1)[-1].lower() if "." in filename_display else ""
+        file_type = Path(item.split("?", 1)[0]).suffix.lower().removeprefix(".")
         item_path = item
 
         content_hash = None
@@ -163,7 +167,7 @@ async def prepare_item_metadata(item: str, content_type: str, kb_id: str, params
 
     # 保存处理参数到元数据
     if params:
-        metadata["processing_params"] = sanitize_processing_params(params)
+        metadata["processing_params"] = sanitize_processing_params(params, file_type=file_type)
 
     return metadata
 

@@ -553,7 +553,11 @@ async def prepare_agent_runtime_context(
 
         from yuxi.agents.backends.knowledge_base_backend import resolve_visible_knowledge_bases_for_context
 
-        await resolve_visible_knowledge_bases_for_context(context)
+        visible_knowledge_bases = await resolve_visible_knowledge_bases_for_context(context)
+        if visible_knowledge_bases:
+            # 已启用的知识库在本次运行直接提供检索及实验记录工具。
+            context.skills = list(dict.fromkeys([*context.skills, "knowledge-base"]))
+            context.preload_skills = list(dict.fromkeys([*context.preload_skills, "knowledge-base"]))
         skill_scope = await resolve_runtime_skills_for_context(context, db=db, user=user)
         setattr(context, "_skill_runtime_snapshot", skill_scope)
         context.skills = skill_scope["context_skills"]

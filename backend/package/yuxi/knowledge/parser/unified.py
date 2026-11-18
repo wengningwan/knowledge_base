@@ -198,7 +198,11 @@ async def parse_resolved_document_result(source: str, params: dict | None = None
 
         if file_ext == ".pdf":
             validate_pdf_page_tree_loadable(file_path_obj)
-            if str((params or {}).get("ocr_engine") or "").strip() == "disable":
+            if params.get("pdf_parse_mode", "ocr") == "model":
+                from yuxi.services.pdf_recognition_service import recognize_pdf_document
+
+                result = await recognize_pdf_document(str(file_path_obj), params, control)
+            elif str((params or {}).get("ocr_engine") or "").strip() == "disable":
                 result = await parse_pdf_disable_result(str(file_path_obj), params=params, control=control)
             elif params.get("ocr_engine") == "oxr_ocr":
                 from yuxi.knowledge.parser.factory import DocumentProcessorFactory

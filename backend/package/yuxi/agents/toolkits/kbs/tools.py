@@ -6,6 +6,7 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlencode
 
 from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import BaseModel, Field
@@ -25,10 +26,11 @@ from yuxi.utils import logger
 def get_common_kb_tools() -> list:
     """获取通用知识库工具列表
 
-    返回 7 个通用工具：
+    返回通用知识库工具：
     - list_kbs: 列出用户可访问的知识库
     - get_mindmap: 获取指定知识库的思维导图
     - query_kb: 在指定知识库中检索
+    - read_paper_experiments: 读取命中论文的当前实验记录及出处
     - find_kb_document: 在指定文件内定位关键词或正则模式
     - open_kb_document: 按 file_id 分段打开知识库文档
     - search_file: 搜索知识库中的文件
@@ -38,6 +40,7 @@ def get_common_kb_tools() -> list:
         list_kbs,
         get_mindmap,
         query_kb,
+        read_paper_experiments,
         find_kb_document,
         open_kb_document,
         search_file,
@@ -165,10 +168,54 @@ async def query_kb(kb_id: str, query_text: str, file_name: str | None = None, ru
 
     try:
         kwargs = {"file_name": file_name} if file_name else {}
-        return await _get_knowledge_base().retrieve(target_kb_id, query_text, **kwargs)
+        knowledge_base = _get_knowledge_base()
+        result = await knowledge_base.retrieve(target_kb_id, query_text, **kwargs)
+        supports_documents = any(
+            kb["kb_id"] == target_kb_id and knowledge_base.database_type_supports_documents(kb.get("kb_type"))
+            for kb in visible_kbs
+        )
+        if supports_documents:
+            for item in result.get("results", []):
+                if item.get("file_id"):
+                    item["source_url"] = "/knowledge-source?" + urlencode({
+                        "kb_id": target_kb_id, "file_id": item["file_id"],
+                    })
+        return result
     except Exception as e:
         logger.error(f"检索失败: {e}")
         return f"检索失败: {str(e)}"
+
+
+class ReadPaperExperimentsInput(BaseModel):
+    """读取一篇论文当前实验记录的输入。"""
+
+    kb_id: str = Field(description="知识库 ID")
+    file_id: str = Field(description="论文文件 ID，从知识库检索结果中获取")
+    sample: str = Field(default="", max_length=1000, description="可选，精确匹配样品名；留空读取全部样品")
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+@tool(category="knowledge", tags=["知识库"], display_name="读取论文实验记录", args_schema=ReadPaperExperimentsInput)
+async def read_paper_experiments(
+    kb_id: str,
+    file_id: str,
+    sample: str = "",
+    offset: int = 0,
+    limit: int = 20,
+    runtime: ToolRuntime = None,
+) -> dict[str, Any] | str:
+    """读取已生成、合并用户修改后的实验记录及原文出处，每轮问答重新读取。"""
+    visible_kbs = await _resolve_visible_knowledge_bases_for_query(runtime)
+    target_kb_id, error = _find_query_target(kb_id=kb_id, visible_kbs=visible_kbs)
+    if error:
+        return error
+    from yuxi.services.knowledge_paper_service import read_paper_experiments as read_records
+
+    return await read_records(
+        kb_id=target_kb_id, file_id=file_id, uid=str(runtime.context.uid),
+        sample=sample, offset=offset, limit=limit,
+    )
 
 
 OpenKBDocumentInput = OpenInputSchema
@@ -202,12 +249,16 @@ async def open_kb_document(
 
     try:
         start_offset = int(line) - 1 if line is not None else int(offset or 0)
-        return await _get_knowledge_base().open_document(
+        result = await _get_knowledge_base().open_document(
             target_kb_id,
             normalized_file_id,
             offset=start_offset,
             limit=window_size,
         )
+        result["source_url"] = "/knowledge-source?" + urlencode({
+            "kb_id": target_kb_id, "file_id": normalized_file_id,
+        })
+        return result
     except Exception as e:
         logger.error(f"打开知识库文档失败: {e}")
         return f"打开知识库文档失败: {str(e)}"
@@ -246,7 +297,7 @@ async def find_kb_document(
         return target_error
 
     try:
-        return await _get_knowledge_base().find_in_document(
+        result = await _get_knowledge_base().find_in_document(
             target_kb_id,
             normalized_file_id,
             patterns,
@@ -255,6 +306,10 @@ async def find_kb_document(
             max_windows=max_windows,
             window_size=window_size,
         )
+        result["source_url"] = "/knowledge-source?" + urlencode({
+            "kb_id": target_kb_id, "file_id": normalized_file_id,
+        })
+        return result
     except Exception as e:
         logger.error(f"知识库文档内检索失败: {e}")
         return f"知识库文档内检索失败: {str(e)}"
@@ -413,16 +468,13 @@ def _get_knowledge_base():
 
 
 async def _resolve_visible_knowledge_bases_for_query(runtime: ToolRuntime | None) -> list[dict[str, Any]]:
+    """每次工具执行重新读取当前权限，Agent 已启用范围保持不变。"""
     if runtime is None:
         return []
 
     context = getattr(runtime, "context", None)
     if context is None:
         return []
-
-    visible_kbs = getattr(context, "_visible_knowledge_bases", None)
-    if isinstance(visible_kbs, list):
-        return visible_kbs
 
     try:
         from yuxi.agents.backends.knowledge_base_backend import resolve_visible_knowledge_bases_for_context

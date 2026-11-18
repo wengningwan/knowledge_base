@@ -31,6 +31,8 @@ class PdfModelResponse:
     request_id: str
     queue_seconds: float
     call_seconds: float
+    finish_reason: str | None = None
+    stop_reason: str | None = None
 
 
 def content_digest(value) -> str:
@@ -119,7 +121,17 @@ class PdfModelExecutor:
         self._configuration()
         return self
 
-    async def request(self, prompt, images=(), *, mime="image/png", batch_id="-", attempt=1, system_prompt=None):
+    async def request(
+        self,
+        prompt,
+        images=(),
+        *,
+        mime="image/png",
+        batch_id="-",
+        attempt=1,
+        system_prompt=None,
+        request_id=None,
+    ):
         """只记安全规模和真实用量，取消时停止子请求并释放当前owner。"""
         await self._check()
         client = await self._connection()
@@ -132,7 +144,7 @@ class PdfModelExecutor:
         queued = time.monotonic()
         queue_recorded = False
         operation = monitor = None
-        request_id = uuid.uuid4().hex
+        request_id = request_id or uuid.uuid4().hex
         prefix = f"[pdf_model] task_id={getattr(self.control, 'task_id', None) or '-'} file_id={getattr(self.control, 'file_id', None) or '-'} stage={self.stage} route={route} batch_id={batch_id} request_id={request_id} attempt={attempt}"
         try:
             while not acquired:
@@ -179,7 +191,15 @@ class PdfModelExecutor:
                 logger.info(f"{prefix} response_received output_chars={len(content) if isinstance(content, str) else 0} usage={json.dumps(usage, sort_keys=True)} call_s={call_s:.2f}")
                 if not isinstance(content, str):
                     raise InvalidPdfModelResponse("invalid_response_content")
-                return PdfModelResponse(content, usage, request_id, queue_s, call_s)
+                return PdfModelResponse(
+                    content,
+                    usage,
+                    request_id,
+                    queue_s,
+                    call_s,
+                    finish_reason=_stop_reason(getattr(response, "finish_reason", None)),
+                    stop_reason=_stop_reason(getattr(response, "stop_reason", None)),
+                )
             except BaseException as exc:
                 self.failed_requests += 1
                 route_stats["failed_requests"] += 1
@@ -345,3 +365,11 @@ async def run_pdf_workers(items, operation, concurrency):
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _stop_reason(value) -> str | None:
+    """仅保留实际停止原因，不推测缺失值或复制整份响应元数据。"""
+    if isinstance(value, str):
+        return value
+    name = getattr(value, "name", None)
+    return name if isinstance(name, str) else None

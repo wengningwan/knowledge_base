@@ -154,33 +154,33 @@ export class MessageProcessor {
         .map((db) => db?.name)
         .filter((name) => typeof name === 'string' && name.trim())
     )
-    if (databaseNames.size === 0) return []
-
     const normalizedChunks = []
     const dedupSet = new Set()
 
-    const appendChunk = (chunk, kbName) => {
+    const appendChunk = (chunk, kbName, kbId = '', fileId = '') => {
       if (!chunk || typeof chunk !== 'object') return
       const content = typeof chunk.content === 'string' ? chunk.content.trim() : ''
       if (!content) return
 
       const metadata = chunk.metadata && typeof chunk.metadata === 'object' ? chunk.metadata : {}
-      const dedupKey =
-        metadata.chunk_id && typeof metadata.chunk_id === 'string'
-          ? `${kbName}::${metadata.chunk_id}`
-          : `${kbName}::${content}`
+      const resolvedKbId = chunk.kb_id || metadata.kb_id || kbId
+      const resolvedFileId = chunk.file_id || metadata.file_id || fileId
+      const dedupKey = `${resolvedKbId || kbName}::${resolvedFileId}::${chunk.id || metadata.chunk_id || content}`
       if (dedupSet.has(dedupKey)) return
       dedupSet.add(dedupKey)
 
       const score = typeof chunk.score === 'number' ? chunk.score : null
       normalizedChunks.push({
         kb_name: kbName,
+        kb_id: resolvedKbId,
+        file_id: resolvedFileId,
         content,
         score,
         metadata: {
-          source: metadata.source || '',
-          file_id: metadata.file_id || '',
-          chunk_id: metadata.chunk_id || '',
+          ...metadata,
+          source: metadata.source || resolvedFileId,
+          file_id: resolvedFileId,
+          chunk_id: metadata.chunk_id || chunk.id || '',
           chunk_index: metadata.chunk_index
         }
       })
@@ -191,11 +191,30 @@ export class MessageProcessor {
 
       for (const toolCall of msg.tool_calls) {
         const kbName = toolCall?.name || toolCall?.function?.name
-        if (!databaseNames.has(kbName)) continue
+        const commonTool = [
+          'query_kb', 'read_paper_experiments', 'open_kb_document', 'find_kb_document'
+        ].includes(kbName)
+        if (!commonTool && !databaseNames.has(kbName)) continue
 
         const content = toolCall?.tool_call_result?.content
         const parsed = parseToolResultContent(content)
         if (!parsed) continue
+
+        if (commonTool) {
+          const name = databases.find(db => db.kb_id === parsed.kb_id)?.name || parsed.kb_id
+          if (Array.isArray(parsed.results)) {
+            for (const chunk of parsed.results) appendChunk(chunk, name, parsed.kb_id, parsed.file_id)
+          } else if (Array.isArray(parsed.windows)) {
+            for (const window of parsed.windows) {
+              appendChunk(
+                { content: window.content, metadata: window }, name, parsed.kb_id, parsed.file_id
+              )
+            }
+          } else if (parsed.content) {
+            appendChunk(parsed, name, parsed.kb_id, parsed.file_id)
+          }
+          continue
+        }
 
         // Milvus / Dify: 直接是 chunks 数组
         if (Array.isArray(parsed)) {

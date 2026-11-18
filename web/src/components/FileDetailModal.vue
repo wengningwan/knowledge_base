@@ -78,6 +78,27 @@
         :description="file.error || '新一轮解析尚未成功，正文、图片解析和校对记录属于上一版。'"
         class="previous-parse-notice"
       />
+      <a-alert
+        v-if="['markdown', 'review'].includes(viewMode) && modelRecognition"
+        :type="modelRecognitionNeedsReview ? 'warning' : 'info'"
+        show-icon
+        message="模型识别：逐页识别已完成"
+        class="model-recognition-summary"
+      >
+        <template #description>
+          <p>识别模型：{{ modelRecognition.model }} · 共 {{ modelRecognition.total_pages }} 页</p>
+          <p v-if="modelRecognitionNeedsReview">局部内容待核对，请对照源 PDF。</p>
+          <p v-if="modelRecognitionNeedsReview && assetsState.metadata.auto_index_enabled && !assetsState.reviews.length">暂不进行自动入库操作。</p>
+          <details v-if="recognitionUnclearDiagnostics.length">
+            <summary>查看待核对位置（{{ recognitionUnclearDiagnostics.length }} 处）</summary>
+            <ul>
+              <li v-for="(diagnostic, index) in recognitionUnclearDiagnostics" :key="index">
+                第 {{ diagnostic.page }} 页：{{ diagnostic.reason }}
+              </li>
+            </ul>
+          </details>
+        </template>
+      </a-alert>
       <div v-if="viewMode === 'source'" class="content-panel source-panel">
         <AgentFilePreview
           :file="sourcePreviewFile"
@@ -143,7 +164,7 @@
       />
       <KeepAlive :max="1">
         <DocumentReviewPanel
-          v-if="viewMode === 'review'"
+          v-if="viewMode === 'review' && !(modelRecognitionNeedsReview && !assetsState.reviews.length)"
           :key="`review-${file.file_id}-${assetsState.attempt_id || ''}`"
           :state="assetsState"
           :kb-id="kbId"
@@ -231,6 +252,23 @@ const parseLoader = createDocumentParseLoader({
     assetsState.value = assets
   }
 })
+// 识别摘要只属于已发布的同一版正文，不能从本次重解析参数推测。
+const modelRecognition = computed(() => {
+  const content = contentState.value
+  const assets = assetsState.value
+  if (!content.loaded || content.loading || content.error || !assets.loaded || assets.loading || assets.error) return null
+  if (!content.attempt_id || content.attempt_id !== assets.attempt_id) return null
+  const recognition = assets.metadata.model_recognition
+  return recognition?.status === 'completed' ? recognition : null
+})
+const recognitionUnclearDiagnostics = computed(() => modelRecognition.value
+  ? assetsState.value.diagnostics.filter((diagnostic) => diagnostic.kind === 'model_recognition_unclear')
+  : [])
+const modelRecognitionNeedsReview = computed(() => Boolean(modelRecognition.value) && (
+  assetsState.value.metadata.review_status === 'needs_review' ||
+  recognitionUnclearDiagnostics.value.length > 0 ||
+  modelRecognition.value.pages?.some((page) => page.warnings?.includes('unclear_regions'))
+))
 
 /** 保存完成后从后端重读正文和回执，旧文档响应不更新当前窗口。 */
 const saveReview = async (changes) => {
@@ -473,14 +511,13 @@ watch(
   [visible, file, viewMode],
   async ([open, currentFile, currentViewMode]) => {
     if (!open || !currentFile) return
-    if (
-      (currentViewMode === 'markdown' && canPreviewParsed(currentFile)) ||
-      (currentViewMode === 'chunks' && canPreviewChunks(currentFile))
-    ) {
+    if (currentViewMode === 'chunks' && canPreviewChunks(currentFile)) {
       await parseLoader.content()
     }
-    if (['figures', 'review'].includes(currentViewMode) && canPreviewParseAssets(currentFile)) {
+    if (['markdown', 'figures', 'review'].includes(currentViewMode) && canPreviewParseAssets(currentFile)) {
       await parseLoader.assets()
+    } else if (currentViewMode === 'markdown' && canPreviewParsed(currentFile)) {
+      await parseLoader.content()
     }
   },
   { immediate: true }
@@ -513,7 +550,8 @@ const chunkCount = computed(
 const viewInfoText = computed(() => {
   if (viewMode.value === 'figures') return assetsState.value.loading ? '' : `${assetsState.value.figures.length} 张图片`
   if (viewMode.value === 'review') {
-    if (assetsState.value.loading) return ''
+    if (!assetsState.value.loaded || assetsState.value.loading || assetsState.value.error) return ''
+    if (modelRecognitionNeedsReview.value && !assetsState.value.reviews.length) return '局部内容待核对'
     // 统计改簇口径：重复问题归并后待确认按类计数，处数为簇内未确认总数。
     const clusters = clusterDocumentReviewGroups(groupDocumentReviews(assetsState.value.reviews))
     return `待确认 ${clusters.length} 类 · 共 ${clusters.reduce((total, cluster) => total + cluster.count, 0)} 处`
@@ -732,6 +770,11 @@ onBeforeUnmount(resetLocalState)
 
 <style scoped>
 .previous-parse-notice { flex-shrink: 0; margin: 0 0 12px; }
+.model-recognition-summary { flex-shrink: 0; margin-bottom: 12px; overflow-wrap: anywhere; }
+.model-recognition-summary p { margin: 0; }
+.model-recognition-summary details { margin-top: 8px; }
+.model-recognition-summary summary { cursor: pointer; }
+.model-recognition-summary ul { margin: 8px 0 0; padding-left: 20px; }
 
 .file-detail-content {
   height: 100%;

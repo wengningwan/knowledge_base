@@ -20,7 +20,22 @@
           show-icon
           :message="`将提交 ${pendingParseTotalText} 个待解析文件，任务会在后台按批处理，可在任务中心查看进度。`"
         />
-        <div class="setting-item">
+        <div v-if="canChoosePdfRecognition" class="setting-item">
+          <div class="setting-label">识别方式</div>
+          <div class="setting-content">
+            <a-radio-group v-model:value="parseParams.pdf_parse_mode" :disabled="parseConfigModalLoading">
+              <a-radio-button value="ocr">OCR识别</a-radio-button>
+              <a-radio-button value="model">模型识别</a-radio-button>
+            </a-radio-group>
+          </div>
+        </div>
+        <a-alert
+          v-if="isParseModelRecognition"
+          type="info"
+          show-icon
+          message="模型识别仅应用于PDF，其他文件按原方式解析"
+        />
+        <div class="setting-item" v-if="!isParseModelRecognition">
           <div class="setting-label">OCR 引擎（仅应用于 PDF/图片文件）</div>
           <div class="setting-content">
             <OCRSelector
@@ -31,6 +46,19 @@
             />
           </div>
           <p class="param-description">选择用于识别 PDF 和图片中文字的 OCR 引擎</p>
+        </div>
+        <div class="setting-item" v-if="isParseModelRecognition">
+          <div class="setting-label">文档识别模型（必选）</div>
+          <div class="setting-content">
+            <ModelSelectorComponent
+              :model_spec="parseParams.document_recognition_model"
+              :disabled="parseConfigModalLoading"
+              placeholder="选择支持图像输入的识别模型"
+              display-name="short"
+              clearable
+              @select-model="(value) => (parseParams.document_recognition_model = value)"
+            />
+          </div>
         </div>
         <div class="setting-item" v-if="showParseFigureModel">
           <div class="setting-label">插图解析模型（可选，仅用于 PDF 插图）</div>
@@ -44,7 +72,7 @@
             />
           </div>
           <p class="param-description">
-            noOCR / OXR PDF 的插图单独解析；未选择模型时保留原图，不生成图片说明
+            {{ isParseModelRecognition ? '可与文档识别模型相同；' : 'noOCR / OXR PDF 的插图单独解析；' }}未选择模型时保留原图，不生成图片说明
           </p>
         </div>
         <div class="setting-item" v-if="isParseOxrEnabled">
@@ -908,11 +936,13 @@ const currentParseFileIds = ref([])
 const isBatchParseOperation = ref(false)
 const isPendingParseOperation = ref(false)
 const pendingParseTotal = ref(0)
-const defaultOcrEngine = ref(DEFAULT_OCR_ENGINE)
+const defaultOcrEngine = ref('')
 
 const isReparseOperation = ref(false)
-const isParseOxrEnabled = computed(() => parseParams.value.ocr_engine === 'oxr_ocr')
-const showParseFigureModel = computed(() => ['disable', 'oxr_ocr'].includes(parseParams.value.ocr_engine))
+const canChoosePdfRecognition = ref(true)
+const isParseModelRecognition = computed(() => parseParams.value.pdf_parse_mode === 'model')
+const isParseOxrEnabled = computed(() => !isParseModelRecognition.value && parseParams.value.ocr_engine === 'oxr_ocr')
+const showParseFigureModel = computed(() => isParseModelRecognition.value || ['disable', 'oxr_ocr'].includes(parseParams.value.ocr_engine))
 const parseParams = ref(resolveDocumentParseParams({}, configStore.config, defaultOcrEngine.value))
 
 const pendingParseTotalText = computed(() =>
@@ -926,8 +956,10 @@ const handleOcrOptionsLoaded = (data) => {
   }
 }
 
-const resetParseParams = (processingParams = null) => {
-  parseParams.value = resolveDocumentParseParams(processingParams || {}, configStore.config, defaultOcrEngine.value)
+const resetParseParams = (processingParams = null, allowModelRecognition = true) => {
+  canChoosePdfRecognition.value = allowModelRecognition
+  const saved = allowModelRecognition ? processingParams || {} : { ...processingParams, pdf_parse_mode: 'ocr' }
+  parseParams.value = resolveDocumentParseParams(saved, configStore.config, defaultOcrEngine.value)
 }
 
 const createDefaultIndexParams = () => ({
@@ -1289,8 +1321,10 @@ const handleParseFile = async (record) => {
   parseConfigModalTitle.value =
     record.status === 'error_parsing' ? '重试解析参数配置' : '解析参数配置'
 
-  const processingParams = await loadRecordProcessingParams(record)
-  resetParseParams(processingParams)
+  const { file_type: fileType, filename, processing_params: processingParams } = await loadRecordMetadata(record)
+  const isPdf =
+    fileType == null ? filename?.toLowerCase().endsWith('.pdf') === true : fileType.toLowerCase() === 'pdf'
+  resetParseParams(processingParams, isPdf)
 
   parseConfigModalVisible.value = true
 }
@@ -1356,13 +1390,9 @@ const resetIndexParams = (processingParams = null) => {
   }
 }
 
-const loadRecordProcessingParams = async (record) => {
-  if (record?.processing_params) {
-    return record.processing_params
-  }
-
-  const detail = await documentApi.getDocumentInfo(store.kbId, record.file_id)
-  return detail?.processing_params || null
+const loadRecordMetadata = async (record) => {
+  const detail = await documentApi.getDocumentBasicInfo(store.kbId, record.file_id)
+  return detail?.meta || record
 }
 
 const handleIndexFile = async (record) => {
@@ -1373,7 +1403,7 @@ const handleIndexFile = async (record) => {
   pendingIndexTotal.value = 0
   indexConfigModalTitle.value = '入库参数配置'
 
-  const processingParams = await loadRecordProcessingParams(record)
+  const { processing_params: processingParams } = await loadRecordMetadata(record)
   resetIndexParams(
     record.status === 'parsed'
       ? { ...processingParams, chunk_preset_id: DEFAULT_CHUNK_PRESET_ID }
@@ -1391,7 +1421,7 @@ const handleReindexFile = async (record) => {
   pendingIndexTotal.value = 0
   indexConfigModalTitle.value = '重新入库参数配置'
 
-  const processingParams = await loadRecordProcessingParams(record)
+  const { processing_params: processingParams } = await loadRecordMetadata(record)
   resetIndexParams(processingParams)
 
   indexConfigModalVisible.value = true

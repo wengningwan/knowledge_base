@@ -11,6 +11,10 @@ Text = Annotated[str, Field(max_length=1000)]
 EvidenceId = Annotated[str, Field(pattern=r"^e[1-9][0-9]*$", max_length=32)]
 
 
+class ExperimentReviewValidationError(ValueError):
+    """可直接展示固定文案的实验审核输入错误。"""
+
+
 class ExperimentReviewFields(BaseModel):
     """一个可保存为待核对或确认的实验记录。"""
 
@@ -85,25 +89,25 @@ def validate_experiment_review(
     """校验出处身份、完整记录字段及补录确认的原文依据。"""
     quotes = {item["evidence_id"]: item["quote"] for item in evidence}
     if any(ref not in quotes for ref in fields.evidence_ids):
-        raise ValueError("所选出处不属于当前正文草稿")
+        raise ExperimentReviewValidationError("所选出处不属于当前正文草稿")
     if fields.kind == "preparation" and fields.result:
-        raise ValueError("制备记录使用操作和条件字段")
+        raise ExperimentReviewValidationError("制备记录使用操作和条件字段")
     if not fields.metric and not fields.result:
-        raise ValueError("请填写实验操作、指标或结果")
+        raise ExperimentReviewValidationError("请填写实验操作、指标或结果")
     if not (confirm or edit):
         return
     core = fields.result if fields.kind == "measurement" else fields.metric
     if not (fields.sample and fields.metric and core):
-        raise ValueError("保存前须填写样品及核心实验字段")
+        raise ExperimentReviewValidationError("保存前须填写样品及核心实验字段")
     if not confirm:
         return
     if not fields.evidence_ids:
-        raise ValueError("确认前须选择出处")
+        raise ExperimentReviewValidationError("确认前须选择出处")
     selected = [quotes[ref] for ref in fields.evidence_ids]
     if not _locates_literal(fields.sample, selected):
-        raise ValueError("所选出处中找不到填写的样品名")
+        raise ExperimentReviewValidationError("所选出处中找不到填写的样品名")
     if not _locates_literal(core, selected, result=fields.kind == "measurement"):
-        raise ValueError("所选出处中找不到填写的操作或结果，请保留原文字面写法")
+        raise ExperimentReviewValidationError("所选出处中找不到填写的操作或结果，请保留原文字面写法")
 
 
 def _locates_literal(value: str, quotes: list[str], *, result: bool = False) -> bool:

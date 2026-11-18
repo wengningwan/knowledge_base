@@ -10,6 +10,7 @@ from yuxi.knowledge.chunking.source import source_sha256
 from yuxi.knowledge.experiment_corrections import experiment_correction_tasks
 from yuxi.knowledge.experiment_review import (
     ExperimentReviewRequest,
+    ExperimentReviewValidationError,
     experiment_review_records,
     validate_experiment_review,
 )
@@ -185,59 +186,59 @@ async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentRevie
                 task = next((item for item in experiment_correction_tasks(coverage, evidence, records)
                              if item["task_id"] == change.task_id), None)
                 if task is None:
-                    raise ValueError("该校对任务不属于当前草稿")
+                    raise ExperimentReviewValidationError("该校对任务不属于当前草稿")
                 if change.action not in {"save", "resolve"}:
-                    raise ValueError("请选择保存校对结果或处理说明")
+                    raise ExperimentReviewValidationError("请选择保存校对结果或处理说明")
                 if change.record_id is not None and change.record_id != task.get("record_id"):
-                    raise ValueError("校对任务与目标记录不一致")
+                    raise ExperimentReviewValidationError("校对任务与目标记录不一致")
             record_id = task.get("record_id") if task else change.record_id
             fragment_id = task.get("fragment_id") if task else change.fragment_id
             if task is None and fragment_id is not None and record_id is not None:
-                raise ValueError("该原文片段不能用于当前记录")
+                raise ExperimentReviewValidationError("该原文片段不能用于当前记录")
             if record_id is not None and record_id not in records:
-                raise ValueError("该实验记录不属于当前草稿")
+                raise ExperimentReviewValidationError("该实验记录不属于当前草稿")
             if fragment_id is not None and record_id is None:
                 if not any(
                     fact["fact_id"] == fragment_id for fact in coverage.get("unassigned_facts", [])
                 ):
-                    raise ValueError("该原文片段不能用于当前记录")
+                    raise ExperimentReviewValidationError("该原文片段不能用于当前记录")
                 if any(record.get("fragment_id") == fragment_id for record in records.values()):
                     raise StructureConflictError("该原文片段已整理，请重新打开页面")
             if task is None and (change.resolution is not None or change.action == "resolve"):
-                raise ValueError("请指定当前校对任务")
+                raise ExperimentReviewValidationError("请指定当前校对任务")
             record = None
             resolution_evidence = None
             if change.action == "resolve":
                 if change.resolution is None:
-                    raise ValueError("请选择处理说明")
+                    raise ExperimentReviewValidationError("请选择处理说明")
                 if change.resolution == "unreported" and task["kind"] != "missing":
-                    raise ValueError("仅缺失资料可以标记为原文未提供")
+                    raise ExperimentReviewValidationError("仅缺失资料可以标记为原文未提供")
                 if change.resolution == "checked":
                     resolution_evidence = (
                         change.fields.evidence_ids if change.fields else task["fields"]["evidence_ids"]
                     )
                     known_evidence = {item["evidence_id"] for item in evidence}
                     if task["kind"] != "source" or not resolution_evidence:
-                        raise ValueError("请先定位疑点的原文出处")
+                        raise ExperimentReviewValidationError("请先定位疑点的原文出处")
                     if any(ref not in known_evidence for ref in resolution_evidence):
-                        raise ValueError("所选出处不属于当前正文草稿")
+                        raise ExperimentReviewValidationError("所选出处不属于当前正文草稿")
                 if record_id is not None and change.resolution != "checked":
                     record = {**records[record_id], "status": "excluded"}
             elif change.action == "exclude":
                 if record_id is None:
-                    raise ValueError("请指定要排除的记录")
+                    raise ExperimentReviewValidationError("请指定要排除的记录")
                 record = {**records[record_id], "status": "excluded"}
             else:
                 if change.fields is None:
-                    raise ValueError("请填写实验字段")
+                    raise ExperimentReviewValidationError("请填写实验字段")
                 editing = change.action == "save" and (record_id is not None or task is not None)
                 validate_experiment_review(
                     change.fields, evidence, confirm=change.action == "confirm", edit=editing,
                 )
                 if task is not None and not change.fields.evidence_ids:
-                    raise ValueError("请为校对结果选择原文出处")
+                    raise ExperimentReviewValidationError("请为校对结果选择原文出处")
                 if task is not None and task["kind"] == "source" and record_id is None:
-                    raise ValueError("原文疑点请记录核对结论；已有数据可在样品结果中直接修改")
+                    raise ExperimentReviewValidationError("原文疑点请记录核对结论；已有数据可在样品结果中直接修改")
                 record_id = record_id or f"manual-{uuid.uuid4().hex}"
                 record = {
                     **change.fields.model_dump(), "record_id": record_id,

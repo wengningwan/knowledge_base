@@ -198,17 +198,77 @@ class ModelRequestError(RuntimeError):
     """PDF只公开安全错误类别，不把供应商正文或凭据放入异常链。"""
 
     def __init__(self, error):
+        """仅保留可决定重试策略的安全错误类别。"""
         self.error_type = type(error).__name__
         self.http_status = getattr(error, "status_code", None)
+        code = getattr(error, "code", None)
+        if self.http_status is None and isinstance(code, int):
+            self.http_status = code
+        body = getattr(error, "body", None)
+        if isinstance(body, dict):
+            details = body.get("error", body)
+            if isinstance(details, dict):
+                code = details.get("code", code)
+        code = code if isinstance(code, str) else None
+        message = str(error).lower()
+        if self.http_status in {401, 403} or code in {"invalid_api_key", "authentication_error", "permission_denied"}:
+            self.reason = "credentials_rejected"
+        elif self.http_status == 429 or self.error_type == "RateLimitError":
+            self.reason = "rate_limited"
+        elif code in {
+            "unsupported_image",
+            "invalid_image",
+            "invalid_image_format",
+            "image_too_large",
+            "vision_not_supported",
+        } or (
+            "image" in message
+            and any(part in message for part in ("not support", "unsupported", "text-only", "only text"))
+        ):
+            self.reason = "image_not_supported"
+        elif self.error_type in {
+            "APITimeoutError",
+            "TimeoutError",
+            "ReadTimeout",
+            "ConnectTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+        }:
+            self.reason = "provider_timeout"
+        elif self.error_type in {
+            "APIConnectionError",
+            "ConnectError",
+            "ReadError",
+            "WriteError",
+            "RemoteProtocolError",
+        }:
+            self.reason = "connection_failed"
+        elif isinstance(self.http_status, int) and (self.http_status >= 500 or self.http_status == 408):
+            self.reason = "provider_unavailable"
+        else:
+            self.reason = "provider_error"
         super().__init__(f"PDF model request failed: {self.error_type}")
 
 
 class GeneralResponse:
-    def __init__(self, content, *, usage_metadata=None, token_usage=None):
+    """通用文本响应，保留实际用量和可选停止原因。"""
+
+    def __init__(
+        self,
+        content,
+        *,
+        usage_metadata=None,
+        token_usage=None,
+        finish_reason=None,
+        stop_reason=None,
+    ):
+        """缺失的服务端计量和停止原因保持未知。"""
         self.content = content
         self.is_full = False
         self.usage_metadata = usage_metadata
         self.token_usage = token_usage
+        self.finish_reason = finish_reason
+        self.stop_reason = stop_reason
 
 
 class LangChainChatAdapter:
@@ -229,6 +289,8 @@ class LangChainChatAdapter:
             return GeneralResponse(
                 response.text, usage_metadata=getattr(response, "usage_metadata", None),
                 token_usage=metadata.get("token_usage") if isinstance(metadata, dict) else None,
+                finish_reason=metadata.get("finish_reason") if isinstance(metadata, dict) else None,
+                stop_reason=metadata.get("stop_reason") if isinstance(metadata, dict) else None,
             )
         except Exception as e:
             if self.safe_error_logging:

@@ -9,6 +9,23 @@ from pathlib import Path
 from statistics import median
 
 
+def count_pdf_pages(file_path: str) -> int:
+    """在共同 PDFium 锁内读取真实页数，不提取文字或预渲染页面。"""
+    import pypdfium2 as pdfium
+
+    from yuxi.knowledge.utils.pdf_utils import PDFIUM_LOCK
+
+    with PDFIUM_LOCK:
+        document = pdfium.PdfDocument(str(file_path))
+        try:
+            count = len(document)
+            if count < 1:
+                raise ValueError("PDF 没有可读取的页面")
+            return count
+        finally:
+            document.close()
+
+
 def read_native_blocks(file_path: str, *, page_info: dict | None = None) -> list[dict]:
     """在共同 PDFium 锁内按行聚合原生字符，坐标匹配可见页面。"""
     import pypdfium2 as pdfium

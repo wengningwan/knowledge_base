@@ -40,7 +40,7 @@
         class="settings-panel"
         v-if="folderTreeData.length > 0 || uploadMode !== 'url' || autoIndex"
       >
-        <!-- 第一行：存储位置 + OCR 引擎 -->
+        <!-- 第一行：存储位置 + 识别方式 -->
         <div
           class="setting-row"
           v-if="folderTreeData.length > 0 || uploadMode !== 'url'"
@@ -65,6 +65,18 @@
             <p class="param-description">选择文件保存的目标文件夹</p>
           </div>
           <div class="col-item" v-if="uploadMode !== 'url'">
+            <div class="setting-label">识别方式</div>
+            <div class="setting-content">
+              <a-radio-group v-model:value="processingParams.pdf_parse_mode" :disabled="chunkLoading">
+                <a-radio-button value="ocr">OCR识别</a-radio-button>
+                <a-radio-button value="model">模型识别</a-radio-button>
+              </a-radio-group>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-row" v-if="uploadMode !== 'url' && !isModelRecognition">
+          <div class="col-item">
             <div class="setting-label">OCR 引擎（仅应用于 PDF/图片文件）</div>
             <div class="setting-content">
               <OCRSelector
@@ -78,7 +90,22 @@
           </div>
         </div>
 
-        <!-- PDF 文字直接提取，模型只用于单独提取的插图 -->
+        <div class="setting-row" v-if="uploadMode !== 'url' && isModelRecognition">
+          <div class="col-item">
+            <div class="setting-label">文档识别模型（必选）</div>
+            <div class="setting-content">
+              <ModelSelectorComponent
+                :model_spec="processingParams.document_recognition_model"
+                :disabled="chunkLoading"
+                placeholder="选择支持图像输入的识别模型"
+                display-name="short"
+                clearable
+                @select-model="(value) => selectParseModel('document_recognition_model', value)"
+              />
+            </div>
+          </div>
+        </div>
+
         <div class="setting-row" v-if="uploadMode !== 'url' && showFigureModel">
           <div class="col-item">
             <div class="setting-label">插图解析模型（可选，仅用于 PDF 插图）</div>
@@ -92,7 +119,7 @@
               />
             </div>
             <p class="param-description">
-              noOCR / OXR PDF 的插图单独解析；未选择模型时保留原图，不生成图片说明
+              {{ isModelRecognition ? '可与文档识别模型相同；' : 'noOCR / OXR PDF 的插图单独解析；' }}未选择模型时保留原图，不生成图片说明
             </p>
           </div>
         </div>
@@ -135,11 +162,15 @@
       </div>
 
       <!-- PDF/图片OCR提醒 (Alert样式优化) -->
+      <div v-if="uploadMode !== 'url' && isModelRecognition" class="inline-alert">
+        <Info :size="16" />
+        <span>模型识别仅应用于PDF，其他文件按原方式解析</span>
+      </div>
       <div v-if="hasImageFiles && !isOcrEnabled" class="inline-alert warning">
         <Info :size="16" />
-        <span>检测到图片文件，必须启用 OCR 才能提取文本内容</span>
+        <span>{{ imageOcrRequiredMessage }}</span>
       </div>
-      <div v-else-if="hasPdfFiles && !isOcrEnabled" class="inline-alert warning">
+      <div v-else-if="hasPdfFiles && !isModelRecognition && !isOcrEnabled" class="inline-alert warning">
         <Info :size="16" />
         <span>未启用 OCR：PDF 直接提取文字层，可选择模型单独解析插图；扫描件全文识别请启用 OCR</span>
       </div>
@@ -783,8 +814,9 @@ const applyDefaultImageAnalysisModel = () => {
     }
   }
 }
-const isOxrEnabled = computed(() => processingParams.value.ocr_engine === 'oxr_ocr')
-const showFigureModel = computed(() => ['disable', 'oxr_ocr'].includes(processingParams.value.ocr_engine))
+const isModelRecognition = computed(() => processingParams.value.pdf_parse_mode === 'model')
+const isOxrEnabled = computed(() => !isModelRecognition.value && processingParams.value.ocr_engine === 'oxr_ocr')
+const showFigureModel = computed(() => isModelRecognition.value || ['disable', 'oxr_ocr'].includes(processingParams.value.ocr_engine))
 
 // 自动入库相关
 const autoIndex = ref(false)
@@ -801,55 +833,27 @@ const buildAutoIndexParams = () => {
 
 const isFolderUpload = ref(false)
 
-// 计算属性：是否启用了OCR
+// 模型模式的非 PDF 文件由后端按系统默认 OCR 处理。
 const isOcrEnabled = computed(() => {
-  return processingParams.value.ocr_engine !== 'disable'
+  const engine = isModelRecognition.value
+    ? configStore.config?.default_ocr_engine || defaultOcrEngine.value
+    : processingParams.value.ocr_engine
+  return String(engine).trim() !== 'disable'
 })
-
-// 上传模式切换相关逻辑已移除
-
-// 计算属性：是否有PDF或图片文件
-const hasPdfFiles = computed(() => {
-  if (validFileList.value.length === 0) {
-    return false
-  }
-
-  return validFileList.value.some((file) => {
-    if (file.status !== 'done') {
-      return false
-    }
-
-    const filePath = file.response?.file_path || file.name
-    if (!filePath) {
-      return false
-    }
-
-    const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase()
-    return ext === '.pdf'
-  })
+const imageOcrRequiredMessage = computed(() => isModelRecognition.value
+  ? '检测到图片文件，请在系统配置中启用默认 OCR，或移除图片后继续。'
+  : '检测到图片文件，必须启用 OCR 才能提取文本内容。')
+const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp']
+const selectedFilePaths = computed(() => {
+  if (uploadMode.value === 'url') return []
+  if (uploadMode.value === 'workspace') return selectedWorkspacePaths.value
+  return validFileList.value
+    .filter((file) => file.status === 'done')
+    .map((file) => file.response?.file_path || file.name || '')
 })
-
-const hasImageFiles = computed(() => {
-  if (validFileList.value.length === 0) {
-    return false
-  }
-
-  const imageExtensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp']
-
-  return validFileList.value.some((file) => {
-    if (file.status !== 'done') {
-      return false
-    }
-
-    const filePath = file.response?.file_path || file.name
-    if (!filePath) {
-      return false
-    }
-
-    const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase()
-    return imageExtensions.includes(ext)
-  })
-})
+const hasPdfFiles = computed(() => selectedFilePaths.value.some((path) => path.toLowerCase().endsWith('.pdf')))
+const hasImageFiles = computed(() => selectedFilePaths.value.some((path) =>
+  IMAGE_EXTENSIONS.includes(path.slice(path.lastIndexOf('.')).toLowerCase())))
 
 // 计算属性：是否有ZIP文件
 const hasZipFiles = computed(() => {
@@ -913,7 +917,7 @@ watch(
 
 // 验证OCR服务可用性
 const validateOcrService = () => {
-  if (!isOcrEnabled.value) {
+  if (isModelRecognition.value || !isOcrEnabled.value) {
     return true
   }
 
@@ -1229,6 +1233,17 @@ const chunkData = async () => {
     return
   }
 
+  let parseParams
+  try {
+    parseParams = buildDocumentParseParams({
+      ...processingParams.value,
+      pdf_parse_mode: uploadMode.value === 'url' ? 'ocr' : processingParams.value.pdf_parse_mode
+    })
+  } catch (error) {
+    message.error(error.message)
+    return
+  }
+
   // 验证OCR服务可用性（非 URL 模式下）
   if (uploadMode.value !== 'url' && !validateOcrService()) {
     return
@@ -1249,7 +1264,6 @@ const chunkData = async () => {
         return
       }
 
-      const imageExtensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']
       const items = []
       const content_hashes = {}
       const file_sizes = {}
@@ -1262,16 +1276,16 @@ const chunkData = async () => {
         mergeSameNameFiles(item.same_name_files)
 
         const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase()
-        if (imageExtensions.includes(ext) && !isOcrEnabled.value) {
+        if (IMAGE_EXTENSIONS.includes(ext) && !isOcrEnabled.value) {
           message.error({
-            content: '检测到图片文件，必须启用 OCR 才能提取文本内容。',
+            content: imageOcrRequiredMessage.value,
             duration: 5
           })
           return
         }
       }
 
-      const params = { ...buildDocumentParseParams(processingParams.value), content_hashes, file_sizes }
+      const params = { ...parseParams, content_hashes, file_sizes }
       if (autoIndex.value) {
         params.auto_index = true
         Object.assign(params, buildAutoIndexParams())
@@ -1330,7 +1344,7 @@ const chunkData = async () => {
 
     try {
       store.state.chunkLoading = true
-      const params = { ...buildDocumentParseParams(processingParams.value) }
+      const params = { ...parseParams }
       if (autoIndex.value) {
         params.auto_index = true
         Object.assign(params, buildAutoIndexParams())
@@ -1376,8 +1390,6 @@ const chunkData = async () => {
   }
 
   // 文件模式处理
-  const imageExtensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']
-
   // 提取已上传的文件信息
   const items = []
   const content_hashes = {}
@@ -1400,9 +1412,9 @@ const chunkData = async () => {
 
     // 检查是否需要OCR
     const ext = file_path.substring(file_path.lastIndexOf('.')).toLowerCase()
-    if (imageExtensions.includes(ext) && !isOcrEnabled.value) {
+    if (IMAGE_EXTENSIONS.includes(ext) && !isOcrEnabled.value) {
       message.error({
-        content: '检测到图片文件，必须启用 OCR 才能提取文本内容。',
+        content: imageOcrRequiredMessage.value,
         duration: 5
       })
       return
@@ -1416,7 +1428,7 @@ const chunkData = async () => {
 
   try {
     store.state.chunkLoading = true
-    const params = { ...buildDocumentParseParams(processingParams.value), content_hashes, file_sizes }
+    const params = { ...parseParams, content_hashes, file_sizes }
     if (Object.keys(source_paths).length > 0) {
       params.source_paths = source_paths
     }

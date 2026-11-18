@@ -56,7 +56,7 @@
       <div class="setting-label">文档模型请求并发数（每端点与模型共享）</div>
       <a-input-number v-model:value="modelConcurrency" :min="1" :precision="0" :disabled="savingConcurrency" />
       <a-button :loading="savingConcurrency" @click="saveConcurrency">保存</a-button>
-      <p class="section-description">正文校对与图片解析、多文件及 worker 共用此额度；剩余请求继续排队。默认 2，实际并行能力取决于模型服务。</p>
+      <p class="section-description">模型逐页识别、正文校对与图片解析、多文件及 worker 共用此额度；剩余请求继续排队。默认 2，实际并行能力取决于模型服务。</p>
     </div>
 
     <div class="section-title">OCR 服务配置</div>

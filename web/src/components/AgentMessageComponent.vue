@@ -33,7 +33,7 @@
     <p v-else-if="message.type === 'system'" class="message-text-system">{{ message.content }}</p>
 
     <!-- 助手消息 -->
-    <div v-else-if="message.type === 'ai'" class="assistant-message">
+    <div v-else-if="message.type === 'ai'" class="assistant-message" @click.capture="openKnowledgeSource">
       <ToolCallsGroupComponent
         v-if="!hideToolCalls && processEntries.length > 0"
         :tool-calls="validToolCalls"
@@ -121,6 +121,12 @@
       <img :src="imagePreview.src" :alt="imagePreview.alt" class="message-image-preview-img" />
     </div>
   </Teleport>
+  <FileDetailModal
+    v-if="sourcePaper"
+    v-model:open="sourceOpen"
+    :kb-id="sourcePaper.kb_id"
+    :file-id="sourcePaper.file_id"
+  />
 </template>
 
 <script setup>
@@ -137,6 +143,26 @@ import { inferImageMimeTypeFromBase64, normalizeAttachmentPreviews } from '@/uti
 import { buildMentionDisplayLabels } from '@/utils/mention_utils'
 import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
 import { enrichTaskToolCalls } from '@/components/ToolCallingResult/toolRegistry'
+import FileDetailModal from '@/components/FileDetailModal.vue'
+
+const sourcePaper = ref(null)
+const sourceOpen = ref(false)
+
+/** 仅拦截本站论文出处链接，读取和权限由文件预览接口执行。 */
+function openKnowledgeSource(event) {
+  const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null
+  if (!anchor) return
+  const href = anchor.getAttribute('href') || ''
+  if (!href.startsWith('/knowledge-source?')) return
+  const url = new URL(href, window.location.origin)
+  if (url.origin !== window.location.origin || url.pathname !== '/knowledge-source') return
+  event.preventDefault()
+  const kbId = url.searchParams.get('kb_id')
+  const fileId = url.searchParams.get('file_id')
+  if (!kbId || !fileId) return
+  sourcePaper.value = { kb_id: kbId, file_id: fileId }
+  sourceOpen.value = true
+}
 
 const props = defineProps({
   // 消息角色：'user'|'assistant'|'sent'|'received'

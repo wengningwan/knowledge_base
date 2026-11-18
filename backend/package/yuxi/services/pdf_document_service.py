@@ -55,6 +55,7 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
     from yuxi.services.pdf_figure_analysis_service import analyze_document_figures
     from yuxi.services.pdf_review_service import review_pdf_document
 
+    is_model_mode = params.get("pdf_parse_mode", "ocr") == "model"
     by_figure = {figure["id"]: figure for figure in result.figures}
     base_url = (params.get("_ocr_processor_kwargs") or {}).get("server_url") or ""
     for block in result.blocks:
@@ -110,9 +111,12 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
             figure = by_figure.get(block["id"], {"id": block["id"]})
             figure.update({key: block.get(key) for key in ("page", "bbox", "asset_id", "asset_ids", "type")})
             figure["image_url"] = f"asset://{block['asset_id']}" if block.get("asset_id") else ""
-            figure.setdefault("caption", _nearby_caption(result.blocks, block))
-            if not figure.get("caption"):
-                figure["caption"] = _nearby_caption(result.blocks, block)
+            if is_model_mode:
+                figure.setdefault("caption", "")
+            else:
+                figure.setdefault("caption", _nearby_caption(result.blocks, block))
+                if not figure.get("caption"):
+                    figure["caption"] = _nearby_caption(result.blocks, block)
             figure.setdefault("analysis", "")
             figure.setdefault("analysis_status", "not_requested")
             by_figure[block["id"]] = figure
@@ -120,7 +124,7 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
     for asset in result.assets.values():
         asset["data"], asset["mime"] = await asyncio.to_thread(_normalize_image, asset["data"])
     result.figures = [figure for figure in by_figure.values() if figure.get("asset_id")]
-    if params.get("ocr_engine") == "oxr_ocr" and file_path.lower().endswith(".pdf"):
+    if not is_model_mode and params.get("ocr_engine") == "oxr_ocr" and file_path.lower().endswith(".pdf"):
         await review_pdf_document(result, file_path, params, control)
     else:
         result.metadata.setdefault("review_status", "not_requested")

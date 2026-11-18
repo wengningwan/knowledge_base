@@ -106,22 +106,21 @@ async def parse_document_result(
 ):
     """使用当前运行时配置将文件解析为 Markdown。
 
-    这是业务代码唯一应调用的文档解析入口。函数负责区分应用层配置解析和
-    底层文件转换：对于 PDF 与图片等 OCR 文件，先确定最终 OCR 引擎，再从
-    数据库 Options、环境变量或模型供应商中解析该引擎的构造参数；对于普通
-    文本、Office、表格等文件，参数保持原样并直接交给统一解析器。
+    这是业务代码唯一应调用的文档解析入口。PDF 的模型模式先验证显式选择的
+    聊天模型，不读取 OCR 配置；其余 PDF 与图片沿用 OCR 配置解析。
+    普通文本、Office、表格等文件继续交给既有格式解析器。
 
-    底层 parser 只接收已经准备好的 ``ocr_engine`` 和
-    ``_ocr_processor_kwargs``，不查询数据库，也不关心配置值来自何处。调用方
+    底层 parser 只接收已经准备好的模型或 OCR 参数，不查询数据库。调用方
     不应直接调用 ``yuxi.knowledge.parser.unified`` 中的内部解析入口，否则会
     绕过数据库配置、环境变量回退和默认 OCR 引擎解析。
 
     Args:
         source: 本地文件路径或系统支持的 MinIO 文件地址。
         params: 文件解析参数。可以包含 ``ocr_engine``、图片存储位置和各解析器
-            支持的业务参数；未指定 OCR 引擎时使用系统默认值。
+            支持的业务参数；PDF 的 pdf_parse_mode 缺失时为 ocr，模型模式必须
+            显式传入 document_recognition_model。未指定 OCR 引擎时使用系统默认值。
         db: 可选的异步数据库会话。已有事务的调用方可以传入以复用会话；未传入
-            时仅在 OCR 配置解析需要查询数据库时创建独立会话。
+            时仅在解析配置或默认图片模型需要查询数据库时创建独立会话。
 
     Returns:
         解析后的 ParsedDocument，包含 Markdown 与独立附属结果。
@@ -134,8 +133,17 @@ async def parse_document_result(
 
     resolved_params = params
     suffix = Path(source.split("?", 1)[0]).suffix.lower()
-    if suffix in OCR_FILE_EXTENSIONS:
-        resolved_params = await resolve_ocr_task_params(params, db)
+    if suffix != ".pdf":
+        resolved_params = dict(params or {})
+        resolved_params.pop("pdf_parse_mode", None)
+        resolved_params.pop("document_recognition_model", None)
+    mode = (resolved_params or {}).get("pdf_parse_mode", "ocr")
+    if mode not in ("ocr", "model"):
+        raise ValueError("pdf_parse_mode 必须为 ocr 或 model")
+    if mode == "model":
+        resolved_params = await _resolve_pdf_model_params(resolved_params, db)
+    elif suffix in OCR_FILE_EXTENSIONS:
+        resolved_params = await resolve_ocr_task_params(resolved_params, db)
         engine_id = resolved_params["ocr_engine"]
         if engine_id != "disable" and suffix not in get_parser_capability(engine_id).supported_extensions:
             raise ValueError(f"OCR 引擎 {engine_id} 不支持文件类型 {suffix}")
@@ -200,3 +208,34 @@ async def _build_processor_kwargs(db: AsyncSession, engine_id: str) -> dict[str,
         opts = await paddleocr_api_opts.get(db)
         return {key: value for key, value in opts.items() if value}
     return {}
+
+
+async def _resolve_pdf_model_params(params: dict | None, db: AsyncSession | None) -> dict:
+    """先收敛PDF模型参数，残留OCR与正文校对配置不参与执行。"""
+    from yuxi.models.providers.cache import model_cache
+
+    resolved = dict(params or {})
+    model_spec = resolved.get("document_recognition_model")
+    if not isinstance(model_spec, str) or not model_spec.strip():
+        raise ValueError("模型识别模式必须显式选择文档识别模型")
+    model_spec = model_spec.strip()
+    info = await asyncio.to_thread(model_cache.get_model_info, model_spec)
+    if info is None or info.model_type != "chat":
+        raise ValueError("文档识别模型必须是已配置并启用的聊天模型")
+    resolved.update(pdf_parse_mode="model", document_recognition_model=model_spec)
+    for key in (
+        "ocr_engine",
+        "ocr_engine_config",
+        "_ocr_processor_kwargs",
+        "enable_ocr",
+        "document_review_model",
+        "document_review_vision_final_authority",
+    ):
+        resolved.pop(key, None)
+    if resolved.get("image_prefix"):
+        if "image_analysis_model" not in resolved:
+            resolved["image_analysis_model"] = (await system_options.get(db)).get("default_image_analysis_model")
+        resolved["image_analysis_model"] = str(resolved.get("image_analysis_model") or "").strip()
+    else:
+        resolved.pop("image_analysis_model", None)
+    return resolved
