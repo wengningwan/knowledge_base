@@ -117,7 +117,7 @@ async def confirm_document_review(
                 ),
                 None,
             )
-            if action not in {"keep", "replace", "insert_after"}:
+            if action not in {"keep", "replace", "insert_after", "join"}:
                 raise ValueError("无效的校对操作")
             if action != "keep":
                 if not blocks or render_document(blocks) != markdown:
@@ -126,6 +126,11 @@ async def confirm_document_review(
                     if block is None:
                         raise ValueError("无法定位原段落，请选择明确的补入位置")
                     block["content"] = content
+                elif action == "join":
+                    join = row.get("recognition_join")
+                    if block is None or not join:
+                        raise ValueError("当前问题没有可确认的跨页续接")
+                    block["recognition_join"] = join
                 else:
                     if block is not None or not content.strip():
                         raise ValueError("补入操作需要一个缺失段落问题和非空正文")
@@ -160,8 +165,13 @@ async def confirm_document_review(
             for item in confirmed:
                 item["human_review"] = receipt.copy()
         changed = updated_markdown != markdown
+        if changed:
+            captions = {block["id"]: block["content"] for block in blocks if block["type"] == "caption"}
+            for figure in sidecar.get("figures", []):
+                if figure.get("caption_block_id") in captions:
+                    figure["caption"] = captions[figure["caption_block_id"]]
         remaining = [item for item in reviews if not item.get("human_review")]
-        technical = any(
+        technical = metadata.get("recognition_review", {}).get("failed_checks") or any(
             item.get("status") in {"technical_failed", "pending", "running"} or item.get("protocol_errors")
             for item in remaining
         )

@@ -102,7 +102,7 @@ class ConfirmDocumentReviewRequest(BaseModel):
     source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     review_index: int | None = Field(default=None, ge=0)
     review_indexes: list[Annotated[int, Field(ge=0)]] | None = Field(default=None, max_length=5000)
-    action: Literal["keep", "replace", "insert_after"]
+    action: Literal["keep", "replace", "insert_after", "join"]
     content: str = Field(default="", max_length=200_000)
     anchor_block_id: str | None = Field(default=None, max_length=200)
 

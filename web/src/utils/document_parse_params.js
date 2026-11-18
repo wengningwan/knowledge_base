@@ -19,6 +19,7 @@ export function buildDocumentParseParams(params) {
     return {
       pdf_parse_mode: 'model',
       document_recognition_model: model,
+      document_review_model: params.document_review_model || '',
       image_analysis_model: params.image_analysis_model || ''
     }
   }

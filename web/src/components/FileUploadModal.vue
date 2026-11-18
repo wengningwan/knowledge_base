@@ -124,9 +124,9 @@
           </div>
         </div>
 
-        <div class="setting-row" v-if="uploadMode !== 'url' && isOxrEnabled">
+        <div class="setting-row" v-if="uploadMode !== 'url' && (isModelRecognition || isOxrEnabled)">
           <div class="col-item">
-            <div class="setting-label">正文校对模型（可选，仅用于 OXR PDF）</div>
+            <div class="setting-label">{{ isModelRecognition ? '正文校对模型（可选）' : '正文校对模型（可选，仅用于 OXR PDF）' }}</div>
             <div class="setting-content">
               <ModelSelectorComponent
                 :model_spec="processingParams.document_review_model"
@@ -136,7 +136,7 @@
                 @select-model="(value) => selectParseModel('document_review_model', value)"
               />
             </div>
-            <p class="param-description">可与插图模型相同。{{ processingParams.document_review_model ? '已启用模型校对' : '未启用模型校对' }}；OXR 自动比对 PDF 文字层。</p>
+            <p class="param-description">{{ isModelRecognition ? '合并前逐页对照原图校对。' : 'OXR 自动比对 PDF 文字层。' }}</p>
             <p class="param-description">免费远端服务会接收文档，服务稳定性不作保证。</p>
           </div>
         </div>

@@ -12,7 +12,7 @@
           class="review-filter" :disabled="saving" :aria-pressed="filter === option.value" @click="changeFilter(option.value)"
         >{{ option.label }} <span>{{ option.count }}</span></button>
       </div>
-      <a-empty v-if="!groups.length" description="本次解析没有校对记录。" />
+      <a-empty v-if="!groups.length" :description="state.metadata.pdf_parse_mode === 'model' && state.metadata.review_status === 'completed' ? '没有需要人工确认的内容。' : '本次解析没有校对记录。'" />
       <div v-else-if="!filtered.length" class="review-empty">
         <p>{{ filter === 'attention' ? '当前没有待确认的问题。' : '当前没有已确认的问题。' }}</p>
       </div>
@@ -148,6 +148,7 @@
             <p v-if="hasIndexes" class="review-hint">修改正文会清理旧分块和索引，保存后需重新入库。</p>
             <p v-if="saveError" class="review-save-error" role="alert">{{ saveError }}</p>
             <div class="review-editor-actions">
+              <button v-if="active.recognition_join" type="button" class="review-action" :disabled="saving || draft !== draftBase" @click="confirmReview('join')">确认跨页接续</button>
               <button type="button" class="review-save" :disabled="saving || draftConflict || (!activeBlock && (!draft.trim() || !anchorBlockId))" @click="confirmReview(activeBlock ? 'replace' : 'insert_after')">{{ saving ? '正在同步…' : activeBlock ? '确认并同步到 MD' : '确认并补入到 MD' }}</button>
               <button type="button" class="review-keep-danger" :disabled="saving" @click="confirmReview('keep')">确认保持现状</button>
               <span v-if="draft !== draftBase" class="review-hint">有未保存的修改</span>
@@ -285,7 +286,10 @@ const canMoveContextPage = (offset) => {
 const moveContextPage = (offset) => {
   if (canMoveContextPage(offset)) contextPage.value += offset
 }
-const sourceImage = computed(() => knowledgeAssetImageMarkdown(active.value?.source_image, props.kbId, '原文裁图'))
+const sourceImage = computed(() => [
+  knowledgeAssetImageMarkdown(active.value?.previous_source_image, props.kbId, '前一页原文裁图'),
+  knowledgeAssetImageMarkdown(active.value?.source_image, props.kbId, '原文裁图')
+].filter(Boolean).join('\n\n'))
 const comparison = computed(() => active.value ? reviewComparison(active.value) : { before: '', after: null })
 const diff = computed(() => diffReviewText(comparison.value.before, comparison.value.after ?? comparison.value.before))
 const withMathHtml = (parts) => parts.map((part) => (part.type === 'math' ? { ...part, html: renderMathHtml(part) } : part))
@@ -301,10 +305,14 @@ const hasChanges = computed(() => diff.value.parts.some((part) => part.type !== 
 const validPage = (page) => Number.isInteger(page) && page > 0
 const pageLabel = (page) => validPage(page) ? `第 ${page} 页` : '页码未知'
 const reviewSummary = computed(() => ({
-  not_requested: '未启用模型校对，以下为系统检测和规则处理记录。',
+  not_requested: props.state.metadata.pdf_parse_mode === 'model'
+    ? '本次使用模型逐页识别，尚未执行正文校对。'
+    : '未启用模型校对，以下为系统检测和规则处理记录。',
   needs_review: '部分内容仍需人工核对，请逐项对照原文。',
   incomplete: '正文已生成，部分自动复核尚未完成，请对照原文检查。',
-  completed: '本次登记疑点已完成核对，仍可结合原 PDF 复核。'
+  completed: props.state.metadata.pdf_parse_mode === 'model'
+    ? '正文原图校对已完成。'
+    : '本次登记疑点已完成核对，仍可结合原 PDF 复核。'
 })[props.state.metadata.review_status] || '以下为系统校对记录，可结合原文逐项复核。')
 
 /** 切换分类时从该分类的首个问题开始核对。 */
@@ -350,7 +358,7 @@ async function confirmReview(action) {
       review_revision: props.state.metadata.human_review_revision || null,
       source_sha256: props.sourceSha256,
       review_index: index,
-      action, content: action === 'keep' ? '' : draft.value,
+      action, content: ['keep', 'join'].includes(action) ? '' : draft.value,
       anchor_block_id: action === 'insert_after' ? anchorBlockId.value : null
     })
     for (const key of savedKeys) {

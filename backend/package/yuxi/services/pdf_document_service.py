@@ -50,12 +50,20 @@ async def build_native_document(file_path: str):
 
 async def enrich_document(result, file_path: str, params: dict, control=None):
     """先确保原图自足，再分别运行可选局部校对和插图解释。"""
-    from yuxi.knowledge.parser.pdf_native import render_pdf_region
+    from yuxi.knowledge.parser.pdf_native import figure_crop_region, read_native_image_regions, render_pdf_region
     from yuxi.knowledge.parser.pdf_structure import render_document
     from yuxi.services.pdf_figure_analysis_service import analyze_document_figures
     from yuxi.services.pdf_review_service import review_pdf_document
 
     is_model_mode = params.get("pdf_parse_mode", "ocr") == "model"
+    figure_crops = {}
+    if is_model_mode and result.figures:
+        native_images = await asyncio.to_thread(read_native_image_regions, file_path, diagnostics=result.diagnostics)
+        figure_crops = {
+            block["id"]: figure_crop_region(block, native_images, result.blocks)
+            for block in result.blocks
+            if block["type"] in {"picture", "chemical_structure"}
+        }
     by_figure = {figure["id"]: figure for figure in result.figures}
     base_url = (params.get("_ocr_processor_kwargs") or {}).get("server_url") or ""
     for block in result.blocks:
@@ -100,6 +108,7 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
             if not block.get("bbox"):
                 raise ValueError("插图缺少原图或可定位区域")
             asset_id = f"{block['id']}_source"
+            block["bbox"] = figure_crops.get(block["id"], block["bbox"])
             data = await asyncio.to_thread(render_pdf_region, file_path, block["page"], block["bbox"])
             result.assets[asset_id] = {"data": data, "mime": "image/png", "page": block["page"], "bbox": block["bbox"], "role": kind}
             original = str(block.get("content") or "").strip() if kind == "unknown" else ""

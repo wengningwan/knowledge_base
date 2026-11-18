@@ -427,7 +427,7 @@ class KnowledgeBase(ABC):
             raise ValueError("解析附属数据不属于当前文件")
         from yuxi.services.knowledge_figure_analysis_service import project_figure_task_status
 
-        await project_figure_task_status(data, kb_id=kb_id, file_id=file_id)
+        data = await project_figure_task_status(data, kb_id=kb_id, file_id=file_id, assets_file=pointer)
         from yuxi.knowledge.parser.pdf_review_messages import readable_review_reason
 
         for review in data.get("reviews", []):

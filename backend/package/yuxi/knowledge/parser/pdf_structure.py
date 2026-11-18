@@ -183,6 +183,7 @@ def normalize_oxr_result(payload: dict) -> ParsedDocument:
 def render_document(blocks: list[dict], urls: dict[str, str] | None = None) -> str:
     """按块顺序渲染正文，保留公式、HTML、图片与原图注。"""
     parts = []
+    part_indexes = {}
     previous = None
     references = False
     for block in blocks:
@@ -203,6 +204,13 @@ def render_document(blocks: list[dict], urls: dict[str, str] | None = None) -> s
             content = _delimit_formula(kind, str(block.get("format") or ""), content)
         elif kind == "code_block" and not content.startswith("```"):
             content = f"```\n{content}\n```"
+        join = block.get("recognition_join")
+        if join and join["block_id"] in part_indexes:
+            index = part_indexes[join["block_id"]]
+            parts[index] += join["separator"] + content
+            part_indexes[block.get("id")] = index
+            previous = block
+            continue
         boundaries = _reference_boundaries(content) if references and kind == "text" else []
         if boundaries:
             starts, ends = [0, *boundaries], [*boundaries, len(content)]
@@ -211,6 +219,7 @@ def render_document(blocks: list[dict], urls: dict[str, str] | None = None) -> s
             parts[-1] += " " + content
         else:
             parts.append(content)
+        part_indexes[block.get("id")] = len(parts) - 1
         previous = block
     return "\n\n".join(parts).strip()
 

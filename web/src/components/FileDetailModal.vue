@@ -79,16 +79,14 @@
         class="previous-parse-notice"
       />
       <a-alert
-        v-if="['markdown', 'review'].includes(viewMode) && modelRecognition"
-        :type="modelRecognitionNeedsReview ? 'warning' : 'info'"
+        v-if="viewMode === 'review' && modelRecognitionNeedsReview && !assetsState.reviews.length"
+        type="warning"
         show-icon
-        message="模型识别：逐页识别已完成"
+        message="局部内容待核对，请对照源 PDF。"
         class="model-recognition-summary"
       >
         <template #description>
-          <p>识别模型：{{ modelRecognition.model }} · 共 {{ modelRecognition.total_pages }} 页</p>
-          <p v-if="modelRecognitionNeedsReview">局部内容待核对，请对照源 PDF。</p>
-          <p v-if="modelRecognitionNeedsReview && assetsState.metadata.auto_index_enabled && !assetsState.reviews.length">暂不进行自动入库操作。</p>
+          <p v-if="assetsState.metadata.auto_index_enabled">暂不进行自动入库操作。</p>
           <details v-if="recognitionUnclearDiagnostics.length">
             <summary>查看待核对位置（{{ recognitionUnclearDiagnostics.length }} 处）</summary>
             <ul>
@@ -265,9 +263,7 @@ const recognitionUnclearDiagnostics = computed(() => modelRecognition.value
   ? assetsState.value.diagnostics.filter((diagnostic) => diagnostic.kind === 'model_recognition_unclear')
   : [])
 const modelRecognitionNeedsReview = computed(() => Boolean(modelRecognition.value) && (
-  assetsState.value.metadata.review_status === 'needs_review' ||
-  recognitionUnclearDiagnostics.value.length > 0 ||
-  modelRecognition.value.pages?.some((page) => page.warnings?.includes('unclear_regions'))
+  assetsState.value.metadata.review_status === 'needs_review' && recognitionUnclearDiagnostics.value.length > 0
 ))
 
 /** 保存完成后从后端重读正文和回执，旧文档响应不更新当前窗口。 */
@@ -511,16 +507,23 @@ watch(
   [visible, file, viewMode],
   async ([open, currentFile, currentViewMode]) => {
     if (!open || !currentFile) return
-    if (currentViewMode === 'chunks' && canPreviewChunks(currentFile)) {
-      await parseLoader.content()
-    }
-    if (['markdown', 'figures', 'review'].includes(currentViewMode) && canPreviewParseAssets(currentFile)) {
+    if (['figures', 'review'].includes(currentViewMode) && canPreviewParseAssets(currentFile)) {
       await parseLoader.assets()
-    } else if (currentViewMode === 'markdown' && canPreviewParsed(currentFile)) {
+    } else if ((currentViewMode === 'markdown' && canPreviewParsed(currentFile)) ||
+      (currentViewMode === 'chunks' && canPreviewChunks(currentFile))) {
       await parseLoader.content()
     }
   },
   { immediate: true }
+)
+
+watch(
+  [visible, file, viewMode, () => assetsState.value.metadata.figure_analysis?.status],
+  ([open, currentFile, mode, status], _, onCleanup) => {
+    if (!open || !currentFile || mode !== 'figures' || !['pending', 'running'].includes(status)) return
+    const timer = setInterval(() => void parseLoader.refreshAssets(), 5000)
+    onCleanup(() => clearInterval(timer))
+  }
 )
 
 watch(

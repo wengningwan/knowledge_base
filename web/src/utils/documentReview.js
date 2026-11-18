@@ -114,6 +114,7 @@ export function reviewKindLabel(kind) {
     title_hierarchy: '标题层级', missing_region: '疑似正文遗漏', reading_flow: '阅读顺序',
     native_evidence_unavailable: '原文证据缺失', missing_page: '疑似缺页',
     formula_fragment_cluster: '疑似漏识别公式区域',
+    model_recognition_unclear: '原图待核对', model_recognition_seam: '跨页接续',
     scientific_notation: '科学符号核对',
     date_body_split: '日期与正文', same_line_join: '同行文字', high_risk: '图表与公式',
     weak_reference: '缺少可靠对照'
@@ -126,6 +127,9 @@ export function reviewComparison(record) {
   const corrected = record.status === 'machine_corrected' && record.applied !== false
   if (!corrected && record.candidates?.native && record.candidates.native !== before) {
     return { before, after: record.candidates.native, label: 'PDF提取文字', kind: 'candidate' }
+  }
+  if (typeof record.suggested_content === 'string' && record.kind === 'model_recognition_unclear') {
+    return { before, after: record.suggested_content, label: '模型建议', kind: 'candidate' }
   }
   if (typeof record.after === 'string') return { before, after: record.after, label: '处理后文字', kind: 'snapshot' }
   return { before, after: null, label: '', kind: 'none' }

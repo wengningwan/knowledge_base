@@ -36,21 +36,23 @@ export function createDocumentParseLoader({ loadContent, loadAssets, onChange })
   const mismatched = () => content.loaded && assets.loaded &&
     (content.attempt_id || null) !== (assets.attempt_id || null)
 
-  const request = (kind) => {
+  const request = (kind, refresh = false) => {
     if (!context) return Promise.resolve()
     const isContent = kind === 'content'
     const current = isContent ? content : assets
     const pending = isContent ? contentPending : assetsPending
     if (pending) return pending
-    if (current.loaded) return Promise.resolve()
+    if (current.loaded && !current.error && !refresh) return Promise.resolve()
     const epoch = generation
     const sequence = isContent ? ++contentSequence : ++assetSequence
     const requestContext = { ...context }
     const isCurrent = () => epoch === generation &&
       sequence === (isContent ? contentSequence : assetSequence)
-    if (isContent) content = { ...content, loading: true, error: '' }
-    else assets = { ...assets, loading: true, error: '' }
-    publish()
+    if (!current.loaded) {
+      if (isContent) content = { ...content, loading: true, error: '' }
+      else assets = { ...assets, loading: true, error: '' }
+      publish()
+    }
     const promise = (async () => {
       try {
         const data = await Promise.resolve().then(() =>
@@ -71,7 +73,7 @@ export function createDocumentParseLoader({ loadContent, loadAssets, onChange })
         if (!isCurrent()) return
         const errorMessage = error.message || '加载解析结果失败'
         if (isContent) content = { ...emptyDocumentContent(), error: errorMessage }
-        else assets = { ...assets, loading: false, loaded: false, error: errorMessage }
+        else assets = { ...assets, loading: false, error: errorMessage }
       } finally {
         if (isCurrent()) {
           if (isContent) contentPending = null
@@ -125,6 +127,10 @@ export function createDocumentParseLoader({ loadContent, loadAssets, onChange })
     async content() { await request('content'); await reconcile() },
     async assets() {
       await Promise.all([request('content'), request('assets')])
+      await reconcile()
+    },
+    async refreshAssets() {
+      await request('assets', true)
       await reconcile()
     }
   }

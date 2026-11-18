@@ -121,7 +121,10 @@ async def run_knowledge_figure_analysis(context):
             sidecar = await _read_sidecar(client, pointer, payload)
             if sidecar.get("metadata", {}).get("figure_analysis", {}).get("task_id") != context.task_id:
                 raise ValueError("附属快照未登记当前图片任务")
-            sidecar["figures"] = result.figures
+            analyzed = {figure["id"]: figure for figure in result.figures}
+            for figure in sidecar["figures"]:
+                updated = analyzed[figure["id"]]
+                figure.update({key: updated[key] for key in ("analysis", "analysis_status", "model") if key in updated})
             sidecar.setdefault("metadata", {})["figure_analysis"] = result.metadata["figure_analysis"]
             upload = await complete_storage_mutation(client.aupload_file(
                 client.KB_BUCKETS["parsed"], name, json.dumps(sidecar, ensure_ascii=False, allow_nan=False).encode(),
@@ -154,25 +157,37 @@ async def run_knowledge_figure_analysis(context):
                 logger.warning(f"[pdf_figures] 未确认的附属对象保留 task_id={context.task_id} error={type(exc).__name__}")
 
 
-async def project_figure_task_status(data: dict, *, kb_id, file_id):
-    """只读投影 durable 状态，使崩溃或取消的任务不在页签永久显示等待。"""
+async def project_figure_task_status(data: dict, *, kb_id, file_id, assets_file) -> dict:
+    """读取同版本已发布说明，或将图片任务状态投影到原快照。"""
     stage = data.get("metadata", {}).get("figure_analysis", {})
     if stage.get("status") not in {"pending", "running"} or not stage.get("task_id"):
-        return
+        return data
     task = await TaskRepository().get_by_id(stage["task_id"])
     if task is None:
-        stage["status"] = "failed"
         stage["reason"] = "图片任务记录不可用"
-        return
-    payload = task.payload or {}
-    if task.type != TASK_TYPE or any(payload.get(key) != value for key, value in (("kb_id", kb_id), ("file_id", file_id), ("attempt_id", data.get("attempt_id")))):
-        raise ValueError("图片任务与文档版本不匹配")
-    status = {"pending": "pending", "running": "running", "failed": "failed", "cancelled": "cancelled", "success": "needs_review"}.get(task.status, "failed")
+        status = "failed"
+    else:
+        payload = task.payload or {}
+        if task.type != TASK_TYPE or any(payload.get(key) != value for key, value in (("kb_id", kb_id), ("file_id", file_id), ("attempt_id", data.get("attempt_id")))):
+            raise ValueError("图片任务与文档版本不匹配")
+        status = {"pending": "pending", "running": "running", "failed": "failed", "cancelled": "cancelled", "success": "needs_review"}.get(task.status, "failed")
+        if status not in {"pending", "running"}:
+            from yuxi.storage.minio import get_minio_client
+
+            # 旧快照可能在图片发布前读取，Task 终态则在图片发布后读取。
+            current = await KnowledgeFileRepository().get_by_file_id(file_id)
+            pointer = current.parse_assets_file if current is not None and current.kb_id == kb_id else None
+            if pointer and pointer != assets_file and pointer.rsplit("/", 2)[-2] == payload["attempt_id"]:
+                data = await _read_sidecar(get_minio_client(), pointer, payload)
+                stage = data.get("metadata", {}).get("figure_analysis", {})
+                if stage.get("task_id") != task.id or stage.get("status") not in {"pending", "running"}:
+                    return data
     stage["status"] = status
     if status in {"failed", "cancelled", "needs_review"}:
         for figure in data.get("figures", []):
             if figure.get("analysis_status") in {"pending", "running"}:
                 figure.update(analysis_status="not_checked", analysis="图片任务未发布解释，原图已保留")
+    return data
 
 
 async def _read_sidecar(client, pointer, payload):

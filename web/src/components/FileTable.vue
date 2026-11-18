@@ -75,9 +75,9 @@
             {{ isParseModelRecognition ? '可与文档识别模型相同；' : 'noOCR / OXR PDF 的插图单独解析；' }}未选择模型时保留原图，不生成图片说明
           </p>
         </div>
-        <div class="setting-item" v-if="isParseOxrEnabled">
+        <div class="setting-item" v-if="isParseModelRecognition || isParseOxrEnabled">
           <div>
-            <div class="setting-label">正文校对模型（可选，仅用于 OXR PDF）</div>
+            <div class="setting-label">{{ isParseModelRecognition ? '正文校对模型（可选）' : '正文校对模型（可选，仅用于 OXR PDF）' }}</div>
             <div class="setting-content">
               <ModelSelectorComponent
                 :model_spec="parseParams.document_review_model"
@@ -87,7 +87,7 @@
                 @select-model="(value) => (parseParams.document_review_model = value)"
               />
             </div>
-            <p class="param-description">可与插图模型相同。{{ parseParams.document_review_model ? '已启用模型校对' : '未启用模型校对' }}；OXR 自动比对 PDF 文字层。</p>
+            <p class="param-description">{{ isParseModelRecognition ? '合并前逐页对照原图校对。' : 'OXR 自动比对 PDF 文字层。' }}</p>
             <p class="param-description">免费远端服务会接收文档，服务稳定性不作保证。</p>
           </div>
         </div>

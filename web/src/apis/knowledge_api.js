@@ -236,7 +236,7 @@ export const documentApi = {
 
   /** 按需读取与解析 attempt 绑定的图片和校对结果。 */
   getDocumentParseAssets: async (kbId, docId) => {
-    return apiGet(`/api/knowledge/databases/${kbId}/documents/${docId}/parse-assets`)
+    return apiGet(`/api/knowledge/databases/${kbId}/documents/${docId}/parse-assets`, { cache: 'no-store' })
   },
 
   /** 读取与当前正文绑定的实验卡片机器草稿。 */

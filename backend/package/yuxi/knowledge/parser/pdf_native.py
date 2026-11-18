@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import io
 import math
@@ -107,7 +108,11 @@ def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None 
                     position, device_width, device_height = _page_position(pdfium, page)
                     for index, item in enumerate(page.get_objects(max_depth=16)):
                         if index >= 100_000:
-                            raise ValueError("PDF 单页对象数超过区域遍历上限")
+                            message = "PDF 单页对象数超过区域遍历上限"
+                            if diagnostics is None:
+                                raise ValueError(message)
+                            diagnostics.append({"kind": "native_image_object_limit", "page": page_index + 1, "message": message})
+                            break
                         if item.type == pdfium.raw.FPDF_PAGEOBJ_FORM and item.level >= 15:
                             message = {
                                 "kind": "native_image_depth_limit",
@@ -155,6 +160,24 @@ def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None 
         finally:
             document.close()
     return regions
+
+
+def figure_crop_region(block: dict, native_images: list[dict], blocks: list[dict]) -> list[float]:
+    """结合同页原生图像位置补齐模型图框，再为轴名和刻度留出边缘。"""
+    from yuxi.knowledge.parser.pdf_repair_rules import overlap_fraction
+
+    box = block["bbox"]
+    candidates = [
+        (min(overlap_fraction(box, image["bbox"]), overlap_fraction(image["bbox"], box)), image["bbox"])
+        for image in native_images
+        if image["page"] == block["page"]
+    ]
+    score, native_box = max(candidates, key=lambda candidate: candidate[0], default=(0, box))
+    if score >= 0.5:
+        box = [min(box[0], native_box[0]), min(box[1], native_box[1]),
+               max(box[2], native_box[2]), max(box[3], native_box[3])]
+    margin = min(0.018, max(0.006, (box[3] - box[1]) * 0.10))
+    return _crop_with_boundaries(box, block, blocks, margin)
 
 
 def review_crop_region(block: dict, targets: list[dict], native: list[dict], blocks: list[dict]) -> list[float]:
@@ -232,6 +255,16 @@ def _expand_box(bbox: list[float], width_factor: float, height_factor: float) ->
     half_w, half_h = (bbox[2] - bbox[0]) * width_factor / 2, (bbox[3] - bbox[1]) * height_factor / 2
     return [max(0., center_x - half_w), max(0., center_y - half_h),
             min(1., center_x + half_w), min(1., center_y + half_h)]
+
+
+async def render_pdf_region_async(file_path: str, page: int, bbox: list, scale: float = 3) -> bytes:
+    """取消时等待 PDFium 释放源文件，再交给调用方清理。"""
+    rendering = asyncio.create_task(asyncio.to_thread(render_pdf_region, file_path, page, bbox, scale))
+    try:
+        return await asyncio.shield(rendering)
+    except asyncio.CancelledError:
+        await asyncio.gather(rendering, return_exceptions=True)
+        raise
 
 
 def render_pdf_region(file_path: str, page: int, bbox: list, scale: float = 3) -> bytes:

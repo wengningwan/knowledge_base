@@ -7,7 +7,7 @@ import time
 import uuid
 
 from yuxi.knowledge.parser.base import DocumentParserException
-from yuxi.knowledge.parser.pdf_native import count_pdf_pages, render_pdf_region
+from yuxi.knowledge.parser.pdf_native import count_pdf_pages, render_pdf_region_async
 from yuxi.knowledge.parser.pdf_recognition import (
     PROMPT_VERSION,
     RECOGNITION_PROMPT,
@@ -21,6 +21,12 @@ from yuxi.services.pdf_model_execution import (
     PdfModelExecutor,
     PdfModelUnavailable,
     run_pdf_workers,
+)
+from yuxi.services.pdf_recognition_review_service import (
+    attach_recognition_review_images,
+    collect_recognition_uncertainties,
+    review_recognition_page,
+    review_recognition_seam,
 )
 from yuxi.utils.logging_config import logger
 
@@ -59,6 +65,8 @@ class PdfRecognitionError(DocumentParserException):
 
 async def recognize_pdf_document(file_path: str, params: dict, control=None) -> ParsedDocument:
     """有界按需渲染并发识别全部页，失败收敛在途且不发布部分结果。"""
+    from pypdfium2 import PdfiumError
+
     from yuxi.services.pdf_document_service import enrich_document
 
     model_spec = params.get("document_recognition_model")
@@ -93,6 +101,27 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
         f" file_id={getattr(control, 'file_id', None) or '-'}"
         f" attempt_id={getattr(control, 'attempt_id', None) or '-'}"
     )
+    review_spec = str(params.get("document_review_model") or "").strip()
+    review_executor = None
+    review_stage = {"model": review_spec, "corrected": 0, "failed_checks": []}
+    if review_spec:
+        try:
+            review_executor = await PdfModelExecutor(
+                review_spec, control=control, stage="recognition_review"
+            ).initialize()
+        except (ValueError, PdfModelUnavailable) as exc:
+            review_stage["failed_checks"].append("setup")
+            logger.warning(f"{prefix} review=setup error={type(exc).__name__}")
+
+    async def check_review(label, operation) -> None:
+        """独立记录可选校对失败，保留本次已识别正文。"""
+        try:
+            changes = await operation
+        except (ValueError, TypeError, KeyError, OSError, PdfiumError, ModelRequestError, PdfModelUnavailable) as exc:
+            review_stage["failed_checks"].append(label)
+            logger.warning(f"{prefix} review={label} error={type(exc).__name__}")
+        else:
+            review_stage["corrected"] += changes
 
     async def recognize(page: int) -> None:
         """单个worker持有一页原图，最多重试一次且绝不切换解析模式。"""
@@ -110,15 +139,8 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
             "warnings": [],
         }
         stage["pages"].append(record)
-        rendering = asyncio.create_task(
-            asyncio.to_thread(render_pdf_region, file_path, page, [0, 0, 1, 1])
-        )
         try:
-            image = await asyncio.shield(rendering)
-        except asyncio.CancelledError:
-            # 线程中的PDFium不能被取消，关闭临时PDF前等待已启动的渲染释放句柄。
-            await asyncio.gather(rendering, return_exceptions=True)
-            raise
+            image = await render_pdf_region_async(file_path, page, [0, 0, 1, 1])
         except Exception:
             failure = PdfRecognitionError(page, "page_render_failed")
             raise failure from None
@@ -187,16 +209,11 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
                     record["warnings"].append("stop_reason_not_reported")
                 if page_result.diagnostics:
                     record["warnings"].append("unclear_regions")
-                # 等上一条消息落库后再更新页数，避免独立会话乱序提交。
-                async with progress_lock:
-                    results[page] = page_result
-                    if control and control.context is not None:
-                        await control.context.set_message(f"PDF 模型识别 {len(results)}/{total} 页（当前第 {page} 页）")
                 logger.info(
                     f"{prefix} page={page} status={record['status']} request_id={request_id}"
                     f" attempt={attempt} elapsed_s={time.monotonic() - started:.2f}"
                 )
-                return
+                break
             except asyncio.CancelledError:
                 outcome["status"] = record["status"] = "cancelled"
                 raise
@@ -211,8 +228,29 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
                     record["status"] = "failed"
                     failure = PdfRecognitionError(page, reason, request_id)
                     raise failure from None
+        if review_executor is not None:
+            await check_review(
+                f"page-{page}", review_recognition_page(file_path, page, image, page_result, review_executor)
+            )
+        # 等上一条消息落库后再更新页数，避免独立会话乱序提交。
+        async with progress_lock:
+            results[page] = page_result
+            if control and control.context is not None:
+                await control.context.set_message(f"PDF 已处理 {len(results)}/{total} 页（当前第 {page} 页）")
 
     await run_pdf_workers(range(1, total + 1), recognize, executor.concurrency)
+    if review_executor is not None and total > 1:
+        if control and control.context is not None:
+            await control.context.set_message("PDF 校对跨页续接")
+
+        async def review_seam(page: int) -> None:
+            """只在相邻两页已完成各自校对后检查接续。"""
+            await check_review(
+                f"seam-{page}",
+                review_recognition_seam(file_path, page, results[page], results[page + 1], review_executor),
+            )
+
+        await run_pdf_workers(range(1, total), review_seam, review_executor.concurrency)
     if control:
         await control.check_cancelled()
     result = ParsedDocument(
@@ -229,10 +267,19 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
             block["order"] = len(result.blocks)
             result.blocks.append(block)
         result.figures.extend(current.figures)
+        result.reviews.extend(current.reviews)
         result.diagnostics.extend(current.diagnostics)
         result.metadata["parsed_pages"].append(page)
-    if result.diagnostics:
+    collect_recognition_uncertainties(result)
+    if review_spec:
+        result.metadata["recognition_review"] = review_stage
+    if review_stage["failed_checks"]:
+        result.metadata["review_status"] = "incomplete"
+    elif result.reviews:
         result.metadata["review_status"] = "needs_review"
+    elif review_spec:
+        result.metadata["review_status"] = "completed"
+    await attach_recognition_review_images(result, file_path, control)
     stage["pages"].sort(key=lambda item: item["page"])
     stage["status"] = "completed"
     attempts = [outcome for page in stage["pages"] for outcome in page["attempts"]]

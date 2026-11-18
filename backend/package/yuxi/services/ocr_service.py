@@ -211,7 +211,7 @@ async def _build_processor_kwargs(db: AsyncSession, engine_id: str) -> dict[str,
 
 
 async def _resolve_pdf_model_params(params: dict | None, db: AsyncSession | None) -> dict:
-    """先收敛PDF模型参数，残留OCR与正文校对配置不参与执行。"""
+    """保留原图识别和校对模型，清理 OCR 专用参数。"""
     from yuxi.models.providers.cache import model_cache
 
     resolved = dict(params or {})
@@ -228,7 +228,6 @@ async def _resolve_pdf_model_params(params: dict | None, db: AsyncSession | None
         "ocr_engine_config",
         "_ocr_processor_kwargs",
         "enable_ocr",
-        "document_review_model",
         "document_review_vision_final_authority",
     ):
         resolved.pop(key, None)

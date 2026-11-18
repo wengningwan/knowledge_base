@@ -8,7 +8,7 @@ import re
 
 from yuxi.knowledge.parser.result import ParsedDocument
 
-PROMPT_VERSION = "pdf-recognition-2"
+PROMPT_VERSION = "pdf-recognition-4"
 RECOGNITION_PROMPT = """你是文档逐字转写器。输入只有当前一页的原图，完整读取这一页的全部印刷内容。
 严格忠实原文，禁止总结、润色、翻译、补写、纠错或改数字。
 禁止补入当前原图不存在的内容；当前页已印有其他文章也照实转写，不按题名筛除。
@@ -20,10 +20,12 @@ blank 只在整页确实空白时为 true，此时 blocks 和 unclear_regions �
 blocks 是严格按页内阅读次序排列的数组，不得去重或合并相似段落。
 type 只允许 title/text/caption/table/formula/picture/chemical_structure/page_header/page_footer。
 每块必须包含 type 和字符串 content；title 还必须有整数 level（1到6）。
-块可以有 bbox，格式为 [x0,y0,x1,y1]，左上原点的0到1归一坐标，必须有正面积。
-picture 和 chemical_structure 必须提供准确 bbox，content 必须为空字符串；图片由服务端从原PDF裁取。
+为每个能定位的块提供 bbox，格式为 [x0,y0,x1,y1]，左上原点的0到1归一坐标，必须有正面积。
+picture 和 chemical_structure 必须提供完整图片的 bbox，含坐标轴、轴名、刻度、图例和图内标注，不含外部图注。
+这些图片块的 content 必须为空字符串，图片由服务端从原 PDF 提取。
 图注独立作为 caption 输出一次，不在图片块重复。picture 或 chemical_structure 有明确对应图注时，添加 caption_index，填该图注在本页 blocks 数组中的0基下标。
 例如块依次为图A、图注A、图B、图注B时，两张图的 caption_index 分别为1和3。图注可在图片前后；归属不明确或没有图注时省略 caption_index。
+图外紧邻插图的曲线说明和附注也用独立 caption 块保留，caption_index 仍指向主图注。
 表格用可复制的 Markdown 或 HTML table，不含样式或资源属性；公式用可复制的 LaTeX。
 不得返回图片资源URL、路径、图片字节、Markdown图片、HTML图片标签或外部资源标签来替代原图。
 原文印有的URL、DOI和路径照实转写为普通正文，不得将其构造为图片引用。
@@ -91,17 +93,11 @@ def normalize_recognition_page(text: str, page: int) -> ParsedDocument:
         kind, content = source["type"], source["content"]
         if not isinstance(kind, str) or kind not in kinds or not isinstance(content, str):
             raise InvalidRecognitionResponse("invalid_block_type_or_content")
-        # 普通原文URL/DOI仍可转写，只有会被渲染为外部资源的语法被拒绝。
-        resource_syntax = (
-            r"!\[|<\s*(?:img|image|svg|script|iframe|object|embed|link|audio|video|source|style|meta|base)\b"
-            r"|<[^>]*\b(?:src|srcset|poster|background|style)\s*=|data\s*:\s*image/|asset://"
-        )
-        if re.search(resource_syntax, content, re.I):
-            raise InvalidRecognitionResponse("external_image_reference")
+        validate_recognition_content(content)
         image = kind in {"picture", "chemical_structure"}
         if (image and content.strip()) or (not image and not content.strip()):
             raise InvalidRecognitionResponse("invalid_block_content")
-        bbox = _validated_bbox(source["bbox"]) if "bbox" in source else None
+        bbox = validate_recognition_bbox(source["bbox"]) if "bbox" in source else None
         if image and bbox is None:
             raise InvalidRecognitionResponse("missing_picture_bbox")
         block = {
@@ -136,7 +132,7 @@ def normalize_recognition_page(text: str, page: int) -> ParsedDocument:
             or not 0 <= block_index < len(result.blocks)
         ):
             raise InvalidRecognitionResponse("invalid_unclear_target")
-        bbox = _validated_bbox(region["bbox"])
+        bbox = validate_recognition_bbox(region["bbox"])
         block = result.blocks[block_index]
         marker = f"[[UNCLEAR_{index}]]"
         if block["type"] in {"picture", "chemical_structure"} or block["content"].count(marker) != 1:
@@ -150,6 +146,7 @@ def normalize_recognition_page(text: str, page: int) -> ParsedDocument:
                 "page": page,
                 "block_id": block["id"],
                 "bbox": bbox,
+                "placeholder": markers[marker][1],
                 "reason": "原图局部无法辨认，已保留占位，需人工核对",
             },
         )
@@ -182,6 +179,18 @@ def normalize_recognition_page(text: str, page: int) -> ParsedDocument:
     return result
 
 
+def validate_recognition_content(content: str) -> None:
+    """限制模型生成的正文资源，原图统一由 PDF 取得。"""
+    if not isinstance(content, str):
+        raise InvalidRecognitionResponse("invalid_block_type_or_content")
+    resource_syntax = (
+        r"!\[|<\s*(?:img|image|svg|script|iframe|object|embed|link|audio|video|source|style|meta|base)\b"
+        r"|<[^>]*\b(?:src|srcset|poster|background|style)\s*=|data\s*:\s*image/|asset://"
+    )
+    if re.search(resource_syntax, content, re.I):
+        raise InvalidRecognitionResponse("external_image_reference")
+
+
 def _unique_object(pairs: list[tuple]) -> dict:
     """拒绝JSON重复字段，避免不同读取器各自选择内容。"""
     result = {}
@@ -192,7 +201,7 @@ def _unique_object(pairs: list[tuple]) -> dict:
     return result
 
 
-def _validated_bbox(value) -> list[float]:
+def validate_recognition_bbox(value) -> list[float]:
     """只接受有限、范围内且有正面积的真实数值坐标。"""
     if (
         not isinstance(value, list)

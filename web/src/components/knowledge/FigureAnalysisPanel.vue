@@ -1,13 +1,14 @@
 <template>
   <section class="parse-assets-panel" aria-label="图片解析">
     <a-spin v-if="state.loading" tip="正在加载图片解析..." />
-    <a-alert v-else-if="state.error" type="error" :message="state.error" show-icon />
+    <a-alert v-else-if="state.error && !state.loaded" type="error" :message="state.error" show-icon />
     <a-empty v-else-if="state.legacy_without_assets" description="此文件尚无独立解析产物，请重新解析生成图片解析和校对结果。" />
     <a-empty v-else-if="!state.figures.length" description="本次解析没有提取到图片。" />
     <template v-else>
       <p class="panel-description">图片解释为模型生成的独立结果，不写入论文正文。</p>
-      <a-alert v-if="['pending', 'running'].includes(state.metadata?.figure_analysis?.status)" type="info" message="正文已就绪，插图正在后台解析。可在任务中心查看进度，完成后关闭并重新打开文件详情。" show-icon />
-      <a-alert v-else-if="['failed', 'cancelled', 'incomplete'].includes(state.metadata?.figure_analysis?.status)" type="warning" message="图片任务未完成，原图和已生成的正文仍可查看。" show-icon />
+      <a-alert v-if="state.error" type="warning" :message="state.error" show-icon />
+      <a-alert v-else-if="['pending', 'running'].includes(state.metadata?.figure_analysis?.status)" type="info" message="插图正在后台解析，完成后会自动显示说明。" show-icon />
+      <a-alert v-else-if="['failed', 'cancelled', 'incomplete', 'needs_review'].includes(state.metadata?.figure_analysis?.status)" type="warning" message="图片任务未完成，原图和已生成的正文仍可查看。" show-icon />
       <article v-for="figure in state.figures" :key="figure.id" class="asset-card">
         <header>
           <strong>{{ figure.caption || figure.id }}</strong>
