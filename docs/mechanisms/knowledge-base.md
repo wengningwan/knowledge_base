@@ -97,7 +97,9 @@ worker 用唯一 attempt token claim Task 并续租 lease；重复投递和失�
 
 PDF 识别方式由应用服务入口解析。`pdf_parse_mode=model` 使用显式选择的 `document_recognition_model` 逐页读取原图。启用 `document_review_model` 时，每页独立校对，确定的修改应用到本页块，未决项携带原图裁图发布。相邻页检查正文和引文续接后，程序按页码和页内阅读顺序渲染 Markdown。插图优先使用与图块明确匹配的 PDF 内嵌图像，提取不可用时记录诊断并渲染原页区域。Markdown 和插图解析读取同一份图像产物。 [正文校对服务](../../backend/package/yuxi/services/pdf_recognition_review_service.py) · [插图提取决策](../develop-guides/decisions/implemented/2026-11-18-pdf-embedded-figure-extraction.md)
 
-页级模型请求复用现有共享并发配置，不设单页固定时限；取消、文件 owner 和 Task lease 继续约束调用与发布。任一页最终失败则不发布新正文，原有失败路径收敛文件状态并保留旧正文指针。全部页面返回后才保存同次解析的 Markdown、块及原图，再沿现有事务发布附属图片任务。局部无法辨认记为 `needs_review`，沿用自动入库暂停语义；页级结果、请求身份和用量保存在附属元数据中。模型回执与结构检查不能证明文字完全准确，部署验收仍需逐页对照原 PDF。
+模型识别的单页及跨页复核在整份回执通过格式与目标校验后才应用。格式不合约定、连接失败、供应商超时或暂时不可用时，当前复核项最多重试一次。失败耗尽后保留识别正文，复核标记为 `incomplete`。插图说明遇到供应商限流时可等待后重试当前图片一次，失败后保留原图。每次实际调用单独记录，退避期间释放共享请求槽并检查任务取消与归属。 [有限重试决策](../develop-guides/decisions/implemented/2026-11-18-pdf-review-and-figure-retries.md)
+
+页级模型请求复用现有共享并发配置，不设单页固定时限；取消、文件 owner 和 Task lease 继续约束调用与发布。任一页识别最终失败则不发布新正文，原有失败路径收敛文件状态并保留旧正文指针。全部页面返回后才保存同次解析的 Markdown、块及原图，再沿现有事务发布附属图片任务。局部无法辨认记为 `needs_review`，沿用自动入库暂停语义；页级结果、请求身份和用量保存在附属元数据中。模型回执与结构检查不能证明文字完全准确，部署验收仍需逐页对照原 PDF。
 
 OXR 适配器拥有表单协议、提交编号和有界查询。知识文件的 parse_runtime 只保存单文件恢复点，处理参数快照不承担运行时状态。已知远端提交编号使用短事务保存，即使收到取消也保留已经发生的远端副作用；恢复点写入仍需有效 Task lease 和文件 owner。正文发布继续检查取消标志和 owner，失权执行不能覆盖当前正文。具体配置与模型选择见[文档处理与 OCR](../advanced/document-processing.md)。
 

@@ -8,7 +8,7 @@ import re
 
 from yuxi.knowledge.parser.result import ParsedDocument
 
-PROMPT_VERSION = "pdf-recognition-4"
+PROMPT_VERSION = "pdf-recognition-5"
 RECOGNITION_PROMPT = """你是文档逐字转写器。输入只有当前一页的原图，完整读取这一页的全部印刷内容。
 严格忠实原文，禁止总结、润色、翻译、补写、纠错或改数字。
 禁止补入当前原图不存在的内容；当前页已印有其他文章也照实转写，不按题名筛除。
@@ -27,6 +27,7 @@ picture 和 chemical_structure 必须提供完整图片的 bbox，含坐标轴�
 例如块依次为图A、图注A、图B、图注B时，两张图的 caption_index 分别为1和3。图注可在图片前后；归属不明确或没有图注时省略 caption_index。
 图外紧邻插图的曲线说明和附注也用独立 caption 块保留，caption_index 仍指向主图注。
 表格用可复制的 Markdown 或 HTML table，不含样式或资源属性；公式用可复制的 LaTeX。
+原文每条独立编号的公式或反应式各用一个 formula 块，编号放在该式末尾。单条公式跨行时保留为一个块。
 不得返回图片资源URL、路径、图片字节、Markdown图片、HTML图片标签或外部资源标签来替代原图。
 原文印有的URL、DOI和路径照实转写为普通正文，不得将其构造为图片引用。
 若局部文字无法辨认，在其原位写 [[UNCLEAR_1]] 等占位，不猜写；同时在 unclear_regions 中登记
@@ -47,10 +48,7 @@ class InvalidRecognitionResponse(ValueError):
 
 def normalize_recognition_page(text: str, page: int) -> ParsedDocument:
     """校验单页完整回执，按原数组次序分配页码和稳定块身份。"""
-    try:
-        payload = json.loads(text, object_pairs_hook=_unique_object)
-    except (ValueError, TypeError, RecursionError):
-        raise InvalidRecognitionResponse("invalid_json") from None
+    payload = decode_recognition_json(text)
     if not isinstance(payload, dict) or set(payload) != {"complete", "blank", "blocks", "unclear_regions"}:
         raise InvalidRecognitionResponse("invalid_page_structure")
     if not isinstance(payload["complete"], bool) or not isinstance(payload["blank"], bool):
@@ -179,6 +177,44 @@ def normalize_recognition_page(text: str, page: int) -> ParsedDocument:
     return result
 
 
+def format_recognition_formula(content: str) -> str:
+    """用原编号将连写的独立公式分成多个显示块。"""
+    body = content.strip()
+    if body.startswith("$$"):
+        if body.count("$$") != 2 or not body.endswith("$$"):
+            return content
+        body = body[2:-2]
+    elif body.startswith(r"\["):
+        if body.count(r"\[") != 1 or body.count(r"\]") != 1 or not body.endswith(r"\]"):
+            return content
+        body = body[2:-2]
+    if re.search(r"\\begin\s*\{", body):
+        return content
+
+    tokens = re.finditer(
+        r"(?P<number>\\tag\*?[ \t]*\{(?:\d+|\(\d+\))\}|\\(?:quad|qquad)[ \t]*\(\d+\)[ \t\r]*$)"
+        r"|\\(?:[A-Za-z]+|.)|[{}]",
+        body,
+        re.MULTILINE,
+    )
+    depth = start = 0
+    equations = []
+    for token in tokens:
+        if token[0] == "{":
+            depth += 1
+        elif token[0] == "}":
+            depth -= 1
+        elif depth == 0 and token["number"]:
+            equation = body[start:token.start()].lstrip().removeprefix(r"\\").lstrip()
+            if not equation.strip():
+                return content
+            equations.append((equation + token[0]).rstrip())
+            start = token.end()
+    if len(equations) < 2 or depth or body[start:].strip() not in {"", r"\\"}:
+        return content
+    return "\n\n".join(f"$$\n{equation}\n$$" for equation in equations)
+
+
 def validate_recognition_content(content: str) -> None:
     """限制模型生成的正文资源，原图统一由 PDF 取得。"""
     if not isinstance(content, str):
@@ -191,14 +227,27 @@ def validate_recognition_content(content: str) -> None:
         raise InvalidRecognitionResponse("external_image_reference")
 
 
-def _unique_object(pairs: list[tuple]) -> dict:
-    """拒绝JSON重复字段，避免不同读取器各自选择内容。"""
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate_field")
-        result[key] = value
-    return result
+def decode_recognition_json(text: str):
+    """解码识别或复核的 JSON，确保内容可保存为 UTF-8。"""
+    def unique_object(pairs: list[tuple]) -> dict:
+        """确保同一字段只出现一次。"""
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate_field")
+            result[key] = value
+        return result
+
+    def invalid_constant(_value: str):
+        """拒绝 JSON 以外的 NaN 和 Infinity。"""
+        raise ValueError("invalid_constant")
+
+    try:
+        payload = json.loads(text, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+        json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (ValueError, TypeError, RecursionError):
+        raise InvalidRecognitionResponse("invalid_json") from None
+    return payload
 
 
 def validate_recognition_bbox(value) -> list[float]:

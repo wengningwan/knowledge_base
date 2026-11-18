@@ -34,6 +34,16 @@ class PdfModelResponse:
     finish_reason: str | None = None
     stop_reason: str | None = None
 
+    @property
+    def truncated(self) -> bool:
+        """根据供应商的停止原因识别达到输出上限的回执。"""
+        return any(
+            value and value.lower().rsplit(".", 1)[-1] in {
+                "length", "max_tokens", "max_output_tokens", "max_completion_tokens", "token_limit", "model_length",
+            }
+            for value in (self.finish_reason, self.stop_reason)
+        )
+
 
 def content_digest(value) -> str:
     """以摘要限定输入、证据及配置，不将原文放入缓存键。"""
@@ -228,6 +238,23 @@ class PdfModelExecutor:
                 except Exception:
                     # 不明远端/进程中断仍由带owner的租约收敛，不删除其他请求。
                     pass
+
+    async def wait_before_retry(self, batch_id: str, reason: str, delay: float) -> bool:
+        """在共享槽外退避，等待期间检查任务归属和剩余时间。"""
+        await self._check()
+        prefix = (
+            f"[pdf_model] task_id={getattr(self.control, 'task_id', None) or '-'}"
+            f" file_id={getattr(self.control, 'file_id', None) or '-'} stage={self.stage} batch_id={batch_id}"
+        )
+        if self.control and self.control.remaining_seconds() <= delay:
+            logger.warning(f"{prefix} retry_skipped reason={reason} detail=insufficient_task_time")
+            return False
+        logger.info(f"{prefix} retry_wait reason={reason} delay_s={delay:.2f} next_attempt=2")
+        ready_at = time.monotonic() + delay
+        while (remaining := ready_at - time.monotonic()) > 0:
+            await asyncio.sleep(min(5, remaining))
+            await self._check()
+        return True
 
     def cache_key(self, scope, evidence):
         """成功缓存按问题/证据隔离，不受并发和批次编号改变影响。"""

@@ -3,8 +3,10 @@
 import base64
 import hashlib
 import hmac
+import math
 import os
 import time
+from email.utils import parsedate_to_datetime
 from uuid import uuid4
 
 from langchain.chat_models import BaseChatModel
@@ -211,10 +213,12 @@ class ModelRequestError(RuntimeError):
                 code = details.get("code", code)
         code = code if isinstance(code, str) else None
         message = str(error).lower()
+        self.retry_after_seconds = None
         if self.http_status in {401, 403} or code in {"invalid_api_key", "authentication_error", "permission_denied"}:
             self.reason = "credentials_rejected"
-        elif self.http_status == 429 or self.error_type == "RateLimitError":
+        elif self.http_status == 429 or self.error_type in {"RateLimitError", "OpenAIRateLimitError"}:
             self.reason = "rate_limited"
+            self.retry_after_seconds = _retry_after_seconds(error)
         elif code in {
             "unsupported_image",
             "invalid_image",
@@ -228,6 +232,7 @@ class ModelRequestError(RuntimeError):
             self.reason = "image_not_supported"
         elif self.error_type in {
             "APITimeoutError",
+            "OpenAITimeoutError",
             "TimeoutError",
             "ReadTimeout",
             "ConnectTimeout",
@@ -237,6 +242,7 @@ class ModelRequestError(RuntimeError):
             self.reason = "provider_timeout"
         elif self.error_type in {
             "APIConnectionError",
+            "OpenAIConnectionError",
             "ConnectError",
             "ReadError",
             "WriteError",
@@ -248,6 +254,25 @@ class ModelRequestError(RuntimeError):
         else:
             self.reason = "provider_error"
         super().__init__(f"PDF model request failed: {self.error_type}")
+
+
+def _retry_after_seconds(error) -> float | None:
+    """只从供应商响应提取有限的等待秒数，不保留响应头。"""
+    headers = getattr(getattr(error, "response", None), "headers", None) or {}
+    value = headers.get("Retry-After") or headers.get("retry-after")
+    if not isinstance(value, str):
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                return None
+            seconds = max(0.0, retry_at.timestamp() - time.time())
+        except (ValueError, OverflowError, OSError):
+            return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
 
 class GeneralResponse:

@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from random import uniform
 
+from yuxi.models.chat import ModelRequestError
 from yuxi.services.pdf_model_execution import PdfModelExecutor, content_digest, run_pdf_workers
 from yuxi.utils.logging_config import logger
 
@@ -67,7 +69,7 @@ async def analyze_document_figures(result, params: dict, control=None) -> None:
                 executor.record_cache_hit("figures")
                 logger.info(f"{prefix} cache_hit figure_id={figure.get('id')} request_sent=false token_increment=0")
             else:
-                response = await executor.request(prompt, data, mime=asset.get("mime", "image/png"), batch_id=str(figure.get("id", index)))
+                response = await _request_figure(executor, prompt, data, asset.get("mime", "image/png"), str(figure.get("id", index)))
                 description = response.text
             if not description.strip() or "\ufffd" in description or len(description) > 50000:
                 raise ValueError("invalid_figure_description")
@@ -81,7 +83,8 @@ async def analyze_document_figures(result, params: dict, control=None) -> None:
             raise
         except Exception as exc:
             figure.update(analysis_status="failed", analysis="图片模型未返回可验证解释，原图已保留")
-            logger.warning(f"{prefix} 插图未完成 figure_id={figure.get('id')} error={type(exc).__name__}")
+            reason = exc.reason if isinstance(exc, ModelRequestError) else type(exc).__name__
+            logger.warning(f"{prefix} 插图未完成 figure_id={figure.get('id')} error={type(exc).__name__} reason={reason}")
         finished += 1
         logger.info(f"{prefix} 插图解析进度 processed={finished}/{total} figure_id={figure.get('id')} status={figure.get('analysis_status')}")
 
@@ -90,3 +93,20 @@ async def analyze_document_figures(result, params: dict, control=None) -> None:
     stage.update(status="completed" if succeeded == total else "incomplete", model=model_spec,
                  completed=succeeded, total=total, execution=executor.stats())
     logger.info(f"{prefix} 插图解析阶段结束 succeeded={succeeded}/{total} elapsed_s={time.monotonic() - started:.1f} execution={json.dumps(executor.stats(), sort_keys=True)}")
+
+
+async def _request_figure(executor, prompt: str, data: bytes, mime: str, batch_id: str):
+    """仅对限流等待后重试当前图片一次。"""
+    try:
+        return await executor.request(prompt, data, mime=mime, batch_id=batch_id)
+    except ModelRequestError as exc:
+        if exc.reason != "rate_limited":
+            raise
+        retry_after = exc.retry_after_seconds
+        if retry_after is not None and retry_after > 60:
+            raise
+        # 无供应商提示时跨过一个分钟级窗口，再错开并发补发。
+        delay = max(1, retry_after) + uniform(0, 5) if retry_after is not None else uniform(60, 65)
+        if not await executor.wait_before_retry(batch_id, exc.reason, delay):
+            raise
+    return await executor.request(prompt, data, mime=mime, batch_id=batch_id, attempt=2)

@@ -12,6 +12,7 @@ from yuxi.knowledge.parser.pdf_recognition import (
     PROMPT_VERSION,
     RECOGNITION_PROMPT,
     InvalidRecognitionResponse,
+    format_recognition_formula,
     normalize_recognition_page,
 )
 from yuxi.knowledge.parser.result import ParsedDocument
@@ -117,9 +118,10 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
         """独立记录可选校对失败，保留本次已识别正文。"""
         try:
             changes = await operation
-        except (ValueError, TypeError, KeyError, OSError, PdfiumError, ModelRequestError, PdfModelUnavailable) as exc:
+        except (ValueError, OSError, PdfiumError, ModelRequestError, PdfModelUnavailable) as exc:
             review_stage["failed_checks"].append(label)
-            logger.warning(f"{prefix} review={label} error={type(exc).__name__}")
+            reason = exc.reason if isinstance(exc, (InvalidRecognitionResponse, ModelRequestError)) else type(exc).__name__
+            logger.warning(f"{prefix} review={label} status=failed error={type(exc).__name__} reason={reason}")
         else:
             review_stage["corrected"] += changes
 
@@ -180,22 +182,7 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
                     queue_seconds=round(response.queue_seconds, 3),
                     call_seconds=round(response.call_seconds, 3),
                 )
-                stops = [
-                    str(value).lower().rsplit(".", 1)[-1]
-                    for value in outcome["stop_reasons"].values()
-                    if value is not None
-                ]
-                if any(
-                    value in {
-                        "length",
-                        "max_tokens",
-                        "max_output_tokens",
-                        "max_completion_tokens",
-                        "token_limit",
-                        "model_length",
-                    }
-                    for value in stops
-                ):
+                if response.truncated:
                     raise InvalidRecognitionResponse("response_truncated")
                 page_result = normalize_recognition_page(response.text, page)
                 if control:
@@ -205,7 +192,7 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
                     status="blank" if page_result.metadata["blank"] else "completed",
                     blank=page_result.metadata["blank"],
                 )
-                if not stops:
+                if not any(value is not None for value in outcome["stop_reasons"].values()):
                     record["warnings"].append("stop_reason_not_reported")
                 if page_result.diagnostics:
                     record["warnings"].append("unclear_regions")
@@ -265,6 +252,8 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
         current = results[page]
         for block in current.blocks:
             block["order"] = len(result.blocks)
+            if block["type"] == "formula":
+                block["content"] = format_recognition_formula(block["content"])
             result.blocks.append(block)
         result.figures.extend(current.figures)
         result.reviews.extend(current.reviews)
