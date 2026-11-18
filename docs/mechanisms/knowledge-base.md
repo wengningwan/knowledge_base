@@ -95,7 +95,7 @@ worker 用唯一 attempt token claim Task 并续租 lease；重复投递和失�
 
 文档主结果和独立附属结果归属于同一次 attempt。主 Markdown 用于预览、下载和后续分块；附属 JSON 保存版面块、图片解释、原生候选、局部修订、未决项和诊断。两者先保存在不可变对象目录，通过知识文件的 markdown_file 和 parse_assets_file 一起发布；未发布的 attempt 只清理自身前缀。旧文件缺少附属指针时，接口返回明确的 legacy 状态，不从旧 Markdown 猜测模型解释。
 
-PDF 识别方式由应用服务入口解析。`pdf_parse_mode=model` 使用显式选择的 `document_recognition_model` 逐页读取原图。启用 `document_review_model` 时，每页独立校对，确定的修改应用到本页块，未决项携带原图裁图发布。相邻页检查正文和引文续接后，程序按页码和页内阅读顺序渲染 Markdown。插图从原 PDF 裁取。 [正文校对服务](../../backend/package/yuxi/services/pdf_recognition_review_service.py)
+PDF 识别方式由应用服务入口解析。`pdf_parse_mode=model` 使用显式选择的 `document_recognition_model` 逐页读取原图。启用 `document_review_model` 时，每页独立校对，确定的修改应用到本页块，未决项携带原图裁图发布。相邻页检查正文和引文续接后，程序按页码和页内阅读顺序渲染 Markdown。插图优先使用与图块明确匹配的 PDF 内嵌图像，提取不可用时记录诊断并渲染原页区域。Markdown 和插图解析读取同一份图像产物。 [正文校对服务](../../backend/package/yuxi/services/pdf_recognition_review_service.py) · [插图提取决策](../develop-guides/decisions/implemented/2026-11-18-pdf-embedded-figure-extraction.md)
 
 页级模型请求复用现有共享并发配置，不设单页固定时限；取消、文件 owner 和 Task lease 继续约束调用与发布。任一页最终失败则不发布新正文，原有失败路径收敛文件状态并保留旧正文指针。全部页面返回后才保存同次解析的 Markdown、块及原图，再沿现有事务发布附属图片任务。局部无法辨认记为 `needs_review`，沿用自动入库暂停语义；页级结果、请求身份和用量保存在附属元数据中。模型回执与结构检查不能证明文字完全准确，部署验收仍需逐页对照原 PDF。
 

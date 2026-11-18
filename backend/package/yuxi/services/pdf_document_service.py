@@ -50,20 +50,16 @@ async def build_native_document(file_path: str):
 
 async def enrich_document(result, file_path: str, params: dict, control=None):
     """先确保原图自足，再分别运行可选局部校对和插图解释。"""
-    from yuxi.knowledge.parser.pdf_native import figure_crop_region, read_native_image_regions, render_pdf_region
+    from yuxi.knowledge.parser.pdf_native import extract_native_figures, figure_crop_region, render_pdf_region_async
     from yuxi.knowledge.parser.pdf_structure import render_document
     from yuxi.services.pdf_figure_analysis_service import analyze_document_figures
     from yuxi.services.pdf_review_service import review_pdf_document
 
     is_model_mode = params.get("pdf_parse_mode", "ocr") == "model"
-    figure_crops = {}
-    if is_model_mode and result.figures:
-        native_images = await asyncio.to_thread(read_native_image_regions, file_path, diagnostics=result.diagnostics)
-        figure_crops = {
-            block["id"]: figure_crop_region(block, native_images, result.blocks)
-            for block in result.blocks
-            if block["type"] in {"picture", "chemical_structure"}
-        }
+    native_figures = (
+        await extract_native_figures(file_path, result.blocks, result.diagnostics)
+        if is_model_mode and result.figures else {}
+    )
     by_figure = {figure["id"]: figure for figure in result.figures}
     base_url = (params.get("_ocr_processor_kwargs") or {}).get("server_url") or ""
     for block in result.blocks:
@@ -79,7 +75,7 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
                 # 外链无法取得时，按原PDF保留完整区域，不向任意主机取资源。
                 if not block.get("bbox"):
                     raise ValueError("原图资源不可用且缺少原文定位") from None
-                data = await asyncio.to_thread(render_pdf_region, file_path, block["page"], block["bbox"])
+                data = await render_pdf_region_async(file_path, block["page"], block["bbox"])
                 mime = "image/png"
                 result.diagnostics.append({"kind": "source_crop", "block_id": block["id"], "reason": "远程图片未取得，保留原PDF完整区域"})
                 if kind == "table":
@@ -108,8 +104,19 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
             if not block.get("bbox"):
                 raise ValueError("插图缺少原图或可定位区域")
             asset_id = f"{block['id']}_source"
-            block["bbox"] = figure_crops.get(block["id"], block["bbox"])
-            data = await asyncio.to_thread(render_pdf_region, file_path, block["page"], block["bbox"])
+            native = native_figures.get(block["id"], {})
+            data = native.get("data")
+            if data:
+                block["bbox"] = native["bbox"]
+            else:
+                if is_model_mode and kind in {"picture", "chemical_structure"}:
+                    block["bbox"] = figure_crop_region(block, result.blocks, native.get("bbox"))
+                    result.diagnostics.append({
+                        "kind": "figure_region_fallback",
+                        "block_id": block["id"],
+                        "reason": native.get("reason", "未匹配到可唯一归属的内嵌图像"),
+                    })
+                data = await render_pdf_region_async(file_path, block["page"], block["bbox"])
             result.assets[asset_id] = {"data": data, "mime": "image/png", "page": block["page"], "bbox": block["bbox"], "role": kind}
             original = str(block.get("content") or "").strip() if kind == "unknown" else ""
             block.update(asset_id=asset_id, asset_ids=[asset_id], content=(original + "\n\n" if original else "") + f"![](asset://{asset_id})", format="markdown")

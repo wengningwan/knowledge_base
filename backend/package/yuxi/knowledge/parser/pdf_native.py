@@ -94,6 +94,23 @@ def read_native_blocks(file_path: str, *, page_info: dict | None = None) -> list
 
 def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None = None) -> list[dict]:
     """按 PDF 绘制实例返回原图区域，重复资源保留每次位置且不提取字节。"""
+    return _read_native_images(file_path, diagnostics)
+
+
+async def extract_native_figures(file_path: str, blocks: list[dict], diagnostics: list[dict]) -> dict:
+    """只提取与模型图块匹配的 PDF 图像，取消时等待源文件释放。"""
+    by_page = {}
+    for block in blocks:
+        if block["type"] in {"picture", "chemical_structure"}:
+            by_page.setdefault(block["page"], []).append(block)
+    records = await _run_pdfium(_read_native_images, file_path, diagnostics, by_page)
+    return {record["id"]: record for record in records}
+
+
+def _read_native_images(
+    file_path: str, diagnostics: list[dict] | None, figure_pages: dict[int, list[dict]] | None = None
+) -> list[dict]:
+    """在页面关闭前读取图像位置及选中对象的像素。"""
     import pypdfium2 as pdfium
 
     from yuxi.knowledge.utils.pdf_utils import PDFIUM_LOCK
@@ -103,15 +120,20 @@ def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None 
         document = pdfium.PdfDocument(str(file_path))
         try:
             for page_index in range(len(document)):
+                if figure_pages is not None and page_index + 1 not in figure_pages:
+                    continue
                 page = document[page_index]
                 try:
                     position, device_width, device_height = _page_position(pdfium, page)
+                    page_images = []
+                    regions_complete = True
                     for index, item in enumerate(page.get_objects(max_depth=16)):
                         if index >= 100_000:
                             message = "PDF 单页对象数超过区域遍历上限"
                             if diagnostics is None:
                                 raise ValueError(message)
                             diagnostics.append({"kind": "native_image_object_limit", "page": page_index + 1, "message": message})
+                            regions_complete = False
                             break
                         if item.type == pdfium.raw.FPDF_PAGEOBJ_FORM and item.level >= 15:
                             message = {
@@ -122,6 +144,7 @@ def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None 
                             if diagnostics is None:
                                 raise ValueError(message["message"])
                             diagnostics.append(message)
+                            regions_complete = False
                         if item.type != pdfium.raw.FPDF_PAGEOBJ_IMAGE:
                             continue
                         try:
@@ -136,14 +159,15 @@ def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None 
                             bbox = _visible_bbox(position, device_width, device_height, corners)
                             if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
                                 continue
-                            regions.append(
-                                {
+                            if figure_pages is None:
+                                regions.append({
                                     "id": f"native_image_p{page_index + 1}_o{index}",
                                     "page": page_index + 1,
                                     "order": len(regions),
                                     "bbox": bbox,
-                                }
-                            )
+                                })
+                            else:
+                                page_images.append((item, bbox))
                         except (ValueError, pdfium.PdfiumError) as exc:
                             if diagnostics is None:
                                 raise ValueError(f"第 {page_index + 1} 页图像 {index} 位置无法读取") from exc
@@ -155,6 +179,9 @@ def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None 
                                     "message": "原图区域无法定位，未猜测替代位置",
                                 }
                             )
+                            regions_complete = False
+                    if figure_pages is not None and regions_complete:
+                        regions.extend(_extract_page_figures(figure_pages[page_index + 1], page_images))
                 finally:
                     page.close()
         finally:
@@ -162,20 +189,133 @@ def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None 
     return regions
 
 
-def figure_crop_region(block: dict, native_images: list[dict], blocks: list[dict]) -> list[float]:
-    """结合同页原生图像位置补齐模型图框，再为轴名和刻度留出边缘。"""
+def _extract_page_figures(blocks: list[dict], page_images: list) -> list[dict]:
+    """为每个内嵌图像确定唯一的同页图块，保持子图的绘制顺序。"""
+    from pypdfium2 import PdfiumError
+
     from yuxi.knowledge.parser.pdf_repair_rules import overlap_fraction
 
+    images_by_block = {block["id"]: [] for block in blocks}
+    ambiguous = set()
+    unmatched = []
+    for item, box in page_images:
+        if box[2] - box[0] >= 0.9 and box[3] - box[1] >= 0.9:
+            continue
+        candidates = [block["id"] for block in blocks if overlap_fraction(box, block["bbox"]) >= 0.5]
+        if len(candidates) == 1:
+            images_by_block[candidates[0]].append((item, box))
+        elif not candidates:
+            unmatched.append((item, box))
+        else:
+            ambiguous.update(candidates)
+
+    # 截偏的图框可能只碰到坐标轴。仅用双方唯一的同栏紧邻关系补配。
+    nearby = {
+        block["id"]: [] for block in blocks
+        if not images_by_block[block["id"]] and block["id"] not in ambiguous
+    }
+    shared = set()
+    for index, (_, box) in enumerate(unmatched):
+        candidates = [
+            block["id"] for block in blocks
+            if block["id"] in nearby and _near_figure_box(box, block["bbox"])
+        ]
+        for block_id in candidates:
+            nearby[block_id].append(index)
+        if len(candidates) > 1:
+            shared.add(index)
+
+    sources = []
+    for block in blocks:
+        block_id = block["id"]
+        images = images_by_block[block_id]
+        neighbors = nearby.get(block_id, [])
+        if not images and len(neighbors) == 1 and neighbors[0] not in shared:
+            images = [unmatched[neighbors[0]]]
+        if block_id in ambiguous or not images:
+            continue
+        boxes = [box for _, box in images]
+        bounds = [
+            min(box[0] for box in boxes),
+            min(box[1] for box in boxes),
+            max(box[2] for box in boxes),
+            max(box[3] for box in boxes),
+        ]
+        if overlap_fraction(block["bbox"], bounds) < 0.5 and not _near_figure_box(bounds, block["bbox"]):
+            continue
+        source = {"id": block_id, "bbox": bounds}
+        try:
+            source["data"] = _figure_png(images, bounds)
+        except (PdfiumError, OSError, ValueError, ZeroDivisionError) as exc:
+            source["reason"] = type(exc).__name__
+        sources.append(source)
+    return sources
+
+
+def _near_figure_box(image: list[float], figure: list[float]) -> bool:
+    """允许上下偏移的图框匹配同栏紧邻的完整内嵌图像。"""
+    width = min(image[2], figure[2]) - max(image[0], figure[0])
+    if width < 0.65 * max(image[2] - image[0], figure[2] - figure[0]):
+        return False
+    gap = max(image[1] - figure[3], figure[1] - image[3], 0)
+    return gap <= min(0.025, (image[3] - image[1]) * 0.25)
+
+
+def _figure_png(images: list, bounds: list[float]) -> bytes:
+    """读取内嵌对象的像素与透明度，并按原页位置合成多张子图。"""
+    from contextlib import ExitStack
+
+    from PIL import Image
+
+    max_pixels = 40_000_000
+    with ExitStack() as stack:
+        parts = []
+        total_pixels = 0
+        for item, box in images:
+            width, height = item.get_px_size()
+            left, bottom, right, top = item.get_bounds()
+            object_width, object_height = right - left, top - bottom
+            if min(object_width, object_height) <= 0 or not math.isfinite(object_width * object_height):
+                raise ValueError("内嵌插图的绘制范围无效")
+            scale = max(width, height) / min(object_width, object_height)
+            if not math.isfinite(scale):
+                raise ValueError("内嵌插图的缩放范围无效")
+            total_pixels += math.ceil(object_width * scale) * math.ceil(object_height * scale)
+            if total_pixels > max_pixels:
+                raise ValueError("内嵌插图像素数过大")
+            # 只渲染图像对象本身，保留透明遮罩，避免把周围正文截入。
+            bitmap = item.get_bitmap(render=True)
+            stack.callback(bitmap.close)
+            image = stack.enter_context(bitmap.to_pil())
+            parts.append((image, box))
+        if len(parts) == 1:
+            data = _png_bytes(parts[0][0])
+        else:
+            x0, y0, x1, y1 = bounds
+            dx = max(image.width / (box[2] - box[0]) for image, box in parts)
+            dy = max(image.height / (box[3] - box[1]) for image, box in parts)
+            size = (math.ceil((x1 - x0) * dx), math.ceil((y1 - y0) * dy))
+            if size[0] * size[1] > max_pixels:
+                raise ValueError("合成插图像素数过大")
+            with Image.new("RGBA", size, "white") as canvas:
+                for image, (left, top, right, bottom) in parts:
+                    pos = (round((left - x0) * dx), round((top - y0) * dy))
+                    end = (round((right - x0) * dx), round((bottom - y0) * dy))
+                    panel_size = (max(1, end[0] - pos[0]), max(1, end[1] - pos[1]))
+                    with image.convert("RGBA") as rgba, rgba.resize(panel_size, Image.Resampling.LANCZOS) as panel:
+                        canvas.alpha_composite(panel, dest=pos)
+                data = _png_bytes(canvas)
+        if len(data) > 32 * 1024 * 1024:
+            raise ValueError("内嵌插图编码后超过大小上限")
+        return data
+
+
+def figure_crop_region(block: dict, blocks: list[dict], native_bbox: list[float] | None = None) -> list[float]:
+    """无法直接提取时沿原图与模型框的范围渲染页面区域。"""
     box = block["bbox"]
-    candidates = [
-        (min(overlap_fraction(box, image["bbox"]), overlap_fraction(image["bbox"], box)), image["bbox"])
-        for image in native_images
-        if image["page"] == block["page"]
-    ]
-    score, native_box = max(candidates, key=lambda candidate: candidate[0], default=(0, box))
-    if score >= 0.5:
-        box = [min(box[0], native_box[0]), min(box[1], native_box[1]),
-               max(box[2], native_box[2]), max(box[3], native_box[3])]
+    if native_bbox:
+        box = [min(box[0], native_bbox[0]), min(box[1], native_bbox[1]),
+               max(box[2], native_bbox[2]), max(box[3], native_bbox[3])]
     margin = min(0.018, max(0.006, (box[3] - box[1]) * 0.10))
     return _crop_with_boundaries(box, block, blocks, margin)
 
@@ -259,7 +399,12 @@ def _expand_box(bbox: list[float], width_factor: float, height_factor: float) ->
 
 async def render_pdf_region_async(file_path: str, page: int, bbox: list, scale: float = 3) -> bytes:
     """取消时等待 PDFium 释放源文件，再交给调用方清理。"""
-    rendering = asyncio.create_task(asyncio.to_thread(render_pdf_region, file_path, page, bbox, scale))
+    return await _run_pdfium(render_pdf_region, file_path, page, bbox, scale)
+
+
+async def _run_pdfium(operation, *args):
+    """等待 PDFium 线程结束后再传播取消。"""
+    rendering = asyncio.create_task(asyncio.to_thread(operation, *args))
     try:
         return await asyncio.shield(rendering)
     except asyncio.CancelledError:
