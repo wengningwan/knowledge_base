@@ -138,7 +138,7 @@ async def enrich_document(result, file_path: str, params: dict, control=None):
             by_figure[block["id"]] = figure
     # 模型与下载都只使用已解码、受大小限制的图像。
     for asset in result.assets.values():
-        asset["data"], asset["mime"] = await asyncio.to_thread(_normalize_image, asset["data"])
+        asset["data"], asset["mime"] = await asyncio.to_thread(normalize_document_image, asset["data"])
     result.figures = [figure for figure in by_figure.values() if figure.get("asset_id")]
     if not is_model_mode and params.get("ocr_engine") == "oxr_ocr" and file_path.lower().endswith(".pdf"):
         await review_pdf_document(result, file_path, params, control)
@@ -221,10 +221,10 @@ async def _read_service_image(reference: str, base_url: str) -> tuple[bytes, str
                 if size > 24 * 1024 * 1024:
                     raise ValueError("原图资源超过大小上限")
                 chunks.append(chunk)
-    return _normalize_image(b"".join(chunks))
+    return normalize_document_image(b"".join(chunks))
 
 
-def _normalize_image(data: bytes) -> tuple[bytes, str]:
+def normalize_document_image(data: bytes) -> tuple[bytes, str]:
     """验证尺寸并无损保存解码像素，统一成可携带PNG。"""
     from PIL import Image
 

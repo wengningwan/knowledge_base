@@ -37,7 +37,7 @@ _GROUPING_COMMANDS = {
 
 def check_recognition_source(document: ParsedDocument, native_blocks: list[dict]) -> dict:
     """用同一页的原生文字登记可定位的引文、文字和电荷疑点。"""
-    page_rows = [(row, _compact(row["content"])) for row in _printed_rows(native_blocks)]
+    page_rows = [(row, _compact(row["content"])) for row in printed_source_rows(native_blocks)]
     coverage = {
         "native_pages": int(bool(page_rows)), "eligible_blocks": 0, "compared_blocks": 0,
         "flagged_blocks": 0,
@@ -219,7 +219,7 @@ def _compact(text: str) -> str:
     return "".join(char for char in text.translate(_PRINT_FORMS) if not char.isspace())
 
 
-def _printed_rows(native_blocks: list[dict]) -> list[dict]:
+def printed_source_rows(native_blocks: list[dict]) -> list[dict]:
     """接回同一印刷行内由上下标拆开的相邻原生片段。"""
     rows = []
     for row in native_blocks:
@@ -228,7 +228,7 @@ def _printed_rows(native_blocks: list[dict]) -> list[dict]:
             previous
             and len(previous["chars"]) + len(row["chars"]) <= 240
             and previous["chars"][-1]["index"] + 1 == row["chars"][0]["index"]
-            and _same_print_line(previous["bbox"], row["bbox"])
+            and same_printed_source_line(previous["bbox"], row["bbox"])
         ):
             chars = previous["chars"] + row["chars"]
             a, b = previous["bbox"], row["bbox"]
@@ -292,7 +292,7 @@ def _citation_left_matches(left: str, row: dict, prefix: str, sources: list[tupl
             continue
         a0, b0, a1, b1 = other["bbox"]
         distance = center - (b0 + b1) / 2
-        adjacent = _same_print_line(other["bbox"], row["bbox"])
+        adjacent = same_printed_source_line(other["bbox"], row["bbox"])
         above = (
             0.75 * height < distance <= 2.5 * max(height, b1 - b0)
             and min(x1, a1) - max(x0, a0) >= 0.8 * min(x1 - x0, a1 - a0)
@@ -301,7 +301,7 @@ def _citation_left_matches(left: str, row: dict, prefix: str, sources: list[tupl
     return matches == 1
 
 
-def _same_print_line(left: list, right: list) -> bool:
+def same_printed_source_line(left: list, right: list) -> bool:
     """判定横向相邻片段是否共用同一印刷行。"""
     height = max(left[3] - left[1], right[3] - right[1])
     gap = right[0] - left[2]

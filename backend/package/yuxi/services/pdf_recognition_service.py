@@ -5,9 +5,16 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections import defaultdict
 
 from yuxi.knowledge.parser.base import DocumentParserException
-from yuxi.knowledge.parser.pdf_native import count_pdf_pages, read_native_page_async, render_pdf_region_async
+from yuxi.knowledge.parser.pdf_final_source import check_final_page_joins, check_final_source_page
+from yuxi.knowledge.parser.pdf_native import (
+    count_pdf_pages,
+    read_native_image_regions_async,
+    read_native_page_async,
+    render_pdf_region_async,
+)
 from yuxi.knowledge.parser.pdf_recognition import (
     PROMPT_VERSION,
     RECOGNITION_PROMPT,
@@ -303,6 +310,10 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
         "status": source_status, **source_check, "failed_pages": sorted(failed_source_pages),
     }
     logger.info(f"{prefix} source_check={source_status} coverage={source_check}")
+    result = await enrich_document(result, file_path, params, control)
+    if not result.markdown.strip():
+        raise DocumentParserException("模型未识别到可用正文", "pdf_model_recognition", "empty_recognition")
+    await _collect_final_source_reviews(result, file_path, prefix, control)
     if review_spec:
         result.metadata["recognition_review"] = review_stage
     if review_stage["failed_checks"]:
@@ -327,10 +338,66 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
     if any(stage["usage"][key] is None for key in ("input", "output", "total")):
         stage["warnings"].append("incomplete_usage")
     result.metadata["model_recognition"] = stage
-    result = await enrich_document(result, file_path, params, control)
-    if not result.markdown.strip():
-        raise DocumentParserException("模型未识别到可用正文", "pdf_model_recognition", "empty_recognition")
     return result
+
+
+async def _collect_final_source_reviews(result, file_path, prefix, control) -> None:
+    """逐页核对用于渲染的最终块，复用发布前的人工校对出口。"""
+    from pypdfium2 import PdfiumError
+
+    by_page = defaultdict(list)
+    for block in result.blocks:
+        by_page[block["page"]].append(block)
+    findings = check_final_page_joins(result.blocks)
+    image_diagnostics = []
+    try:
+        images = await read_native_image_regions_async(file_path, image_diagnostics)
+    except (PdfiumError, OSError, ValueError) as exc:
+        logger.warning(f"{prefix} final_image_regions=unavailable error={type(exc).__name__}")
+        images = []
+        image_failed_pages = set(result.metadata["parsed_pages"])
+    else:
+        image_failed_pages = {entry["page"] for entry in image_diagnostics}
+    images_by_page = defaultdict(list)
+    for image in images:
+        images_by_page[image["page"]].append(image)
+    failed_pages = []
+    for page in result.metadata["parsed_pages"]:
+        if control:
+            await control.check_cancelled()
+        try:
+            native = await read_native_page_async(file_path, page)
+        except (PdfiumError, OSError, ValueError) as exc:
+            failed_pages.append(page)
+            logger.warning(f"{prefix} final_source_check=unavailable page={page} error={type(exc).__name__}")
+            native = []
+        page_findings = await asyncio.to_thread(
+            check_final_source_page, page, by_page[page], native, images_by_page[page],
+        )
+        if page in image_failed_pages and not any(row["bbox"] == [0.0, 0.0, 1.0, 1.0] for row in page_findings):
+            page_findings.append({
+                "id": f"final-source-{page}-images", "kind": "text_mismatch", "status": "unresolved",
+                "page": page, "block_id": None, "before": "", "bbox": [0.0, 0.0, 1.0, 1.0],
+                "reason": "本页的 PDF 图像区域读取不完整，请对照整页原图检查遗漏",
+            })
+        findings.extend(page_findings)
+
+    pending_candidates = {
+        (row["page"], row.get("block_id"), row.get("before"), row["candidates"]["native"])
+        for row in result.reviews
+        if row["status"] == "unresolved" and row.get("candidates", {}).get("native")
+    }
+    new_rows = [
+        row for row in findings
+        if (row["page"], row.get("block_id"), row.get("before"), row.get("candidates", {}).get("native"))
+        not in pending_candidates
+    ]
+    result.reviews.extend(new_rows)
+    result.metadata["final_source_check"] = {
+        "pages": len(result.metadata["parsed_pages"]), "findings": len(new_rows), "failed_pages": failed_pages,
+        "image_region_failed_pages": sorted(image_failed_pages),
+    }
+    logger.info(f"{prefix} final_source_check={result.metadata['final_source_check']}")
 
 
 def _recognition_usage(usage: dict | None) -> dict:

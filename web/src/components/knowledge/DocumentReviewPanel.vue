@@ -149,7 +149,8 @@
             <p v-if="hasIndexes" class="review-hint">修改正文会清理旧分块和索引，保存后需重新入库。</p>
             <p v-if="saveError" class="review-save-error" role="alert">{{ saveError }}</p>
             <div class="review-editor-actions">
-              <button v-if="active.recognition_join" type="button" class="review-action" :disabled="saving || draft !== draftBase" @click="confirmReview('join')">确认跨页接续</button>
+              <button v-if="active.recognition_join" type="button" class="review-action" :disabled="saving || draft !== draftBase" @click="confirmReview('join')">{{ active.recognition_split ? '用空格接续' : '确认跨页接续' }}</button>
+              <button v-if="active.recognition_split && activeBlock?.recognition_join" type="button" class="review-action" :disabled="saving || draft !== draftBase" @click="confirmReview('split')">取消跨页接续</button>
               <button type="button" class="review-save" :disabled="saving || draftConflict || (!activeBlock && (!draft.trim() || !anchorBlockId))" @click="confirmReview(activeBlock ? 'replace' : 'insert_after')">{{ saving ? '正在同步…' : activeBlock ? '确认并同步到 MD' : '确认并补入到 MD' }}</button>
               <button type="button" class="review-keep-danger" :disabled="saving" @click="confirmReview('keep')">确认保持现状</button>
               <span v-if="draft !== draftBase" class="review-hint">有未保存的修改</span>
@@ -362,7 +363,7 @@ async function confirmReview(action) {
       review_revision: props.state.metadata.human_review_revision || null,
       source_sha256: props.sourceSha256,
       review_index: index,
-      action, content: ['keep', 'join'].includes(action) ? '' : draft.value,
+      action, content: ['keep', 'join', 'split'].includes(action) ? '' : draft.value,
       anchor_block_id: action === 'insert_after' ? anchorBlockId.value : null
     })
     for (const key of savedKeys) {

@@ -118,7 +118,7 @@ async def confirm_document_review(
                 ),
                 None,
             )
-            if action not in {"keep", "replace", "insert_after", "join"}:
+            if action not in {"keep", "replace", "insert_after", "join", "split"}:
                 raise ValueError("无效的校对操作")
             if action != "keep":
                 if not blocks or render_document(blocks) != markdown:
@@ -134,9 +134,16 @@ async def confirm_document_review(
                     block["content"] = content
                 elif action == "join":
                     join = row.get("recognition_join")
-                    if block is None or not join:
-                        raise ValueError("当前问题没有可确认的跨页续接")
+                    current_join = row.get("recognition_split")
+                    if block is None or not join or (current_join and block.get("recognition_join") != current_join):
+                        raise ValueError("当前问题没有可确认的跨页续接，或接续已变化")
                     block["recognition_join"] = join
+                elif action == "split":
+                    join = row.get("recognition_split")
+                    if block is None or not join or block.get("recognition_join") != join:
+                        raise ValueError("当前问题没有可取消的接续，或接续已变化")
+                    block.pop("recognition_join")
+                    block["paragraph_start"] = True
                 else:
                     if block is not None or not content.strip():
                         raise ValueError("补入操作需要一个缺失段落问题和非空正文")

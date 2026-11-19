@@ -107,6 +107,11 @@ def read_native_image_regions(file_path: str, *, diagnostics: list[dict] | None 
     return _read_native_images(file_path, diagnostics)
 
 
+async def read_native_image_regions_async(file_path: str, diagnostics: list[dict]) -> list[dict]:
+    """异步获取不含图像字节的全部区域，结束后再释放源文件。"""
+    return await _run_pdfium(_read_native_images, file_path, diagnostics)
+
+
 async def extract_native_figures(file_path: str, blocks: list[dict], diagnostics: list[dict]) -> dict:
     """只提取与模型图块匹配的 PDF 图像，取消时等待源文件释放。"""
     by_page = {}

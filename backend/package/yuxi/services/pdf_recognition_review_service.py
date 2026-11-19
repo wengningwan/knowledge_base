@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from copy import deepcopy
 from dataclasses import replace
@@ -103,6 +104,8 @@ async def attach_recognition_review_images(document, file_path, control=None) ->
     """为待确认项登记原图，沿用解析版本的图片上传和授权。"""
     from pypdfium2 import PdfiumError
 
+    from yuxi.services.pdf_document_service import normalize_document_image
+
     for row in document.reviews:
         if row["status"] != "unresolved":
             continue
@@ -114,13 +117,16 @@ async def attach_recognition_review_images(document, file_path, control=None) ->
                 await control.check_cancelled()
             asset_id = f"{row['id']}_{field}"
             try:
-                image = await render_pdf_region_async(file_path, region["page"], region["bbox"], scale=5)
+                box = region["bbox"]
+                scale = 3 if (box[2] - box[0]) * (box[3] - box[1]) >= 0.5 else 5
+                image = await render_pdf_region_async(file_path, region["page"], box, scale=scale)
+                image, mime = await asyncio.to_thread(normalize_document_image, image)
             except (PdfiumError, OSError, ValueError) as exc:
                 logger.warning(f"[pdf_recognition] review_crop={asset_id} page={region['page']} error={type(exc).__name__}")
                 continue
             document.assets[asset_id] = {
                 "data": image,
-                "mime": "image/png",
+                "mime": mime,
             }
             row[field] = f"asset://{asset_id}"
 
