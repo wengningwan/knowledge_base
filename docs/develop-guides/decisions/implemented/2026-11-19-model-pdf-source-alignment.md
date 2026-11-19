@@ -21,7 +21,7 @@ Owner：backend/package/yuxi/knowledge/parser/pdf_recognition_source.py
 
 ## 后果
 
-同一个段落中的多个错误共用一条校对记录。启用正文校对模型时，疑点先经[逐处原图复核](2026-11-19-model-pdf-source-visual-review.md)，仍未解决的项由人工依据原 PDF 确认。相邻文本相似、双栏几何不明确、扫描图缺少文字层或复杂分式读序不可靠时，匹配覆盖有限。
+同一个段落中的多个错误共用一条校对记录。启用正文校对模型时，疑点进入[整页复核](2026-11-19-model-pdf-joint-page-review.md)，仍未解决的项由人工依据原 PDF 确认。相邻文本相似、双栏几何不明确、扫描图缺少文字层或复杂分式读序不可靠时，匹配覆盖有限。
 
 ## 验证
 

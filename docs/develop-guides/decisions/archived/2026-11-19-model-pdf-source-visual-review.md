@@ -1,8 +1,10 @@
 # 模型 PDF 的原文差异先交正文模型看图复核
 
-状态：implemented
+状态：archived
 类型：feature
 Owner：backend/package/yuxi/services/pdf_recognition_review_service.py
+
+当前行为见[同一页的整页复核随附原文疑点](../implemented/2026-11-19-model-pdf-joint-page-review.md)。
 
 ## 问题
 
@@ -12,7 +14,7 @@ Owner：backend/package/yuxi/services/pdf_recognition_review_service.py
 
 ### 实现方案
 
-保留页面完整性和阅读顺序复核。在跨页接续前，[逐页原文核对](2026-11-19-model-pdf-source-fidelity.md)比对 PDF 原生文字与当前正文。只有有疑点的页才会使用已配置的正文校对模型复核原文差异，同一页共用一个 PDF 原图裁片和明确标出的局部目标。文字疑点让模型选择原识别、已定位的原生候选或无法判断。受支持的公式只接受限定于原文证据的局部改动。程序要求逐处回执，按原块快照重建正文和剩余候选，整批验证后生效。确认过的机器修订和保留决定写入校对记录，未解决项进入人工校对。
+保留页面完整性和阅读顺序复核。在跨页接续前，[逐页原文核对](../implemented/2026-11-19-model-pdf-source-fidelity.md)比对 PDF 原生文字与当前正文。只有有疑点的页才会使用已配置的正文校对模型复核原文差异，同一页共用一个 PDF 原图裁片和明确标出的局部目标。文字疑点让模型选择原识别、已定位的原生候选或无法判断。受支持的公式只接受限定于原文证据的局部改动。程序要求逐处回执，按原块快照重建正文和剩余候选，整批验证后生效。确认过的机器修订和保留决定写入校对记录，未解决项进入人工校对。
 
 ## 替代方案
 

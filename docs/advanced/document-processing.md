@@ -59,7 +59,7 @@ YUXI_URL_WHITELIST=github.com,docs.example.com,*.wikipedia.org
 
 模型识别的独立公式以一对显示定界符写入 Markdown。写入前去掉公式数学范围内已有的成对定界符，保留编号、化学符号和转义。遇到无法配对的定界符，识别和自动复核按回执格式错误处理。[公式定界决策](../develop-guides/decisions/implemented/2026-11-19-model-pdf-formula-delimiters.md)
 
-逐页识别和整页复核后，系统使用原 PDF 同页对应区域的文字做局部核对，找出可定位的引文、单字、点号、词间连字符及部分公式符号差异。启用正文校对模型时，同一页的疑点连同原图裁片集中送模型逐处确认。程序只接受登记范围内的修订或明确的保留决定。人工“校对结果”显示仍未解决的疑点，处理前暂停自动入库。未配置模型时，疑点仍直接进入人工校对。行末英文断词不触发词间连字符核对，无可比原生文字的情况记入解析记录。[原图疑点复核决定](../develop-guides/decisions/implemented/2026-11-19-model-pdf-source-visual-review.md)
+每页初次识别后，系统使用原 PDF 同页对应区域的文字做局部核对，找出可定位的引文、单字、点号、词间连字符及部分公式符号差异。启用正文校对模型时，程序把识别初稿、原文疑点、整页原图和两栏放大图放入同一次整页复核请求。模型逐处确认疑点，也检查整页内容。程序校验登记范围内的修订，仍未解决的疑点进入人工“校对结果”，处理前暂停自动入库。未配置模型时，疑点直接进入人工校对。行末英文断词不触发词间连字符核对，无可比原生文字的情况记入解析记录。[整页复核决定](../develop-guides/decisions/implemented/2026-11-19-model-pdf-joint-page-review.md)
 
 ### 原生文字、插图与正文校对
 
@@ -247,4 +247,4 @@ OCR 正文校对使用 `[pdf_review]` 日志，模型识别及其复核使用 `[
    docker compose exec -T worker sh -c 'rm -f "$YUXI_RUNTIME_DIR/pdf-model-traces/enabled/file_c896d3"'
    ```
 
-每次请求的 `request.json` 记录实际提示及图片文件名，`response.json` 记录回复或安全失败类别。按 `batch_id` 区分初次识别、整页复核、原文疑点复核、跨页复核和插图，按 `request_id` 与普通 worker 日志对照。采集在模型调用结束后落盘。等待写入超时后文件仍可能稍后出现，强制结束容器也可能没有采集文件。复制前核对 `request.json`、`response.json` 和清单中的图片是否齐全。模型格式校验和正文最终结果仍可通过日志和解析产物查看。采集包含文档文字与原图，放在 worker 的私有运行目录中，容器替换前先复制。[采集决定](../develop-guides/decisions/implemented/2026-11-19-pdf-model-exchange-capture.md)
+每次请求的 `request.json` 记录实际提示及图片文件名，`response.json` 记录回复或安全失败类别。按 `batch_id` 区分初次识别、整页复核、跨页复核和插图，按 `request_id` 与普通 worker 日志对照。整页复核 `review-page-N` 的 `targets` 是这页随请求发给模型的原文疑点。采集在模型调用结束后落盘。等待写入超时后文件仍可能稍后出现，强制结束容器也可能没有采集文件。复制前核对 `request.json`、`response.json` 和清单中的图片是否齐全。模型格式校验和正文最终结果仍可通过日志和解析产物查看。采集包含文档文字与原图，放在 worker 的私有运行目录中，容器替换前先复制。[采集决定](../develop-guides/decisions/implemented/2026-11-19-pdf-model-exchange-capture.md)
