@@ -196,6 +196,13 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
                     record["warnings"].append("stop_reason_not_reported")
                 if page_result.diagnostics:
                     record["warnings"].append("unclear_regions")
+                ignored_captions = page_result.metadata.get("ignored_caption_references")
+                if ignored_captions:
+                    record["warnings"].append("invalid_caption_reference")
+                    record["ignored_caption_references"] = ignored_captions
+                    logger.warning(
+                        f"{prefix} page={page} request_id={request_id} ignored_caption_references={ignored_captions}"
+                    )
                 logger.info(
                     f"{prefix} page={page} status={record['status']} request_id={request_id}"
                     f" attempt={attempt} elapsed_s={time.monotonic() - started:.2f}"

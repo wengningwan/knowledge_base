@@ -8,7 +8,7 @@ import re
 
 from yuxi.knowledge.parser.result import ParsedDocument
 
-PROMPT_VERSION = "pdf-recognition-5"
+PROMPT_VERSION = "pdf-recognition-6"
 RECOGNITION_PROMPT = """你是文档逐字转写器。输入只有当前一页的原图，完整读取这一页的全部印刷内容。
 严格忠实原文，禁止总结、润色、翻译、补写、纠错或改数字。
 禁止补入当前原图不存在的内容；当前页已印有其他文章也照实转写，不按题名筛除。
@@ -23,8 +23,8 @@ type 只允许 title/text/caption/table/formula/picture/chemical_structure/page_
 为每个能定位的块提供 bbox，格式为 [x0,y0,x1,y1]，左上原点的0到1归一坐标，必须有正面积。
 picture 和 chemical_structure 必须提供完整图片的 bbox，含坐标轴、轴名、刻度、图例和图内标注，不含外部图注。
 这些图片块的 content 必须为空字符串，图片由服务端从原 PDF 提取。
-图注独立作为 caption 输出一次，不在图片块重复。picture 或 chemical_structure 有明确对应图注时，添加 caption_index，填该图注在本页 blocks 数组中的0基下标。
-例如块依次为图A、图注A、图B、图注B时，两张图的 caption_index 分别为1和3。图注可在图片前后；归属不明确或没有图注时省略 caption_index。
+图注独立作为 caption 输出一次，不在图片块重复。caption_index 是可选字段，只写在 picture 或 chemical_structure 块中，取值为对应 caption 在本页完整 blocks 数组中的0基整数下标。
+例如块依次为图A、图注A、图B、图注B时，两张图的 caption_index 分别为1和3。图注可在图片前后；没有图注或不能确定下标时省略 caption_index。
 图外紧邻插图的曲线说明和附注也用独立 caption 块保留，caption_index 仍指向主图注。
 表格用可复制的 Markdown 或 HTML table，不含样式或资源属性；公式用可复制的 LaTeX。
 原文每条独立编号的公式或反应式各用一个 formula 块，编号放在该式末尾。单条公式跨行时保留为一个块。
@@ -156,24 +156,28 @@ def normalize_recognition_page(text: str, page: int) -> ParsedDocument:
     if unclear:
         result.metadata["review_status"] = "needs_review"
 
+    ignored_caption_references = 0
     for source, block in zip(sources, result.blocks, strict=True):
-        if block["type"] not in {"picture", "chemical_structure"}:
-            if "caption_index" in source:
-                raise InvalidRecognitionResponse("invalid_caption_reference")
-            continue
-        figure = {**{key: block[key] for key in ("id", "page", "bbox", "type")}, "caption": ""}
-        if "caption_index" in source:
-            caption_index = source["caption_index"]
+        is_figure = block["type"] in {"picture", "chemical_structure"}
+        caption_index = source.get("caption_index")
+        caption = None
+        if caption_index is not None:
             if (
-                isinstance(caption_index, bool)
-                or not isinstance(caption_index, int)
-                or not 0 <= caption_index < len(result.blocks)
-                or result.blocks[caption_index]["type"] != "caption"
+                is_figure
+                and type(caption_index) is int
+                and 0 <= caption_index < len(result.blocks)
+                and result.blocks[caption_index]["type"] == "caption"
             ):
-                raise InvalidRecognitionResponse("invalid_caption_reference")
-            caption = result.blocks[caption_index]
-            figure.update(caption=caption["content"], caption_block_id=caption["id"])
-        result.figures.append(figure)
+                caption = result.blocks[caption_index]
+            else:
+                ignored_caption_references += 1
+        if is_figure:
+            figure = {**{key: block[key] for key in ("id", "page", "bbox", "type")}, "caption": ""}
+            if caption is not None:
+                figure.update(caption=caption["content"], caption_block_id=caption["id"])
+            result.figures.append(figure)
+    if ignored_caption_references:
+        result.metadata["ignored_caption_references"] = ignored_caption_references
     return result
 
 
