@@ -50,6 +50,7 @@ class FigureTaskControl:
         self.payload = context.payload
         self.kb_id = self.payload["kb_id"]
         self.file_id = self.payload["file_id"]
+        self.attempt_id = self.payload["attempt_id"]
         self.filename = self.payload.get("filename", "")
         from yuxi.services.task_service import TASKER_DEFAULT_TIMEOUT_SECONDS
 

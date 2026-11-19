@@ -286,6 +286,7 @@ class GeneralResponse:
         token_usage=None,
         finish_reason=None,
         stop_reason=None,
+        visible_content=None,
     ):
         """缺失的服务端计量和停止原因保持未知。"""
         self.content = content
@@ -294,6 +295,7 @@ class GeneralResponse:
         self.token_usage = token_usage
         self.finish_reason = finish_reason
         self.stop_reason = stop_reason
+        self.visible_content = visible_content
 
 
 class LangChainChatAdapter:
@@ -304,18 +306,33 @@ class LangChainChatAdapter:
         self.info = info or {}
         self.safe_error_logging = safe_error_logging
 
-    async def call(self, message, stream=False):
+    async def call(self, message, stream=False, *, capture_visible_content=False):
         messages = self._normalize_messages(message)
         try:
             if stream:
                 return self._stream_response(messages)
             response = await self.model.ainvoke(messages)
             metadata = getattr(response, "response_metadata", None) or {}
+            visible_content = None
+            if capture_visible_content:
+                content = getattr(response, "content", None)
+                if isinstance(content, str):
+                    visible_content = content
+                elif isinstance(content, list):
+                    visible_content = [
+                        block if isinstance(block, str) else {"type": block["type"], "text": block["text"]}
+                        for block in content
+                        if isinstance(block, str) or (
+                            isinstance(block, dict) and block.get("type") in ("text", "output_text")
+                            and isinstance(block.get("text"), str)
+                        )
+                    ]
             return GeneralResponse(
                 response.text, usage_metadata=getattr(response, "usage_metadata", None),
                 token_usage=metadata.get("token_usage") if isinstance(metadata, dict) else None,
                 finish_reason=metadata.get("finish_reason") if isinstance(metadata, dict) else None,
                 stop_reason=metadata.get("stop_reason") if isinstance(metadata, dict) else None,
+                visible_content=visible_content,
             )
         except Exception as e:
             if self.safe_error_logging:

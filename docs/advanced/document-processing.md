@@ -219,3 +219,32 @@ OCR 正文校对使用 `[pdf_review]` 日志，模型识别及其复核使用 `[
 - 解析完成不等于索引完成；回到知识库文件列表确认 `parsed` 或 `indexed`，再做检索验证。
 
 详细变量和容器映射见 `.env.template`、`docker-compose.yml` 和 `docker-compose.prod.yml`。文档页面只保留影响操作的配置，避免与配置文件维护两份默认值。
+
+### 临时采集某个文件的模型交互
+
+部署操作员可以对一个文件开启采集，读取实际发送给模型的系统提示词、请求文字、有序图片和程序在校验前收到的回复。以下以 `file_c896d3` 为例。使用启动服务时的 Compose 文件和项目参数。
+
+1. 重新解析前在 worker 建立该文件的启用标记。
+
+   ```sh
+   docker compose exec -T worker sh -c 'umask 077; mkdir -p "$YUXI_RUNTIME_DIR/pdf-model-traces/enabled" && touch "$YUXI_RUNTIME_DIR/pdf-model-traces/enabled/file_c896d3"'
+   ```
+
+2. 在知识库中重新解析目标 PDF。若启用了独立插图分析，等插图任务结束后再复制。真实请求按解析尝试和 `request_id` 保存，命中缓存的项目没有新的请求记录。
+
+3. 解析成功后，从文件详情 `parse-assets` 响应的 `attempt_id` 取得本次解析标识。若解析失败，文件详情可能还显示旧产物。此时从本次 worker 日志取一个 `request_id`，在目标文件的采集目录中查找同名子目录，其父目录就是本次解析标识。
+
+   ```sh
+   docker compose exec -T worker sh -c 'find "$YUXI_RUNTIME_DIR/pdf-model-traces/requests/file_c896d3" -name REQUEST_ID -type d'
+   ```
+
+4. 把 `PARSE_ATTEMPT_ID` 替换为该标识，复制到仓库外的私有目录，再移除启用标记。多 worker 部署可用 `docker compose ps -q worker` 获取各容器 ID，通过 `docker exec` 和 `docker cp` 在参与本次任务的容器分别操作。下例使用 Compose 的默认 worker 运行目录和 Bash。
+
+   ```sh
+   trace_dir="$(mktemp -d)"
+   docker compose cp worker:/app/runtime/worker/pdf-model-traces/requests/file_c896d3/PARSE_ATTEMPT_ID "$trace_dir/pdf-model-trace"
+   printf '%s\n' "$trace_dir/pdf-model-trace"
+   docker compose exec -T worker sh -c 'rm -f "$YUXI_RUNTIME_DIR/pdf-model-traces/enabled/file_c896d3"'
+   ```
+
+每次请求的 `request.json` 记录实际提示及图片文件名，`response.json` 记录回复或安全失败类别。按 `batch_id` 区分初次识别、整页复核、原文疑点复核、跨页复核和插图，按 `request_id` 与普通 worker 日志对照。采集在模型调用结束后落盘。等待写入超时后文件仍可能稍后出现，强制结束容器也可能没有采集文件。复制前核对 `request.json`、`response.json` 和清单中的图片是否齐全。模型格式校验和正文最终结果仍可通过日志和解析产物查看。采集包含文档文字与原图，放在 worker 的私有运行目录中，容器替换前先复制。[采集决定](../develop-guides/decisions/implemented/2026-11-19-pdf-model-exchange-capture.md)

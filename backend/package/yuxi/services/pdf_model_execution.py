@@ -10,7 +10,9 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
+from yuxi.services.pdf_model_capture import capture_pdf_model_exchange, pdf_model_capture_path
 from yuxi.utils.logging_config import logger
 
 
@@ -142,7 +144,7 @@ class PdfModelExecutor:
         system_prompt=None,
         request_id=None,
     ):
-        """只记安全规模和真实用量，取消时停止子请求并释放当前owner。"""
+        """默认日志只记安全规模和真实用量，取消时释放当前请求的共享槽。"""
         await self._check()
         client = await self._connection()
         self._configuration()
@@ -150,11 +152,13 @@ class PdfModelExecutor:
         image_list = [images] if isinstance(images, bytes) else list(images)
         route = "figures" if self.stage == "figures" else "vision" if image_list else "text"
         route_stats = self._route(route)
+        request_id = request_id or uuid.uuid4().hex
+        capture = await pdf_model_capture_path(self.control, request_id)
+        manifest = captured_result = None
         acquired = False
         queued = time.monotonic()
         queue_recorded = False
         operation = monitor = None
-        request_id = request_id or uuid.uuid4().hex
         prefix = f"[pdf_model] task_id={getattr(self.control, 'task_id', None) or '-'} file_id={getattr(self.control, 'file_id', None) or '-'} stage={self.stage} route={route} batch_id={batch_id} request_id={request_id} attempt={attempt}"
         try:
             while not acquired:
@@ -182,7 +186,18 @@ class PdfModelExecutor:
             started = time.monotonic()
             received = False
             try:
-                operation = asyncio.create_task(self._invoke(prompt, image_list, mime, system_prompt))
+                if capture is not None:
+                    manifest = {
+                        "request_id": request_id, "stage": self.stage, "route": route,
+                        "batch_id": batch_id, "attempt": attempt, "model": self.model_spec,
+                        "file_id": self.control.file_id, "parse_attempt_id": self.control.attempt_id,
+                        "kb_id": getattr(self.control, "kb_id", None), "task_id": getattr(self.control, "task_id", None),
+                        "system_prompt": system_prompt, "prompt": prompt,
+                        "started_at": datetime.now(UTC).isoformat(),
+                    }
+                operation = asyncio.create_task(self._invoke(
+                    prompt, image_list, mime, system_prompt, capture_visible_content=capture is not None,
+                ))
                 monitor = asyncio.create_task(self._renew(client, token))
                 done, _ = await asyncio.wait({operation, monitor}, return_when=asyncio.FIRST_COMPLETED)
                 if monitor in done:
@@ -194,9 +209,9 @@ class PdfModelExecutor:
                 self.responses += 1
                 route_stats["responses"] += 1
                 self._record_usage(usage, route_stats)
-                content = getattr(response, "content", None)
-                if isinstance(content, list):
-                    content = "\n".join(item["text"] for item in content if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str))
+                content = _response_text(response)
+                finish_reason = _stop_reason(getattr(response, "finish_reason", None))
+                stop_reason = _stop_reason(getattr(response, "stop_reason", None))
                 call_s = time.monotonic() - started
                 logger.info(f"{prefix} response_received output_chars={len(content) if isinstance(content, str) else 0} usage={json.dumps(usage, sort_keys=True)} call_s={call_s:.2f}")
                 if not isinstance(content, str):
@@ -207,10 +222,19 @@ class PdfModelExecutor:
                     request_id,
                     queue_s,
                     call_s,
-                    finish_reason=_stop_reason(getattr(response, "finish_reason", None)),
-                    stop_reason=_stop_reason(getattr(response, "stop_reason", None)),
+                    finish_reason=finish_reason,
+                    stop_reason=stop_reason,
                 )
             except BaseException as exc:
+                if manifest is not None and captured_result is None:
+                    from yuxi.models.chat import ModelRequestError
+
+                    captured_result = {
+                        "status": "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
+                        "error_type": type(exc).__name__,
+                    }
+                    if isinstance(exc, ModelRequestError):
+                        captured_result.update(error_type=exc.error_type, reason=exc.reason)
                 self.failed_requests += 1
                 route_stats["failed_requests"] += 1
                 if not received:
@@ -238,6 +262,24 @@ class PdfModelExecutor:
                 except Exception:
                     # 不明远端/进程中断仍由带owner的租约收敛，不删除其他请求。
                     pass
+            if capture is not None and manifest is not None and operation is not None:
+                if operation.done() and not operation.cancelled() and operation.exception() is None:
+                    capture_response = operation.result()
+                    captured_result = {
+                        "status": "received", "reply_text": _response_text(capture_response),
+                        "visible_content": getattr(capture_response, "visible_content", None),
+                        "finish_reason": _stop_reason(getattr(capture_response, "finish_reason", None)),
+                        "stop_reason": _stop_reason(getattr(capture_response, "stop_reason", None)),
+                        "execution_error": captured_result,
+                    }
+                if captured_result is not None:
+                    wait_seconds = min(2.0, self.control.remaining_seconds() - 0.1)
+                    if wait_seconds > 0:
+                        await capture_pdf_model_exchange(capture, manifest, image_list, mime, captured_result, wait_seconds)
+                    else:
+                        logger.warning(
+                            f"[pdf_model_capture] request_id={request_id} write_skipped reason=insufficient_task_time"
+                        )
 
     async def wait_before_retry(self, batch_id: str, reason: str, delay: float) -> bool:
         """在共享槽外退避，等待期间检查任务归属和剩余时间。"""
@@ -307,7 +349,7 @@ class PdfModelExecutor:
         if self.control:
             await self.control.check_cancelled()
 
-    async def _invoke(self, prompt, images, mime, system_prompt):
+    async def _invoke(self, prompt, images, mime, system_prompt, *, capture_visible_content=False):
         """经现有适配器发送文本与有序图像。"""
         from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -315,6 +357,11 @@ class PdfModelExecutor:
         parts.extend({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}} for data in images)
         user_message = HumanMessage(content=parts if images or system_prompt is None else prompt)
         messages = [SystemMessage(content=system_prompt), user_message] if system_prompt is not None else [user_message]
+        if capture_visible_content:
+            from yuxi.models.chat import LangChainChatAdapter
+
+            if isinstance(self.model, LangChainChatAdapter):
+                return await self.model.call(messages, stream=False, capture_visible_content=True)
         return await self.model.call(messages, stream=False)
 
     async def _connection(self):
@@ -400,3 +447,14 @@ def _stop_reason(value) -> str | None:
         return value
     name = getattr(value, "name", None)
     return name if isinstance(name, str) else None
+
+
+def _response_text(response) -> str | None:
+    """与 PDF 业务校验共享同一回复文字，保留服务返回的空白和分段。"""
+    content = getattr(response, "content", None)
+    if isinstance(content, list):
+        return "\n".join(
+            item["text"] for item in content
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+        )
+    return content if isinstance(content, str) else None
