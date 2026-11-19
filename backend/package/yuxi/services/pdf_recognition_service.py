@@ -28,6 +28,7 @@ from yuxi.services.pdf_recognition_review_service import (
     collect_recognition_uncertainties,
     review_recognition_page,
     review_recognition_seam,
+    review_recognition_sources,
 )
 from yuxi.utils.logging_config import logger
 
@@ -115,13 +116,21 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
             review_stage["failed_checks"].append("setup")
             logger.warning(f"{prefix} review=setup error={type(exc).__name__}")
 
-    async def check_review(label, operation) -> None:
+    async def check_review(label, operation, *, source_document=None) -> None:
         """独立记录可选校对失败，保留本次已识别正文。"""
         try:
             changes = await operation
         except (ValueError, OSError, PdfiumError, ModelRequestError, PdfModelUnavailable) as exc:
-            review_stage["failed_checks"].append(label)
             reason = exc.reason if isinstance(exc, (InvalidRecognitionResponse, ModelRequestError)) else type(exc).__name__
+            if source_document is None:
+                review_stage["failed_checks"].append(label)
+            else:
+                for row in source_document.reviews:
+                    if row.get("source_targets"):
+                        row.update(
+                            source_review_error=reason,
+                            reason="模型未完成原图疑点复核，请对照原图确认",
+                        )
             logger.warning(f"{prefix} review={label} status=failed error={type(exc).__name__} reason={reason}")
         else:
             review_stage["corrected"] += changes
@@ -234,6 +243,40 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
                 await control.context.set_message(f"PDF 已处理 {len(results)}/{total} 页（当前第 {page} 页）")
 
     await run_pdf_workers(range(1, total + 1), recognize, executor.concurrency)
+    source_check = {"native_pages": 0, "eligible_blocks": 0, "compared_blocks": 0, "flagged_blocks": 0}
+    failed_source_pages = []
+    source_review_pages = []
+    for page in range(1, total + 1):
+        if control:
+            await control.check_cancelled()
+        current = results[page]
+        try:
+            native = await read_native_page_async(file_path, page)
+        except (PdfiumError, OSError, ValueError) as exc:
+            failed_source_pages.append(page)
+            logger.warning(f"{prefix} source_check=unavailable page={page} error={type(exc).__name__}")
+            native = []
+        coverage = await asyncio.to_thread(check_recognition_source, current, native)
+        del native
+        for name, count in coverage.items():
+            source_check[name] += count
+        if coverage["flagged_blocks"]:
+            source_review_pages.append(page)
+
+    if review_executor is not None and source_review_pages:
+        if control and control.context is not None:
+            await control.context.set_message("PDF 模型复核原文疑点")
+
+        async def review_source(page: int) -> None:
+            """把同页原文候选与裁图送入已配置的校对模型。"""
+            current = results[page]
+            await check_review(
+                f"source-{page}", review_recognition_sources(file_path, page, current, review_executor),
+                source_document=current,
+            )
+
+        await run_pdf_workers(source_review_pages, review_source, review_executor.concurrency)
+
     if review_executor is not None and total > 1:
         if control and control.context is not None:
             await control.context.set_message("PDF 校对跨页续接")
@@ -256,23 +299,11 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
             "review_status": "not_requested",
         },
     )
-    source_check = {"native_pages": 0, "eligible_blocks": 0, "compared_blocks": 0, "flagged_blocks": 0}
-    failed_source_pages = []
     for page in range(1, total + 1):
-        if control:
-            await control.check_cancelled()
         current = results[page]
         collect_recognition_uncertainties(current)
-        try:
-            native = await read_native_page_async(file_path, page)
-        except (PdfiumError, OSError, ValueError) as exc:
-            failed_source_pages.append(page)
-            logger.warning(f"{prefix} source_check=unavailable page={page} error={type(exc).__name__}")
-            native = []
-        coverage = await asyncio.to_thread(check_recognition_source, current, native)
-        del native
-        for name, count in coverage.items():
-            source_check[name] += count
+        for row in current.reviews:
+            row.pop("source_targets", None)
         for block in current.blocks:
             block["order"] = len(result.blocks)
             result.blocks.append(block)
@@ -294,7 +325,7 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
         result.metadata["recognition_review"] = review_stage
     if review_stage["failed_checks"]:
         result.metadata["review_status"] = "incomplete"
-    elif result.reviews:
+    elif any(row["status"] == "unresolved" for row in result.reviews):
         result.metadata["review_status"] = "needs_review"
     elif review_spec:
         result.metadata["review_status"] = "completed"

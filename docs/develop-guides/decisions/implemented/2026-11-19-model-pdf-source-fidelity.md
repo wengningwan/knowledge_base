@@ -4,6 +4,10 @@
 类型：bug-fix
 Owner：backend/package/yuxi/knowledge/parser/pdf_recognition_source.py
 
+跨行引文、轻微定位偏移与括号的补充规则见[局部原文定位](2026-11-19-model-pdf-source-alignment.md)。
+
+启用正文校对模型时，原文候选先进入[原图疑点复核](2026-11-19-model-pdf-source-visual-review.md)，人工确认适用于仍未解决的疑点。
+
 ## 问题
 
 逐页视觉模型及可选复核会漏写引文数字，误读姓名，修改已印出的拼写或科学符号。回执格式正确时仍可能留下这些偏差。PDF 行末断词与原生公式读序会产生另外的表面差异。
