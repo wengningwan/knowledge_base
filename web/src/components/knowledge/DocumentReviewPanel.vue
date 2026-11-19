@@ -114,11 +114,12 @@
           <section v-if="saveReview && sourceSha256 && state.attempt_id" class="review-editor" aria-label="人工校对并同步正文">
             <div class="review-section-heading">
               <h4>{{ activeBlock ? '校对后正文（完整段落）' : '补入遗漏正文' }}</h4>
-              <span>
+              <span v-if="!candidateOutdated">
                 <button v-if="active.suggested_content" type="button" class="review-action" :disabled="saving" @click="draft = active.suggested_content">采用机器草稿</button>
                 <button v-if="active.candidates?.native" type="button" class="review-action" :disabled="saving" @click="draft = active.candidates.native">采用 PDF 提取文字</button>
               </span>
             </div>
+            <p v-if="candidateOutdated" class="review-hint">该段正文已修改，请参考原图，在当前正文中核对其余差异。</p>
             <p class="review-hint">{{ activeBlock ? '请核对完整段落。确认后，该问题的全部检查片段均标记为已确认，原机器记录保留供参考。' : '此问题未定位到原段落。需要补充正文时，请在下方本页上下文中点选补入位置（已按版面就近预选推荐）；原文无误则确认保持现状。' }}</p>
             <div v-if="!activeBlock" class="review-anchor-picker" role="group" aria-label="补入位置">
               <div class="review-anchor-header">
@@ -229,6 +230,9 @@ const activeBlock = computed(() => {
   const id = active.value?.human_review?.block_id || active.value?.block_id
   return id == null ? null : props.state.blocks?.find((block) => block.id === id && !['page_header', 'page_footer'].includes(block.type))
 })
+const candidateOutdated = computed(() => props.state.metadata.pdf_parse_mode === 'model' &&
+  activeBlock.value && (active.value?.suggested_content || active.value?.candidates?.native) &&
+  active.value.before !== activeBlock.value.content)
 const draftKey = computed(() => `${props.state.attempt_id}:${props.state.reviews.indexOf(active.value)}`)
 const clusterActive = computed(() => (isCluster(selected.value) ? selected.value : null))
 /** 列表条目统一视图：簇显示同类处数与页码分布摘要，组维持片段数文案。 */

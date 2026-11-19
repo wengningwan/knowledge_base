@@ -27,7 +27,14 @@ def count_pdf_pages(file_path: str) -> int:
             document.close()
 
 
-def read_native_blocks(file_path: str, *, page_info: dict | None = None) -> list[dict]:
+async def read_native_page_async(file_path: str, page: int) -> list[dict]:
+    """读取指定页，取消时等待 PDFium 释放源文件。"""
+    return await _run_pdfium(read_native_blocks, file_path, page_number=page)
+
+
+def read_native_blocks(
+    file_path: str, *, page_info: dict | None = None, page_number: int | None = None
+) -> list[dict]:
     """在共同 PDFium 锁内按行聚合原生字符，坐标匹配可见页面。"""
     import pypdfium2 as pdfium
 
@@ -39,16 +46,19 @@ def read_native_blocks(file_path: str, *, page_info: dict | None = None) -> list
         try:
             if page_info is not None:
                 page_info["page_count"] = len(document)
-            for page_index in range(len(document)):
+            pages = range(len(document)) if page_number is None else (page_number - 1,)
+            for page_index in pages:
                 page = document[page_index]
                 try:
                     position, device_width, device_height = _page_position(pdfium, page)
                     textpage = page.get_textpage()
                     try:
-                        if textpage.count_chars() > 2_000_000:
+                        count = textpage.count_chars()
+                        limit = 100_000 if page_number is not None else 2_000_000
+                        if count > limit:
                             raise ValueError("PDF 单页原生字符数超过处理上限")
                         line = []
-                        for index in range(textpage.count_chars()):
+                        for index in range(count):
                             codepoint = pdfium.raw.FPDFText_GetUnicode(textpage, index)
                             char = chr(codepoint) if codepoint else ""
                             if char in {"\r", "\n"}:
@@ -402,9 +412,9 @@ async def render_pdf_region_async(file_path: str, page: int, bbox: list, scale: 
     return await _run_pdfium(render_pdf_region, file_path, page, bbox, scale)
 
 
-async def _run_pdfium(operation, *args):
+async def _run_pdfium(operation, *args, **kwargs):
     """等待 PDFium 线程结束后再传播取消。"""
-    rendering = asyncio.create_task(asyncio.to_thread(operation, *args))
+    rendering = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
     try:
         return await asyncio.shield(rendering)
     except asyncio.CancelledError:

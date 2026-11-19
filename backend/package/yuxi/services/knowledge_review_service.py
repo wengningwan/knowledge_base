@@ -37,7 +37,7 @@ async def confirm_document_review(
     anchor_block_id: str | None,
 ) -> dict:
     """校验快照、写全不可变对象，再以 CAS 发布正文和人工确认。"""
-    from yuxi.knowledge.parser.pdf_recognition import format_recognition_formula
+    from yuxi.knowledge.parser.pdf_recognition import InvalidRecognitionResponse, format_recognition_formula
     from yuxi.knowledge.parser.pdf_structure import render_document
     from yuxi.knowledge.utils.kb_utils import parse_minio_url
     from yuxi.storage.minio import get_minio_client
@@ -126,8 +126,11 @@ async def confirm_document_review(
                 if action == "replace":
                     if block is None:
                         raise ValueError("无法定位原段落，请选择明确的补入位置")
-                    if metadata.get("pdf_parse_mode") == "model" and block["type"] == "formula":
-                        content = format_recognition_formula(content)
+                    if metadata.get("pdf_parse_mode") == "model" and block["type"] == "formula" and content.strip():
+                        try:
+                            content = format_recognition_formula(content)
+                        except InvalidRecognitionResponse:
+                            raise ValueError("公式定界符不配对或无法确定公式边界，请调整后保存") from None
                     block["content"] = content
                 elif action == "join":
                     join = row.get("recognition_join")

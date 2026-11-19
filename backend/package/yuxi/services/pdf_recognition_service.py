@@ -7,14 +7,14 @@ import time
 import uuid
 
 from yuxi.knowledge.parser.base import DocumentParserException
-from yuxi.knowledge.parser.pdf_native import count_pdf_pages, render_pdf_region_async
+from yuxi.knowledge.parser.pdf_native import count_pdf_pages, read_native_page_async, render_pdf_region_async
 from yuxi.knowledge.parser.pdf_recognition import (
     PROMPT_VERSION,
     RECOGNITION_PROMPT,
     InvalidRecognitionResponse,
-    format_recognition_formula,
     normalize_recognition_page,
 )
+from yuxi.knowledge.parser.pdf_recognition_source import check_recognition_source
 from yuxi.knowledge.parser.result import ParsedDocument
 from yuxi.models.chat import ModelRequestError
 from yuxi.services.pdf_model_execution import (
@@ -42,6 +42,7 @@ class PdfRecognitionError(DocumentParserException):
         explanation = {
             "incomplete_page": "模型未完整识别本页",
             "response_truncated": "模型输出达到长度上限，内容不完整",
+            "invalid_formula_delimiters": "模型返回的独立公式含无效或不配对的定界符",
             "credentials_rejected": "模型供应商凭据被拒绝",
             "rate_limited": "模型供应商限流，请稍后重试",
             "image_not_supported": "所选模型不支持当前图像输入",
@@ -255,18 +256,40 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
             "review_status": "not_requested",
         },
     )
+    source_check = {"native_pages": 0, "eligible_blocks": 0, "compared_blocks": 0, "flagged_blocks": 0}
+    failed_source_pages = []
     for page in range(1, total + 1):
+        if control:
+            await control.check_cancelled()
         current = results[page]
+        collect_recognition_uncertainties(current)
+        try:
+            native = await read_native_page_async(file_path, page)
+        except (PdfiumError, OSError, ValueError) as exc:
+            failed_source_pages.append(page)
+            logger.warning(f"{prefix} source_check=unavailable page={page} error={type(exc).__name__}")
+            native = []
+        coverage = await asyncio.to_thread(check_recognition_source, current, native)
+        del native
+        for name, count in coverage.items():
+            source_check[name] += count
         for block in current.blocks:
             block["order"] = len(result.blocks)
-            if block["type"] == "formula":
-                block["content"] = format_recognition_formula(block["content"])
             result.blocks.append(block)
         result.figures.extend(current.figures)
         result.reviews.extend(current.reviews)
         result.diagnostics.extend(current.diagnostics)
         result.metadata["parsed_pages"].append(page)
-    collect_recognition_uncertainties(result)
+    if failed_source_pages:
+        source_status = "partial" if source_check["compared_blocks"] else "unavailable"
+    elif source_check["compared_blocks"]:
+        source_status = "compared"
+    else:
+        source_status = "no_comparable_text"
+    result.metadata["recognition_source_check"] = {
+        "status": source_status, **source_check, "failed_pages": failed_source_pages,
+    }
+    logger.info(f"{prefix} source_check={source_status} coverage={source_check}")
     if review_spec:
         result.metadata["recognition_review"] = review_stage
     if review_stage["failed_checks"]:
