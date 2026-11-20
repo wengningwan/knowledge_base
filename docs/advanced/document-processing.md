@@ -61,7 +61,7 @@ YUXI_URL_WHITELIST=github.com,docs.example.com,*.wikipedia.org
 
 每页初次识别后，系统使用原 PDF 同页对应区域的文字做局部核对，找出可定位的引文、单字、点号、词间连字符及部分公式符号差异。启用正文校对模型时，程序把识别初稿、原文疑点、整页原图和两栏放大图放入同一次整页复核请求。模型逐处确认疑点，也检查整页内容。程序校验登记范围内的修订，仍未解决的疑点进入人工“校对结果”，处理前暂停自动入库。未配置模型时，疑点直接进入人工校对。行末英文断词不触发词间连字符核对，无可比原生文字的情况记入解析记录。[整页复核决定](../develop-guides/decisions/implemented/2026-11-19-model-pdf-joint-page-review.md)
 
-导出前，系统再按同页同栏核对最终正文，登记文字增删改、未对齐的原文及能定位的接续冲突。可以准确定位的差异随原图提供文字候选，公式、表格、上下标及证据不足的区域交人工看原图。没有可比较文字的扫描页以整页待核出现，未覆盖的栅格原图也可单独定位。最终核对由程序执行，用户在“校对结果”里确认后才会改写 Markdown。校对项可补入遗漏正文、取消有冲突的跨页接续，或在两个英文片段之间加空格。仍有待确认项时暂停自动入库。[最终原文核对决定](../develop-guides/decisions/implemented/2026-11-19-model-pdf-final-source-audit.md)
+跨页接续后，系统以待导出的 Markdown 为成稿进行终审。程序只留下同页同栏、能用前后原文定位的文字候选。页眉页码、换行断词、已保留的公式和表格片段不再单独产生待确认项。启用正文校对模型时，模型逐页看整页原图、放大图和疑点，并结合成稿检查正文及接续。短文档提供全文 Markdown，长文档提供当前页、相邻页接续文字与章节线索。模型确认且通过检查的局部候选自动写入成稿。其余可定位的疑点带原图进入“校对结果”。已启用的终审未完成时，面板顶部统一提示页码。仍有待确认项或已启用的复核未完成时暂停自动入库。未启用模型时，面板提示未执行成稿终审，已定位的候选仍可人工确认。[成稿终审决定](../develop-guides/decisions/implemented/2026-11-20-model-pdf-final-review.md)
 
 ### 原生文字、插图与正文校对
 
@@ -249,4 +249,4 @@ OCR 正文校对使用 `[pdf_review]` 日志，模型识别及其复核使用 `[
    docker compose exec -T worker sh -c 'rm -f "$YUXI_RUNTIME_DIR/pdf-model-traces/enabled/file_c896d3"'
    ```
 
-每次请求的 `request.json` 记录实际提示及图片文件名，`response.json` 记录回复或安全失败类别。按 `batch_id` 区分初次识别、整页复核、跨页复核和插图，按 `request_id` 与普通 worker 日志对照。整页复核 `review-page-N` 的 `targets` 是这页随请求发给模型的原文疑点。采集在模型调用结束后落盘。等待写入超时后文件仍可能稍后出现，强制结束容器也可能没有采集文件。复制前核对 `request.json`、`response.json` 和清单中的图片是否齐全。模型格式校验和正文最终结果仍可通过日志和解析产物查看。采集包含文档文字与原图，放在 worker 的私有运行目录中，容器替换前先复制。[采集决定](../develop-guides/decisions/implemented/2026-11-19-pdf-model-exchange-capture.md)
+每次请求的 `request.json` 记录实际提示及图片文件名，`response.json` 记录回复或安全失败类别。按 `batch_id` 区分初次识别、整页复核、跨页复核、成稿终审和插图，按 `request_id` 与普通 worker 日志对照。整页复核 `review-page-N` 的 `targets` 是这页随请求发给模型的原文疑点。成稿终审 `review-final-N` 的 `draft` 是这次使用的成稿上下文，`targets` 列出剩余文字候选。采集在模型调用结束后落盘。等待写入超时后文件仍可能稍后出现，强制结束容器也可能没有采集文件。复制前核对 `request.json`、`response.json` 和清单中的图片是否齐全。模型格式校验和正文最终结果仍可通过日志和解析产物查看。采集包含文档文字与原图，放在 worker 的私有运行目录中，容器替换前先复制。[采集决定](../develop-guides/decisions/implemented/2026-11-19-pdf-model-exchange-capture.md)

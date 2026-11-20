@@ -309,16 +309,28 @@ const afterFullParts = computed(() => withMathHtml(splitMathSegments(typeof acti
 const hasChanges = computed(() => diff.value.parts.some((part) => part.type !== 'equal'))
 const validPage = (page) => Number.isInteger(page) && page > 0
 const pageLabel = (page) => validPage(page) ? `第 ${page} 页` : '页码未知'
-const reviewSummary = computed(() => ({
-  not_requested: props.state.metadata.pdf_parse_mode === 'model'
-    ? '本次使用模型逐页识别，尚未执行正文校对。'
-    : '未启用模型校对，以下为系统检测和规则处理记录。',
-  needs_review: '部分内容仍需人工核对，请逐项对照原文。',
-  incomplete: '正文已生成，部分自动复核尚未完成，请对照原文检查。',
-  completed: props.state.metadata.pdf_parse_mode === 'model'
-    ? '正文原图校对已完成。'
-    : '本次登记疑点已完成核对，仍可结合原 PDF 复核。'
-})[props.state.metadata.review_status] || '以下为系统校对记录，可结合原文逐项复核。')
+const reviewSummary = computed(() => {
+  const metadata = props.state.metadata
+  const unfinished = metadata.final_source_check?.unverified_pages || []
+  if (metadata.recognition_review?.model && unfinished.length) {
+    const visible = unfinished.slice(0, 8).join('、')
+    const pages = unfinished.length > 8 ? `第 ${visible} 等 ${unfinished.length} 页` : `第 ${visible} 页`
+    return `正文已生成，${pages}的成稿终审未完成。请结合原 PDF 查看。`
+  }
+  if (metadata.final_source_check && !metadata.recognition_review?.model && unfinished.length) {
+    return '本次未启用正文校对模型，成稿尚未对照原图终审。'
+  }
+  return ({
+    not_requested: metadata.pdf_parse_mode === 'model'
+      ? '本次使用模型逐页识别，尚未执行正文校对。'
+      : '未启用模型校对，以下为系统检测和规则处理记录。',
+    needs_review: '部分内容仍需人工核对，请逐项对照原文。',
+    incomplete: '正文已生成，部分自动复核尚未完成，请对照原文检查。',
+    completed: metadata.pdf_parse_mode === 'model'
+      ? '正文原图校对已完成。'
+      : '本次登记疑点已完成核对，仍可结合原文复核。'
+  })[metadata.review_status] || '以下为系统校对记录，可结合原文逐项复核。'
+})
 
 /** 切换分类时从该分类的首个问题开始核对。 */
 function changeFilter(value) {

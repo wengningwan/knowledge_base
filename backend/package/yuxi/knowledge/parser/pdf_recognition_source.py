@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import defaultdict
 from difflib import SequenceMatcher
 
@@ -105,7 +106,9 @@ def check_recognition_source(document: ParsedDocument, native_blocks: list[dict]
                 if citation and not _CITATION_DIGITS.fullmatch(before[left:right]):
                     continue
                 boxes.append(source_bbox)
-                if any(left < b and right > a for a, b in math) or not preserves_protected(
+                old = before[left:right]
+                flattened = old != replacement and unicodedata.normalize("NFKC", old) == replacement
+                if flattened or any(left < b and right > a for a, b in math) or not preserves_protected(
                     before, before[:left] + replacement + before[right:]
                 ):
                     math_conflict = True

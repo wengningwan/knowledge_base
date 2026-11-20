@@ -9,12 +9,7 @@ from collections import defaultdict
 
 from yuxi.knowledge.parser.base import DocumentParserException
 from yuxi.knowledge.parser.pdf_final_source import check_final_page_joins, check_final_source_page
-from yuxi.knowledge.parser.pdf_native import (
-    count_pdf_pages,
-    read_native_image_regions_async,
-    read_native_page_async,
-    render_pdf_region_async,
-)
+from yuxi.knowledge.parser.pdf_native import count_pdf_pages, read_native_page_async, render_pdf_region_async
 from yuxi.knowledge.parser.pdf_recognition import (
     PROMPT_VERSION,
     RECOGNITION_PROMPT,
@@ -22,6 +17,7 @@ from yuxi.knowledge.parser.pdf_recognition import (
     normalize_recognition_page,
 )
 from yuxi.knowledge.parser.pdf_recognition_source import check_recognition_source
+from yuxi.knowledge.parser.pdf_structure import render_document
 from yuxi.knowledge.parser.result import ParsedDocument
 from yuxi.models.chat import ModelRequestError
 from yuxi.services.pdf_model_execution import (
@@ -33,6 +29,7 @@ from yuxi.services.pdf_model_execution import (
 from yuxi.services.pdf_recognition_review_service import (
     attach_recognition_review_images,
     collect_recognition_uncertainties,
+    review_recognition_final,
     review_recognition_page,
     review_recognition_seam,
 )
@@ -313,7 +310,15 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
     result = await enrich_document(result, file_path, params, control)
     if not result.markdown.strip():
         raise DocumentParserException("模型未识别到可用正文", "pdf_model_recognition", "empty_recognition")
-    await _collect_final_source_reviews(result, file_path, prefix, control)
+    if review_executor and control and control.context:
+        await control.context.set_message("PDF 成稿终审")
+    review_stage["corrected"] += await _review_final_document(
+        result, file_path, prefix, control, review_executor, check_review,
+    )
+    if review_executor:
+        for page in result.metadata["final_source_check"]["unverified_pages"]:
+            if f"final-{page}" not in review_stage["failed_checks"]:
+                review_stage["failed_checks"].append(f"final-{page}-unverified")
     if review_spec:
         result.metadata["recognition_review"] = review_stage
     if review_stage["failed_checks"]:
@@ -341,63 +346,127 @@ async def recognize_pdf_document(file_path: str, params: dict, control=None) -> 
     return result
 
 
-async def _collect_final_source_reviews(result, file_path, prefix, control) -> None:
-    """逐页核对用于渲染的最终块，复用发布前的人工校对出口。"""
+async def _review_final_document(result, file_path, prefix, control, executor, check_review) -> int:
+    """所有页用同一份成稿快照，终审结束后再汇总改动。"""
     from pypdfium2 import PdfiumError
 
     by_page = defaultdict(list)
     for block in result.blocks:
         by_page[block["page"]].append(block)
-    findings = check_final_page_joins(result.blocks)
-    image_diagnostics = []
-    try:
-        images = await read_native_image_regions_async(file_path, image_diagnostics)
-    except (PdfiumError, OSError, ValueError) as exc:
-        logger.warning(f"{prefix} final_image_regions=unavailable error={type(exc).__name__}")
-        images = []
-        image_failed_pages = set(result.metadata["parsed_pages"])
-    else:
-        image_failed_pages = {entry["page"] for entry in image_diagnostics}
-    images_by_page = defaultdict(list)
-    for image in images:
-        images_by_page[image["page"]].append(image)
-    failed_pages = []
-    for page in result.metadata["parsed_pages"]:
+    pages = result.metadata["parsed_pages"]
+    full_draft = result.markdown if len(result.markdown) <= 24_000 else None
+    headings = [{"page": block["page"], "title": block["content"][:160]} for block in result.blocks if block["type"] == "title"]
+    blocks = {block["id"]: block for block in result.blocks}
+    native_failed_pages, candidates, outcomes = [], {}, {}
+
+    async def review_page(page: int) -> None:
+        """查找本页原文候选，并让终审模型检查这一页。"""
         if control:
             await control.check_cancelled()
         try:
             native = await read_native_page_async(file_path, page)
         except (PdfiumError, OSError, ValueError) as exc:
-            failed_pages.append(page)
+            native_failed_pages.append(page)
             logger.warning(f"{prefix} final_source_check=unavailable page={page} error={type(exc).__name__}")
             native = []
-        page_findings = await asyncio.to_thread(
-            check_final_source_page, page, by_page[page], native, images_by_page[page],
-        )
-        if page in image_failed_pages and not any(row["bbox"] == [0.0, 0.0, 1.0, 1.0] for row in page_findings):
-            page_findings.append({
-                "id": f"final-source-{page}-images", "kind": "text_mismatch", "status": "unresolved",
-                "page": page, "block_id": None, "before": "", "bbox": [0.0, 0.0, 1.0, 1.0],
-                "reason": "本页的 PDF 图像区域读取不完整，请对照整页原图检查遗漏",
-            })
-        findings.extend(page_findings)
+        page_blocks = by_page.get(page, [])
+        candidates[page] = await asyncio.to_thread(check_final_source_page, page, page_blocks, native)
+        if executor is None:
+            return
+        context = {"scope": "document", "markdown": full_draft} if full_draft is not None else {
+            "scope": "page_with_adjacent_context",
+            "page_markdown": render_document(page_blocks),
+            "previous_end": render_document(by_page.get(page - 1, []))[-900:],
+            "next_start": render_document(by_page.get(page + 1, []))[:900],
+            "headings": headings if len(headings) <= 100 else [item for item in headings if abs(item["page"] - page) <= 2],
+        }
+        joins = {}
+        for block in page_blocks:
+            if (join := block.get("recognition_join")) and (previous := blocks.get(join["block_id"])):
+                joins[block["id"]] = (join, previous)
 
-    pending_candidates = {
-        (row["page"], row.get("block_id"), row.get("before"), row["candidates"]["native"])
-        for row in result.reviews
-        if row["status"] == "unresolved" and row.get("candidates", {}).get("native")
-    }
-    new_rows = [
-        row for row in findings
-        if (row["page"], row.get("block_id"), row.get("before"), row.get("candidates", {}).get("native"))
-        not in pending_candidates
-    ]
-    result.reviews.extend(new_rows)
+        async def confirm() -> int:
+            """仅保存通过协议校验的结果，异常时保留既有候选。"""
+            outcomes[page] = await review_recognition_final(
+                file_path, page, page_blocks, context, candidates[page], joins, executor,
+            )
+            return 0
+
+        await check_review(f"final-{page}", confirm())
+
+    await run_pdf_workers(pages, review_page, executor.concurrency if executor else 1)
+    seam_rows = check_final_page_joins(result.blocks)
+    unverified_pages = [page for page in pages if page not in outcomes or outcomes[page][2]]
+    pending = [row for row in result.reviews if row["status"] == "unresolved"]
+    seen = defaultdict(list)
+    pending_by_block = defaultdict(list)
+    for row in pending:
+        seen[_final_review_identity(row)].append(row)
+        pending_by_block[row.get("block_id")].append(row)
+    added, corrected = 0, 0
+    for page in pages:
+        decisions, model_rows, _ = outcomes.get(page, ({}, [], True))
+        model_seams = {row["block_id"] for row in model_rows if row.get("recognition_split")}
+        manual = model_rows + [
+            row for row in seam_rows if row["page"] == page and row["block_id"] not in model_seams
+        ]
+        for row in manual:
+            pending_by_block[row["block_id"]].append(row)
+        for row in candidates[page] + manual:
+            row.pop("final_source_details", None)
+            identity = _final_review_identity(row)
+            existing = seen.get(identity, [])
+            decision = decisions.get(row["id"])
+            if decision == "keep":
+                for receipt in existing:
+                    receipt.update(status="checked", source="model", reason="成稿终审已对照原图确认当前文字")
+                continue
+            other_pending = any(
+                item["status"] == "unresolved" and _final_review_identity(item) != identity
+                for item in pending_by_block[row["block_id"]]
+            )
+            if decision == "adopt" and not other_pending:
+                block = blocks[row["block_id"]]
+                after = row["candidates"]["native"]
+                block["content"] = after
+                for receipt in existing or [row]:
+                    receipt.update(
+                        status="checked", source="model", after=after,
+                        reason="成稿终审已对照原图修正这处文字",
+                    )
+                corrected += 1
+                if not existing:
+                    result.reviews.append(row)
+                continue
+            if decision == "adopt":
+                for receipt in existing or [row]:
+                    receipt["reason"] += "本段还有其他待确认内容，请一并核对。"
+            if existing:
+                continue
+            added += 1
+            seen[identity].append(row)
+            result.reviews.append(row)
+    if corrected:
+        result.markdown = render_document(result.blocks)
     result.metadata["final_source_check"] = {
-        "pages": len(result.metadata["parsed_pages"]), "findings": len(new_rows), "failed_pages": failed_pages,
-        "image_region_failed_pages": sorted(image_failed_pages),
+        "pages": len(pages), "findings": added, "corrected": corrected,
+        "checked_pages": [page for page in pages if page not in unverified_pages],
+        "unverified_pages": unverified_pages, "failed_pages": sorted(native_failed_pages),
     }
     logger.info(f"{prefix} final_source_check={result.metadata['final_source_check']}")
+    return corrected
+
+
+def _final_review_identity(row: dict) -> tuple:
+    """同一段落的相同候选和跨页决定只展示一次。"""
+    join = row.get("recognition_join") or row.get("recognition_split")
+    if join:
+        return row["page"], row.get("block_id"), "join", (
+            join["block_id"], join["separator"], bool(row.get("recognition_split")),
+        )
+    candidate = row.get("candidates", {}).get("native", row.get("suggested_content"))
+    location = row.get("block_id") or tuple(row.get("bbox") or ())
+    return row["page"], location, row.get("before"), candidate if candidate is not None else row["id"]
 
 
 def _recognition_usage(usage: dict | None) -> dict:

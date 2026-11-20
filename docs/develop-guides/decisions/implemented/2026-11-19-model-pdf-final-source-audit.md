@@ -4,6 +4,8 @@
 类型：feature
 Owner：backend/package/yuxi/knowledge/parser/pdf_final_source.py
 
+发布前的宽泛程序核对已由[成稿终审](2026-11-20-model-pdf-final-review.md)取代。本记录保留跨页接续的定位与人工处理决定。
+
 ## 问题
 
 现有原文疑点扫描在模型复核前执行，只登记特定引文和局部符号。漏字、引文中误加逗号、数字被写成字母、定位上下文跨行时，最终稿可能保留错误，同时没有人工待确认项。
