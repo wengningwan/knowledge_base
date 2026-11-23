@@ -1,4 +1,4 @@
-"""从规范吸附记录投影可逐条核对的样品卡和原文。"""
+"""从论文规范记录投影待审核的样品卡和原文。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from yuxi.knowledge.adsorption_contract import Notice
 from yuxi.knowledge.structure_tables import table_cells
 
 _NUMBER = re.compile(
-    r"(?<![\w.])[+−-]?(?:\d+(?:\.\d+)?|\.\d+)"
+    r"(?<![A-Za-z0-9_.])[+−-]?(?:\d+(?:\.\d{3}(?:[ \u00a0\u2009]\d{1,3})+|\.\d+)?|\.\d+)"
     r"(?:[eE][+−-]?\d+|\s*(?:\\times|×|⋅|·|x)\s*10\s*"
     r"(?:\^\s*\{?\s*[+−-]?\d+\s*\}?|[+−-]\d+|[⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹]+))?(?!\d|\.\d)"
 )
@@ -75,9 +75,14 @@ def filter_observation_values(record: dict, sources: dict, markdown: str, notice
             observation = {**observation, "results": accepted}
         else:
             try:
-                measurements = _verified_measurements(
-                    observation, evidence, samples, sample_names, entities, markdown,
-                )
+                if observation["observation_type"] == "quantitative_measurement":
+                    measurements = [_verified_quantitative_measurement(
+                        observation, evidence,
+                    )]
+                else:
+                    measurements = _verified_measurements(
+                        observation, evidence, samples, sample_names, entities, markdown,
+                    )
             except _UnverifiedObservation as error:
                 notices.append(("unverified_observation", f"第 {index} 条观测已剔除。{error}",
                                 {"collection": "observations", "record": observation}))
@@ -151,8 +156,10 @@ def project_experiment_cards(record: dict, sources: dict, measurement_values: di
         run = runs.get(observation.get("run_id"), {})
         method = run.get("technique") or run.get("method") or run.get("run_type")
         conditions = [
-            {"name": name, "value": field(text, refs)}
-            for name, value in _observation_conditions(observation, entities).items()
+            {"name": name, "value": field(text, [*run.get("evidence_ids", []), *refs])}
+            for name, value in {
+                **run.get("conditions", {}), **_observation_conditions(observation, entities),
+            }.items()
             if (text := _display_value(value)) is not None
         ]
         for label, text in measurement_values[observation["observation_id"]]:
@@ -169,7 +176,7 @@ def project_experiment_cards(record: dict, sources: dict, measurement_values: di
 def _sample_ids(observation: dict) -> list[str]:
     """读取观测显式关联的样品状态编号。"""
     if "sample_state_id" in observation:
-        return [observation["sample_state_id"]]
+        return [observation["sample_state_id"]] if observation["sample_state_id"] is not None else []
     return observation.get("sample_state_ids", [])
 
 
@@ -194,6 +201,33 @@ def _verified_measurements(observation, evidence, samples, sample_names, entitie
             )
         measurements.append((label, text))
     return measurements
+
+
+def _verified_quantitative_measurement(observation: dict, evidence: list[dict]) -> tuple[str, str]:
+    """仅定位原文数量和单位；实验归属、条件含义继续保持待审核。"""
+    value = observation["value"]
+    numbers = (
+        [Decimal(str(value["value"]))] if value["kind"] == "scalar"
+        else [Decimal(str(value["minimum"])), Decimal(str(value["maximum"]))]
+    )
+    if len(numbers) == 2 and numbers[0] > numbers[1]:
+        raise _UnverifiedObservation("数值范围的下界大于上界。")
+    expected = set(numbers)
+    if not expected <= _numbers(value["raw_text"]):
+        raise _UnverifiedObservation("数值与原文写法不一致。")
+    unit = value["unit_raw"]
+    for source in evidence:
+        quote = source["quote"]
+        if not expected <= _numbers(quote) or (unit and not _unit_matches(unit, quote, case_sensitive=True)):
+            continue
+        raw = value["raw_text"]
+        if raw not in quote and len(numbers) == 1:
+            raw = next(match.group() for match in _NUMBER.finditer(quote) if _number(match.group()) == numbers[0])
+        label = observation["metric_id"]
+        if unit and unit not in raw:
+            label = f"{label} ({unit})"
+        return label, raw
+    raise _UnverifiedObservation("数值或已报告单位无法在所引原文中定位。")
 
 
 def _measurement_values(observation: dict):
@@ -358,21 +392,25 @@ def _table_label(text: str) -> str:
     return re.sub(r"[$_{}]", "", text)
 
 
-def _unit_matches(unit: str, text: str, *, prefix: bool = False, exact: bool = False) -> bool:
+def _unit_matches(
+    unit: str, text: str, *, prefix: bool = False, exact: bool = False, case_sensitive: bool = False,
+) -> bool:
     """在表头或单元格中核对原始单位，接受上标和倒数写法。"""
     def normalize(value):
         """统一单位中常见的数学标记。"""
-        value = unicodedata.normalize("NFKC", html.unescape(value)).casefold().replace("−", "-")
+        value = unicodedata.normalize("NFKC", html.unescape(value)).replace("−", "-")
+        if not case_sensitive:
+            value = value.casefold()
         value = re.sub(r"[\^${}]", "", value).replace("·", " ").replace("⋅", " ")
-        value = re.sub(r"(?<=[a-z])\s+(?=[+-]?\d)|\s*(/)\s*", r"\1", value)
+        value = re.sub(r"(?<=[A-Za-z])\s+(?=[+-]?\d)|\s*(/)\s*", r"\1", value)
         value = re.sub(r"\b(s|min|h)\s*-\s*1\b", r"1/\1", value)
         return re.sub(r"(\d)\s*(kg|g)\s*-\s*1\b", r"\1/\2", value).strip()
 
     normalized = normalize(unit)
     if exact:
         return bool(normalized and normalized == normalize(text))
-    start = "^" if prefix else r"(?<![a-z/])"
-    return bool(normalized and re.search(rf"{start}{re.escape(normalized)}(?![a-z0-9/+-])", normalize(text)))
+    start = "^" if prefix else r"(?<![A-Za-z/])"
+    return bool(normalized and re.search(rf"{start}{re.escape(normalized)}(?![A-Za-z0-9/+-])", normalize(text)))
 
 
 def _phrase(text: str) -> str:
@@ -389,6 +427,7 @@ def _number(value: str) -> Decimal:
     """把原文乘十幂、上标指数和数学负号转换为十进制数。"""
     value = unicodedata.normalize("NFKC", value).replace("−", "-")
     value = re.sub(r"\s*(?:\\times|×|⋅|·|x)\s*10\s*\^?\s*\{?\s*([+-]?\d+)\s*\}?", r"e\1", value)
+    value = re.sub(r"[ \u00a0\u2009]", "", value)
     try:
         return Decimal(value)
     except InvalidOperation as error:

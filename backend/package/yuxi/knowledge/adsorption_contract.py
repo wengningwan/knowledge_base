@@ -1,4 +1,4 @@
-"""吸附分离 JSON 的字段契约和同文档引用约束。"""
+"""论文规范 JSON 的共享形状、历史变体和同文档引用约束。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from importlib.resources import files
 from jsonschema import Draft202012Validator
 
 STRUCTURE_VERSION = 2
-STRUCTURE_PROMPT_VERSION = "adsorption-canonical-v6"
+STRUCTURE_PROMPT_VERSION = "paper-general-v8"
 REGISTRIES = {
     "evidence": "evidence_id",
     "chemical_entities": "entity_id",
@@ -50,18 +50,24 @@ def output_schema() -> dict:
     return json.loads(files(__package__).joinpath("adsorption_schema.json").read_text(encoding="utf-8"))
 
 
-def stage_schema(fields: tuple[str, ...], observation_types: tuple[str, ...] = ()) -> dict:
-    """从同一契约截取当前提取阶段及其引用的定义。"""
+def stage_schema(fields: tuple[str, ...]) -> dict:
+    """给新抽取提供共享记录形状，历史领域变体只保留在完整输出契约。"""
     schema = output_schema()
+    records = {
+        "document": "paper_document", "chemical_entities": "paper_entity", "material_identities": "paper_material",
+        "sample_batches": "paper_batch", "sample_states": "paper_state", "synthesis_routes": "paper_route",
+        "experiment_runs": "paper_run", "series_sets": "paper_series", "mechanism_claims": "paper_claim",
+    }
     properties = {name: schema["properties"][name] for name in fields}
-    if observation_types:
-        variants = properties["observations"]["items"]["anyOf"]
-        selected = [
-            variant for variant in variants
-            if schema["$defs"][variant["$ref"].rsplit("/", 1)[-1]]["properties"]["observation_type"]["const"]
-            in observation_types
-        ]
-        properties["observations"] = {"type": "array", "items": {"anyOf": selected}}
+    for name in fields:
+        if name in records:
+            item = {"$ref": f"#/$defs/{records[name]}"}
+            properties[name] = item if name == "document" else {"type": "array", "items": item}
+        elif name == "observations":
+            properties[name] = {"type": "array", "items": {"anyOf": [
+                {"$ref": "#/$defs/observations_quantitative_measurement"},
+                {"$ref": "#/$defs/observations_reported_result"},
+            ]}}
 
     definitions = {}
 
@@ -239,6 +245,19 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
             if collection == "series_sets" and item["run_id"] not in series_runs:
                 problems[position] = "对应实验没有可登记该曲线的字段。"
                 continue
+            if collection == "observations" and item["observation_type"] in {
+                "quantitative_measurement", "reported_result",
+            }:
+                run = runs.get(item["run_id"], {})
+                samples = item.get("sample_state_ids", [])
+                if item.get("sample_state_id") is not None:
+                    samples = [item["sample_state_id"]]
+                if not set(samples) <= set(run.get("sample_state_ids", [])):
+                    problems[position] = "观测样品未在所关联实验中登记。"
+                    continue
+                if item.get("entity_id") is not None and item["entity_id"] not in run.get("species_entity_ids", []):
+                    problems[position] = "观测物种未在所关联实验中登记。"
+                    continue
             if collection == "observations" and item["observation_type"] in {
                 "kinetic_selectivity", "diffusion_time_constant",
             }:

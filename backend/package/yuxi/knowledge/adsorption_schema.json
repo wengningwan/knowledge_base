@@ -1,60 +1,256 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Adsorption separation canonical output 1.0.0-draft",
+  "title": "Paper canonical output 1.0.0-draft",
   "type": "object",
   "properties": {
     "schema_id": {"const": "adsorption-separation-canonical"},
     "schema_version": {"const": "1.0.0-draft"},
     "record_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "extraction_metadata": {"$ref": "#/$defs/extraction_metadata"},
-    "document": {"$ref": "#/$defs/document"},
+    "document": {"anyOf": [{"$ref": "#/$defs/document"}, {"$ref": "#/$defs/paper_document"}]},
     "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
-    "chemical_entities": {
-      "type": "array",
-      "items": {
-        "anyOf": [{"$ref": "#/$defs/chemical_entities"}, {"$ref": "#/$defs/chemical_entities_2"}, {"$ref": "#/$defs/chemical_entities_3"}, {"$ref": "#/$defs/chemical_entities_4"}, {"$ref": "#/$defs/chemical_entities_5"}]
-      }
-    },
-    "material_identities": {"type": "array", "items": {"$ref": "#/$defs/material_identities"}},
-    "sample_batches": {"type": "array", "items": {"$ref": "#/$defs/sample_batches"}},
-    "sample_states": {"type": "array", "items": {"$ref": "#/$defs/sample_states"}},
-    "synthesis_routes": {"type": "array", "items": {"$ref": "#/$defs/synthesis_routes"}},
-    "experiment_runs": {
-      "type": "array",
-      "items": {
-        "anyOf": [{"$ref": "#/$defs/experiment_runs_gas_physisorption"}, {"$ref": "#/$defs/experiment_runs_scanning_electron_microscopy"}, {"$ref": "#/$defs/experiment_runs_Raman_spectroscopy"}, {"$ref": "#/$defs/experiment_runs_thermogravimetric_analysis"}, {"$ref": "#/$defs/experiment_runs_X_ray_photoelectron_spectroscopy"}, {"$ref": "#/$defs/experiment_runs_equilibrium_isotherm"}, {"$ref": "#/$defs/experiment_runs_isotherm_model_fit"}, {"$ref": "#/$defs/experiment_runs_mixture_prediction"}, {"$ref": "#/$defs/experiment_runs_isosteric_heat_derivation"}, {"$ref": "#/$defs/experiment_runs_breakthrough"}, {"$ref": "#/$defs/experiment_runs_computational_adsorption"}, {"$ref": "#/$defs/experiment_runs_adsorption_kinetics"}]
-      }
-    },
-    "series_sets": {
-      "type": "array",
-      "items": {
-        "anyOf": [{"$ref": "#/$defs/series_sets_adsorption_desorption_isotherm"}, {"$ref": "#/$defs/series_sets_pore_size_distribution"}, {"$ref": "#/$defs/series_sets_thermogravimetric_curve"}, {"$ref": "#/$defs/series_sets_pure_component_equilibrium_isotherm"}, {"$ref": "#/$defs/series_sets_surface_area_normalized_isotherm"}]
-      }
-    },
-    "observations": {
-      "type": "array",
-      "items": {
-        "anyOf": [{"$ref": "#/$defs/observations_textural_properties"}, {"$ref": "#/$defs/observations_qualitative_characterization"}, {"$ref": "#/$defs/observations_qualitative_characterization_2"}, {"$ref": "#/$defs/observations_qualitative_characterization_3"}, {"$ref": "#/$defs/observations_spectral_peak_assignments"}, {"$ref": "#/$defs/observations_spectral_ratio"}, {"$ref": "#/$defs/observations_qualitative_characterization_4"}, {"$ref": "#/$defs/observations_surface_elemental_composition"}, {"$ref": "#/$defs/observations_spectral_peak_assignments_2"}, {"$ref": "#/$defs/observations_spectral_peak_assignments_3"}, {"$ref": "#/$defs/observations_equilibrium_uptake"}, {"$ref": "#/$defs/observations_qualitative_ordering"}, {"$ref": "#/$defs/observations_selectivity"}, {"$ref": "#/$defs/observations_selectivity_2"}, {"$ref": "#/$defs/observations_isosteric_heat"}, {"$ref": "#/$defs/observations_isosteric_heat_2"}, {"$ref": "#/$defs/observations_breakthrough_working_capacity"}, {"$ref": "#/$defs/observations_dynamic_selectivity"}, {"$ref": "#/$defs/observations_qualitative_breakthrough_behavior"}, {"$ref": "#/$defs/observations_binding_energy"}, {"$ref": "#/$defs/observations_kinetic_selectivity"}, {"$ref": "#/$defs/observations_diffusion_time_constant"}]
-      }
-    },
-    "mechanism_claims": {
-      "type": "array",
-      "items": {
-        "anyOf": [{"$ref": "#/$defs/mechanism_claims"}, {"$ref": "#/$defs/mechanism_claims_2"}, {"$ref": "#/$defs/mechanism_claims_3"}]
-      }
-    },
+    "chemical_entities": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/chemical_entities"}, {"$ref": "#/$defs/chemical_entities_2"}, {"$ref": "#/$defs/chemical_entities_3"}, {"$ref": "#/$defs/chemical_entities_4"}, {"$ref": "#/$defs/chemical_entities_5"}, {"$ref": "#/$defs/paper_entity"}]}},
+    "material_identities": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/material_identities"}, {"$ref": "#/$defs/paper_material"}]}},
+    "sample_batches": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/sample_batches"}, {"$ref": "#/$defs/paper_batch"}]}},
+    "sample_states": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/sample_states"}, {"$ref": "#/$defs/paper_state"}]}},
+    "synthesis_routes": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/synthesis_routes"}, {"$ref": "#/$defs/paper_route"}]}},
+    "experiment_runs": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/experiment_runs_gas_physisorption"}, {"$ref": "#/$defs/experiment_runs_scanning_electron_microscopy"}, {"$ref": "#/$defs/experiment_runs_Raman_spectroscopy"}, {"$ref": "#/$defs/experiment_runs_thermogravimetric_analysis"}, {"$ref": "#/$defs/experiment_runs_X_ray_photoelectron_spectroscopy"}, {"$ref": "#/$defs/experiment_runs_equilibrium_isotherm"}, {"$ref": "#/$defs/experiment_runs_isotherm_model_fit"}, {"$ref": "#/$defs/experiment_runs_mixture_prediction"}, {"$ref": "#/$defs/experiment_runs_isosteric_heat_derivation"}, {"$ref": "#/$defs/experiment_runs_breakthrough"}, {"$ref": "#/$defs/experiment_runs_computational_adsorption"}, {"$ref": "#/$defs/experiment_runs_adsorption_kinetics"}, {"$ref": "#/$defs/paper_run"}]}},
+    "series_sets": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/series_sets_adsorption_desorption_isotherm"}, {"$ref": "#/$defs/series_sets_pore_size_distribution"}, {"$ref": "#/$defs/series_sets_thermogravimetric_curve"}, {"$ref": "#/$defs/series_sets_pure_component_equilibrium_isotherm"}, {"$ref": "#/$defs/series_sets_surface_area_normalized_isotherm"}, {"$ref": "#/$defs/paper_series"}]}},
+    "observations": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/observations_textural_properties"}, {"$ref": "#/$defs/observations_qualitative_characterization"}, {"$ref": "#/$defs/observations_qualitative_characterization_2"}, {"$ref": "#/$defs/observations_qualitative_characterization_3"}, {"$ref": "#/$defs/observations_spectral_peak_assignments"}, {"$ref": "#/$defs/observations_spectral_ratio"}, {"$ref": "#/$defs/observations_qualitative_characterization_4"}, {"$ref": "#/$defs/observations_surface_elemental_composition"}, {"$ref": "#/$defs/observations_spectral_peak_assignments_2"}, {"$ref": "#/$defs/observations_spectral_peak_assignments_3"}, {"$ref": "#/$defs/observations_equilibrium_uptake"}, {"$ref": "#/$defs/observations_qualitative_ordering"}, {"$ref": "#/$defs/observations_selectivity"}, {"$ref": "#/$defs/observations_selectivity_2"}, {"$ref": "#/$defs/observations_isosteric_heat"}, {"$ref": "#/$defs/observations_isosteric_heat_2"}, {"$ref": "#/$defs/observations_breakthrough_working_capacity"}, {"$ref": "#/$defs/observations_dynamic_selectivity"}, {"$ref": "#/$defs/observations_qualitative_breakthrough_behavior"}, {"$ref": "#/$defs/observations_binding_energy"}, {"$ref": "#/$defs/observations_kinetic_selectivity"}, {"$ref": "#/$defs/observations_diffusion_time_constant"}, {"$ref": "#/$defs/observations_quantitative_measurement"}, {"$ref": "#/$defs/observations_reported_result"}]}},
+    "mechanism_claims": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/mechanism_claims"}, {"$ref": "#/$defs/mechanism_claims_2"}, {"$ref": "#/$defs/mechanism_claims_3"}, {"$ref": "#/$defs/paper_claim"}]}},
     "missing_information": {"type": "array", "items": {"$ref": "#/$defs/missing_information"}},
-    "validation_issues": {
-      "type": "array",
-      "items": {
-        "anyOf": [{"$ref": "#/$defs/validation_issues"}, {"$ref": "#/$defs/validation_issues_2"}, {"$ref": "#/$defs/validation_issues_3"}]
-      }
-    },
+    "validation_issues": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/validation_issues"}, {"$ref": "#/$defs/validation_issues_2"}, {"$ref": "#/$defs/validation_issues_3"}]}},
     "quality_summary": {"$ref": "#/$defs/quality_summary"}
   },
   "required": ["schema_id", "schema_version", "record_id", "extraction_metadata", "document", "evidence", "chemical_entities", "material_identities", "sample_batches", "sample_states", "synthesis_routes", "experiment_runs", "series_sets", "observations", "mechanism_claims", "missing_information", "validation_issues", "quality_summary"],
   "additionalProperties": false,
   "$defs": {
+    "paper_document": {
+      "type": "object",
+      "properties": {
+        "document_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "title": {"type": "string"},
+        "authors": {"type": "array", "items": {"type": "string"}},
+        "journal": {"type": "string"},
+        "volume": {"type": ["integer", "string"]},
+        "year": {"type": "integer"},
+        "pages": {"type": "string"},
+        "doi": {"type": "string", "pattern": "^10\\.[0-9]{4,9}/\\S+$"},
+        "received_date": {"type": "string", "minLength": 1},
+        "revised_date": {"type": "string", "minLength": 1},
+        "accepted_date": {"type": "string", "minLength": 1},
+        "online_date": {"type": "string", "minLength": 1},
+        "article_type": {"type": "string"},
+        "provenance_scope": {"type": "string"},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "pdf_page_to_printed_page": {"type": "object", "propertyNames": {"pattern": "^[1-9][0-9]*$"}, "additionalProperties": {"type": "integer", "minimum": 1}}
+      },
+      "required": ["document_id", "title", "pdf_page_to_printed_page"],
+      "additionalProperties": false
+    },
+    "paper_entity": {
+      "type": "object",
+      "properties": {
+        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reported_name": {"type": "string"},
+        "canonical_name": {"type": "string"},
+        "entity_class": {"type": "string"},
+        "standard_or_grade": {"type": "string"},
+        "supplier": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true},
+        "formula_ascii": {"type": "string"},
+        "purity": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/paper_scalar"}]},
+        "display_formula": {"type": "string"}
+      },
+      "required": ["entity_id", "reported_name", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_material": {
+      "type": "object",
+      "properties": {
+        "material_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reported_family_name": {"type": "string"},
+        "abbreviation": {"type": "string"},
+        "material_class": {"type": "string"},
+        "carbon_source_entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "activation_type": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true}
+      },
+      "required": ["material_id", "reported_family_name", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_batch": {
+      "type": "object",
+      "properties": {
+        "sample_batch_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "material_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reported_name": {"type": "string"},
+        "series_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "factor_assignments": {"$ref": "#/$defs/sample_batches_factor_assignments"},
+        "batch_number": {"type": ["string", "number", "null"]},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true}
+      },
+      "required": ["sample_batch_id", "material_id", "reported_name", "factor_assignments", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_state": {
+      "type": "object",
+      "properties": {
+        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "sample_batch_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reported_name": {"type": "string"},
+        "state": {"type": "string"},
+        "physical_form": {"type": ["string", "null"]},
+        "parent_state_ids": {"type": "array", "items": {"type": "string"}},
+        "preparation_route_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true}
+      },
+      "required": ["sample_state_id", "sample_batch_id", "reported_name", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_operation": {
+      "type": "object",
+      "properties": {
+        "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "sequence": {"type": "integer", "minimum": 1},
+        "operation_type": {"type": "string", "minLength": 1},
+        "conditions": {"$ref": "#/$defs/reported_parameters"},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1},
+        "equipment": {"type": ["string", "null"]},
+        "input_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "output_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "input_intermediate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "output_intermediate_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reagent_uses": {"type": "array", "items": {"type": "object", "properties": {"reagent_use_id": {"type": "string", "minLength": 1, "maxLength": 128}, "entity_id": {"type": "string", "minLength": 1, "maxLength": 128}, "role": {"type": "string", "minLength": 1}, "amount": {"$ref": "#/$defs/reported_parameter"}}, "required": ["reagent_use_id", "entity_id", "amount"], "additionalProperties": false}}
+      },
+      "required": ["operation_id", "sequence", "operation_type", "conditions", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_route": {
+      "type": "object",
+      "properties": {
+        "route_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "route_name": {"type": "string", "minLength": 1},
+        "target_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "operations": {"type": "array", "items": {"$ref": "#/$defs/paper_operation"}},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
+      },
+      "required": ["route_id", "route_name", "target_sample_state_ids", "operations", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_run": {
+      "type": "object",
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "run_type": {"type": "string", "minLength": 1},
+        "method": {"type": "string", "minLength": 1},
+        "technique": {"type": "string", "minLength": 1},
+        "data_origin": {"type": "string", "minLength": 1},
+        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "species_entity_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "input_run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "instrument": {"type": ["string", "null"]},
+        "conditions": {"$ref": "#/$defs/reported_parameters"},
+        "series_set_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
+      },
+      "required": ["run_id", "run_type", "method", "sample_state_ids", "species_entity_ids", "conditions", "series_set_ids", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_axis": {
+      "type": "object",
+      "properties": {
+        "quantity": {"type": "string", "minLength": 1},
+        "unit": {"type": ["string", "null"]},
+        "symbol": {"type": "string"}
+      },
+      "required": ["quantity", "unit"],
+      "additionalProperties": false
+    },
+    "paper_series": {
+      "type": "object",
+      "properties": {
+        "series_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "series_kind": {"type": "string", "minLength": 1},
+        "x": {"$ref": "#/$defs/paper_axis"},
+        "y": {"$ref": "#/$defs/paper_axis"},
+        "series_members": {"type": "array", "items": {"type": "object", "properties": {"sample_state_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]}, "entity_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]}, "conditions": {"$ref": "#/$defs/reported_parameters"}, "data_points": {"type": "null"}}, "required": ["sample_state_id", "entity_id", "data_points"], "additionalProperties": false}},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
+      },
+      "required": ["series_set_id", "run_id", "series_kind", "x", "y", "series_members", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_scalar": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "scalar"},
+        "raw_text": {"type": "string", "minLength": 1},
+        "value": {"type": "number"},
+        "unit_raw": {"type": ["string", "null"]},
+        "operator": {"type": "string"},
+        "basis": {"type": "string"}
+      },
+      "required": ["kind", "raw_text", "value", "unit_raw"],
+      "additionalProperties": false
+    },
+    "paper_range": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "range"},
+        "raw_text": {"type": "string", "minLength": 1},
+        "minimum": {"type": "number"},
+        "maximum": {"type": "number"},
+        "unit_raw": {"type": ["string", "null"]},
+        "range_semantics": {"type": "string"}
+      },
+      "required": ["kind", "raw_text", "minimum", "maximum", "unit_raw"],
+      "additionalProperties": false
+    },
+    "observations_quantitative_measurement": {
+      "type": "object",
+      "properties": {
+        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "observation_type": {"const": "quantitative_measurement"},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "sample_state_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
+        "entity_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
+        "metric_id": {"type": "string", "minLength": 1},
+        "data_origin": {"type": "string", "minLength": 1},
+        "conditions": {"$ref": "#/$defs/reported_parameters"},
+        "value": {"anyOf": [{"$ref": "#/$defs/paper_scalar"}, {"$ref": "#/$defs/paper_range"}]},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
+      },
+      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "entity_id", "metric_id", "conditions", "value", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "observations_reported_result": {
+      "type": "object",
+      "properties": {
+        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "observation_type": {"const": "reported_result"},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "metric_id": {"type": "string", "minLength": 1},
+        "result": {"type": "string", "minLength": 1},
+        "conditions": {"$ref": "#/$defs/reported_parameters"},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
+      },
+      "required": ["observation_id", "observation_type", "run_id", "sample_state_ids", "metric_id", "result", "conditions", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_claim": {
+      "type": "object",
+      "properties": {
+        "claim_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "claim_type": {"type": "string", "minLength": 1},
+        "claim": {"type": "string", "minLength": 1},
+        "supported_by_observation_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
+      },
+      "required": ["claim_id", "claim_type", "claim", "supported_by_observation_ids", "evidence_ids"],
+      "additionalProperties": false
+    },
     "chemical_entities": {
       "type": "object",
       "properties": {
@@ -817,7 +1013,7 @@
         "adsorption_exchange_profile": {"type": "string"},
         "quantity_model": {"type": "string"}
       },
-      "required": ["pore_and_isotherm_terms", "adsorption_exchange_profile", "quantity_model"],
+      "required": ["quantity_model"],
       "additionalProperties": false
     },
     "material_identities": {
@@ -1523,9 +1719,12 @@
         "breakthrough_working_capacities_and_selectivities": {"type": "string"},
         "raw_curve_points": {"type": "string"},
         "supplementary_information": {"type": "string"},
-        "overall_status": {"type": "string"}
+        "overall_status": {"type": "string"},
+        "experiment_count": {"type": "integer", "minimum": 0},
+        "quantitative_observation_count": {"type": "integer", "minimum": 0},
+        "experiments": {"type": "array", "items": {"type": "object", "properties": {"run_id": {"type": "string", "minLength": 1, "maxLength": 128}, "observation_count": {"type": "integer", "minimum": 0}, "status": {"enum": ["extracted_pending_review", "not_extracted"]}}, "required": ["run_id", "observation_count", "status"], "additionalProperties": false}}
       },
-      "required": ["document_identity", "sample_registry", "synthesis_route", "characterization_scalar_values", "equilibrium_scalar_values", "IAST_ranges", "Qst_ranges_and_2_mmol_g_points", "breakthrough_working_capacities_and_selectivities", "raw_curve_points", "supplementary_information", "overall_status"],
+      "required": ["document_identity", "sample_registry", "synthesis_route", "raw_curve_points", "supplementary_information", "overall_status"],
       "additionalProperties": false
     },
     "reported_parameter": {
