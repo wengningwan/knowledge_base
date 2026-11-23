@@ -62,10 +62,12 @@
 
       <!-- 来源按钮 - 使用 flex-grow 占据剩余空间并右对齐 -->
       <div v-if="hasSources && showKey('sources')" class="sources-spacer"></div>
-      <span
+      <button
         v-if="hasSources && showKey('sources')"
+        type="button"
         class="item btn sources-btn"
         :class="{ expanded: isSourcesExpanded }"
+        :aria-expanded="isSourcesExpanded"
         @click="toggleSources"
         :title="isSourcesExpanded ? '收起详情' : '查看来源详情'"
       >
@@ -75,9 +77,10 @@
           <template v-if="sourceCount > 0">
             {{ sourceCount }}
           </template>
+          <template v-if="hasGraphSources"> · 图谱辅助检索</template>
         </span>
         <ChevronDown :size="12" class="expand-icon" :class="{ rotated: isSourcesExpanded }" />
-      </span>
+      </button>
     </div>
 
     <!-- 来源详情面板 -->
@@ -160,6 +163,9 @@ const webSources = computed(() =>
 const hasSources = computed(() => knowledgeChunks.value.length > 0 || webSources.value.length > 0)
 
 const sourceCount = computed(() => knowledgeChunks.value.length + webSources.value.length)
+const hasGraphSources = computed(() =>
+  knowledgeChunks.value.some((chunk) => chunk.metadata?.graph_retrieved === true)
+)
 
 const toggleSources = () => {
   isSourcesExpanded.value = !isSourcesExpanded.value

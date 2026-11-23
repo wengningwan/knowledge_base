@@ -49,7 +49,9 @@
           <header class="chunk-header">
             <div class="chunk-heading">
               <span class="chunk-index">{{ formatChunkIndex(index) }}</span>
-              <span class="chunk-label">片段</span>
+              <span class="chunk-label">
+                {{ chunk.metadata?.graph_retrieved === true ? '图谱辅助检索' : '片段' }}
+              </span>
             </div>
 
             <div

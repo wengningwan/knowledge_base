@@ -13,7 +13,14 @@
         >
           <FileText :size="15" class="file-icon" />
           <span class="file-name" :title="fileGroup.filename">{{ fileGroup.filename }}</span>
-          <span class="chunk-count">{{ fileGroup.chunks.length }} 个片段</span>
+          <span class="chunk-count">
+            {{ fileGroup.chunks.length }} 个片段
+            <template
+              v-if="fileGroup.chunks.some((chunk) => chunk.metadata.graph_retrieved === true)"
+            >
+              · 图谱辅助检索
+            </template>
+          </span>
         </button>
         <div class="file-actions">
           <button

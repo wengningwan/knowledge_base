@@ -634,6 +634,8 @@ class KnowledgeBase(ABC):
                 metadata.setdefault("score", chunk.get("score"))
             if chunk.get("distance") is not None:
                 metadata.setdefault("distance", chunk.get("distance"))
+            if "graph" in (chunk.get("fusion_sources") or ()):
+                metadata["graph_retrieved"] = True
 
             results.append(
                 SearchResultSchema(

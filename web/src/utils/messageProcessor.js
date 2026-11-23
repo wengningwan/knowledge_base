@@ -154,8 +154,7 @@ export class MessageProcessor {
         .map((db) => db?.name)
         .filter((name) => typeof name === 'string' && name.trim())
     )
-    const normalizedChunks = []
-    const dedupSet = new Set()
+    const chunksByKey = new Map()
 
     const appendChunk = (chunk, kbName, kbId = '', fileId = '') => {
       if (!chunk || typeof chunk !== 'object') return
@@ -166,11 +165,14 @@ export class MessageProcessor {
       const resolvedKbId = chunk.kb_id || metadata.kb_id || kbId
       const resolvedFileId = chunk.file_id || metadata.file_id || fileId
       const dedupKey = `${resolvedKbId || kbName}::${resolvedFileId}::${chunk.id || metadata.chunk_id || content}`
-      if (dedupSet.has(dedupKey)) return
-      dedupSet.add(dedupKey)
+      const existing = chunksByKey.get(dedupKey)
+      if (existing) {
+        if (metadata.graph_retrieved === true) existing.metadata.graph_retrieved = true
+        return
+      }
 
       const score = typeof chunk.score === 'number' ? chunk.score : null
-      normalizedChunks.push({
+      chunksByKey.set(dedupKey, {
         kb_name: kbName,
         kb_id: resolvedKbId,
         file_id: resolvedFileId,
@@ -229,13 +231,11 @@ export class MessageProcessor {
       }
     }
 
-    normalizedChunks.sort((a, b) => {
+    return [...chunksByKey.values()].sort((a, b) => {
       const scoreA = typeof a.score === 'number' ? a.score : Number.NEGATIVE_INFINITY
       const scoreB = typeof b.score === 'number' ? b.score : Number.NEGATIVE_INFINITY
       return scoreB - scoreA
     })
-
-    return normalizedChunks
   }
 
   /**
