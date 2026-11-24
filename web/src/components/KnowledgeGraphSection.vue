@@ -682,10 +682,10 @@ const groupGraphNodes = (data) => {
   const groupedNodes = []
   const displayIds = new Map()
   for (const members of groups.values()) {
-    const sourceFileCount = new Set(members.map((node) => node.properties.file_id)).size
-    if (sourceFileCount < 2) continue
+    const sourceFileIds = [...new Set(members.map((node) => node.properties.file_id))]
+    if (sourceFileIds.length < 2) continue
     const { id, name, type, labels } = members[0]
-    groupedNodes.push({ id, name, type, labels, sourceFileCount })
+    groupedNodes.push({ id, name, type, labels, sourceFileCount: sourceFileIds.length, sourceFileIds })
     for (const member of members) displayIds.set(member.id, id)
   }
 
