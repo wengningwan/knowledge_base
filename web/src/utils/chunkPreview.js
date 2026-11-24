@@ -1,6 +1,6 @@
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
-import { splitMathSegments } from './documentReview.js'
+import { splitMathSegments, renderMathHtml } from './documentReview.js'
 import { isKnowledgeImageProxyPath } from './knowledge_images.js'
 
 // 管道表格仅启用表格规则，单元格内容按纯文本转义，不解释其余 markdown 语法
@@ -98,6 +98,16 @@ function splitTableSegments(text) {
 /** 表格段统一经 DOMPurify 消毒后交给 v-html，移除脚本与事件属性等不可信内容。 */
 function sanitizeTable(html) {
   return typeof DOMPurify.sanitize === 'function' ? DOMPurify.sanitize(html) : html
+}
+
+/** 表格段内已定界公式渲染为 KaTeX；公式内容含标签特征（跨单元格伪配对或损伤数据）时
+ * 整段原文回退，不把结构标签卷进公式也不破坏表格；块级定界在单元格内按行内渲染。 */
+export function renderTableMathHtml(tableHtml) {
+  return splitMathSegments(tableHtml).map((part) => {
+    if (part.type !== 'math') return part.text
+    if (/[<>&]/.test(part.latex)) return part.text
+    return renderMathHtml({ ...part, displayMode: false })
+  }).join('')
 }
 
 /** 分块正文段序列：先切表格（防止表格内公式被拆散），再从文字段切公式与当前库图片。 */

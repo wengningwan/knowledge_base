@@ -204,6 +204,12 @@ def render_document(blocks: list[dict], urls: dict[str, str] | None = None) -> s
             content = _delimit_formula(kind, str(block.get("format") or ""), content)
         elif kind == "code_block" and not content.startswith("```"):
             content = f"```\n{content}\n```"
+        elif kind == "table":
+            content = _delimit_table_math(content)
+        elif kind in {"caption", "footnote"}:
+            content = _delimit_caption_math(content)
+        elif kind == "text" and not references:
+            content = _delimit_text_math(content)
         join = block.get("recognition_join")
         if join and join["block_id"] in part_indexes:
             index = part_indexes[join["block_id"]]
@@ -299,6 +305,225 @@ def _delimit_formula(block_type: str, format_name: str, content: str) -> str:
         if not (content.startswith("$$") or content.startswith(r"\[")):
             return f"$$\n{content}\n$$"
     return content
+
+
+_MATH_STRUCTURE_TOKEN = re.compile(
+    r"\\(?:d?frac|tfrac|sqrt)\s*\{"
+    r"|\\(?:sum|int|oint|prod|lim|left|begin|exp|ln|log|max|min)\b"
+    r"|\\(?:alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)\b"
+)
+_MATH_SCRIPT_TOKEN = re.compile(r"[_^]\{(?:[^{}]|\{[^{}]*\})+\}|[_^][A-Za-z0-9]")
+_PROSE_WORD = re.compile(r"[A-Za-z]{2,}")
+_MATH_COMMAND_TOKEN = re.compile(r"\\[A-Za-z]+")
+_IMAGE_OR_LINK = re.compile(r"!\[|\]\(")
+_PIPE_ROW = re.compile(r"^\|.*\|$")
+# 片段判据与数据层 _delimit_bare_math 的 atom/unit 同构：化学式连排以大写开头
+# （S^H、CO_2、N_2），小写/希腊基必须短基且带 1~2 个上下标（q_i、n_i^{m*}、ψ_i/σ_i），
+# 长词词尾上标（consistent^a）交由 LETTER_SUP 窄包，防止吞并英文单词。下标裸形态允许多
+# 字符（b_jj、q_stj），上标保持单字符防 S^Ha 类词尾粘连；花括号内容仅认 ASCII，Unicode
+# 上下标（C₂H₆）原样可读不加工；脚注引用/单位定界后只否决连排延续字符（^ { _ \），
+# 放行行首脚注（^{a}Integral）与单位连写（cm^{-3}s^{-1}）。
+_MATH_SCRIPT_PART = r"(?:[_](?:\{[\w+−*/·,-]+\}|[\w*]{1,3})|[\^](?:\{[\w+−*/·,-]+\}|[\w*]))"
+_MATH_ATOM = (
+    rf"(?:(?:[A-Z][a-z]?(?:{_MATH_SCRIPT_PART})?)+"
+    rf"|(?:[a-z]{{1,3}}|[Α-Ωα-ω])(?:{_MATH_SCRIPT_PART}){{1,2}})"
+)
+_MATH_UNIT = r"[a-zA-Z]{1,3}\^\{[+−-]?\d+\}"
+_MATH_CITATION = r"(?:^|(?<=[\w.)\]\s]))\^\{(?:[0-9][0-9,\s\-–]*|[a-zA-Z][a-zA-Z0-9,\-]*)\}"
+_MATH_LETTER_SUP = r"(?<=[A-Za-z,.])\^[a-zA-Z0-9][a-zA-Z0-9,]{0,5}"
+_MATH_FRAGMENT = re.compile(
+    rf"(?<![\w/\\]){ _MATH_ATOM}(?:[·/](?:{_MATH_ATOM}|{_MATH_UNIT}))*(?![\w{{}}^_\\])"
+    rf"|{_MATH_UNIT}(?![{{_^\\]])"
+    rf"|{_MATH_CITATION}(?![{{_^\\]])"
+    rf"|{_MATH_LETTER_SUP}(?![\w{{}}^_\\])"
+)
+
+
+def _wrap_math_fragment(match: re.Match) -> str:
+    """片段包裹：必须含上下标成分，且仅收 ASCII 与希腊字母内容防 KaTeX 渲染异常。"""
+    token = match.group(0)
+    if "_" not in token and "^" not in token:
+        return token
+    if not all(ord(char) < 128 or 0x0391 <= ord(char) <= 0x03C9 for char in token):
+        return token
+    return f"${token}$"
+
+
+def _delimit_text_math(content: str) -> str:
+    """text 块 Markdown 投影：独立公式行归并为 $$ 段、叙述行内上下标 token 片段定界；
+    块内容保持裸 LaTeX 原文。
+
+    误吞正文比漏判公式更不可逆：整行包裹要求结构命令与上下标共存，叙述行片段在
+    含 LaTeX 命令时整体跳过（防撕裂复杂公式）；既有 $$ 定界区域原样直出不双重包裹。
+    """
+    output, group, in_display = [], [], False
+    for line in content.split("\n"):
+        if line.strip() == "$$":
+            if group:
+                output.append(_wrapped_math_group("\n".join(group)))
+                group = []
+            in_display = not in_display
+            output.append(line)
+            continue
+        if in_display:
+            output.append(line)
+            continue
+        if _PIPE_ROW.match(line.strip()):
+            if group:
+                output.append(_wrapped_math_group("\n".join(group)))
+                group = []
+            output.append(_delimit_pipe_row(line))
+            continue
+        if _standalone_math_line(line):
+            group.append(line)
+            continue
+        if group:
+            output.append(_wrapped_math_group("\n".join(group)))
+            group = []
+        output.append(_delimit_inline_math(line))
+    if group:
+        output.append(_wrapped_math_group("\n".join(group)))
+    return "\n".join(output)
+
+
+def _delimit_inline_math(line: str) -> str:
+    """叙述行内裸上下标 token 片段定界；含 $、图片链接或 LaTeX 命令的行原样保留。"""
+    stripped = line.strip()
+    if "$" in stripped or _IMAGE_OR_LINK.search(stripped) or _MATH_COMMAND_TOKEN.search(stripped):
+        return line
+    return _MATH_FRAGMENT.sub(_wrap_math_fragment, line)
+
+
+def _delimit_caption_math(content: str) -> str:
+    """caption/footnote 块只做行内 token 片段定界，不应用整行 $$ 段。"""
+    return "\n".join(_delimit_inline_math(line) for line in content.split("\n"))
+
+
+def _delimit_pipe_row(line: str) -> str:
+    """Markdown 管道表格行逐格定界：公式格整格包裹，纯叙述格做 token 片段。"""
+    cells = line.split("|")
+    for index, cell in enumerate(cells):
+        text = cell.strip()
+        if not text or set(text) <= {"-", ":", " "}:
+            continue
+        if _math_cell_line(text):
+            cells[index] = cell.replace(text, f"${text}$", 1)
+        elif "$" not in text and not _MATH_COMMAND_TOKEN.search(text):
+            cells[index] = _MATH_FRAGMENT.sub(_wrap_math_fragment, cell)
+    return "|".join(cells)
+
+
+def _math_cell_line(text: str) -> bool:
+    """表格单元格/段落的公式判据：结构命令与上下标共存，或多命令，或多上下标；
+    无正文叙述、中文、定界、排版结构或句末标点。单元格内分号是公式段分隔
+    （b_i = ...; k_i = ...），不由句末标点否决，叙述兜底由 _prose_run 承担。"""
+    stripped = text.strip()
+    if not stripped or "$" in stripped or "&" in stripped:
+        return False
+    if re.search(r"[\u4e00-\u9fff\u3400-\u4dbf]", stripped):
+        return False
+    if _IMAGE_OR_LINK.search(stripped) or _PIPE_ROW.match(stripped):
+        return False
+    if stripped.endswith((".", "。", "!", "！", "?", "？")):
+        return False
+    scripts = _MATH_SCRIPT_TOKEN.findall(stripped)
+    structs = _MATH_STRUCTURE_TOKEN.findall(stripped)
+    if not (len(scripts) >= 3 or (scripts and structs) or len(structs) >= 2):
+        return False
+    return not _prose_run(stripped)
+
+
+def _standalone_math_line(line: str) -> bool:
+    """独立公式行判据：结构命令与上下标共存，且无正文叙述、定界、排版结构或中文。"""
+    stripped = line.strip()
+    if len(stripped) < 12 or "$" in stripped:
+        return False
+    if re.search(r"< [a-zA-Z/][^>]*>|!\[|\]\(", stripped):
+        return False
+    if re.search(r"[\u4e00-\u9fff\u3400-\u4dbf]", stripped):
+        return False
+    if stripped.endswith((".", "。", ";", "；", "!", "！", "?", "？")):
+        return False
+    return (bool(_MATH_STRUCTURE_TOKEN.search(stripped))
+            and bool(_MATH_SCRIPT_TOKEN.search(stripped))
+            and not _prose_run(stripped))
+
+
+def _prose_run(line: str) -> bool:
+    """剥除命令、上下标与标点后存在连续 3 个普通英文单词即正文叙述。"""
+    stripped = re.sub(r"[^\w\s]", " ", _MATH_SCRIPT_TOKEN.sub(" ", re.sub(r"\\[A-Za-z]+", " ", line)))
+    run = 0
+    for token in stripped.split():
+        run = run + 1 if _PROSE_WORD.fullmatch(token) else 0
+        if run >= 3:
+            return True
+    return False
+
+
+def _wrapped_math_group(body: str) -> str:
+    """包裹前轻量配平守卫：花括号、\\left/\\right 计数或空组任一失衡即回退原文。"""
+    if body.count("{") != body.count("}") or body.count(r"\left") != body.count(r"\right"):
+        return body
+    if re.search(r"[_^]\s*\{\s*\}|\\[a-zA-Z]+\s*\{\s*\}", body):
+        return body
+    return f"$$\n{body}\n$$"
+
+
+_TABLE_CELL_RE = re.compile(r"(<t[dh]\b[^>]*>)(.*?)(</t[dh]>)", re.IGNORECASE | re.DOTALL)
+_SUP_SUB_TOKEN = re.compile(r"<(sup|sub)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_TABLE_CELL_SPLIT = re.compile(r"(<br\s*/?>)|(\n)")
+
+
+def _delimit_table_math(content: str) -> str:
+    """table 块 Markdown 投影内为单元格裸公式补行内 $ 定界；块内容保持原 HTML。
+
+    <sup>/<sub> 引用是浏览器原生上下标，占位保护后参与判定；含图片等其它子标签、
+    $ 或 & 的单元格整格跳过。判定顺序：整格 → <br>/换行分段 → token 片段。
+    """
+    def wrap_cell(match: re.Match) -> str:
+        open_tag, body, close_tag = match.groups()
+        placeholders: dict[str, str] = {}
+
+        def stash(token: re.Match) -> str:
+            key = f"\x00{len(placeholders)}\x00"
+            placeholders[key] = token.group(0)
+            return key
+
+        work = _SUP_SUB_TOKEN.sub(stash, body)
+        if "$" in work or "&" in work:
+            result = work
+        elif _TABLE_CELL_SPLIT.search(work):
+            result = _delimit_table_parts(_TABLE_CELL_SPLIT.split(work))
+        elif "<" in work:
+            result = work
+        elif "\x00" not in work and _math_cell_line(work):
+            stripped = work.strip()
+            result = work.replace(stripped, f"${stripped}$", 1)
+        else:
+            result = _delimit_table_parts([work])
+        for key, html in placeholders.items():
+            result = result.replace(key, html)
+        return f"{open_tag}{result}{close_tag}"
+
+    return _TABLE_CELL_RE.sub(wrap_cell, content)
+
+
+def _delimit_table_parts(parts: list[str]) -> str:
+    """按 <br>/换行分段逐段定界：命中公式判据的段整段包裹，其余纯文本段做片段。"""
+    output = []
+    for part in parts:
+        if not part:  # 捕获组 split 产物的未参与组是 None，分隔符已由参与组保留
+            continue
+        text = part.strip()
+        if text and "\x00" not in text and not text.startswith("<"):
+            if _math_cell_line(text):
+                output.append(part.replace(text, f"${text}$", 1))
+                continue
+            if "$" not in text and not _MATH_COMMAND_TOKEN.search(text):
+                output.append(_MATH_FRAGMENT.sub(_wrap_math_fragment, part))
+                continue
+        output.append(part)
+    return "".join(output)
 
 
 def _normalize_bbox(value, width, height) -> list[float] | None:

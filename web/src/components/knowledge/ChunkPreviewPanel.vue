@@ -69,7 +69,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import {
-  createChunkSourceDocument, describeChunkSource, chunkSourceWindows, sortedPreviewChunks, chunkPreviewContent, chunkContentSegments
+  createChunkSourceDocument, describeChunkSource, chunkSourceWindows, sortedPreviewChunks, chunkPreviewContent, chunkContentSegments, renderTableMathHtml
 } from '@/utils/chunkPreview'
 import { renderMathHtml, splitMathSegments } from '@/utils/documentReview'
 import ChunkKnowledgeImage from './ChunkKnowledgeImage.vue'
@@ -85,10 +85,12 @@ const props = defineProps({
 const expanded = ref(new Set())
 const selectedIndex = ref(null)
 const source = computed(() => createChunkSourceDocument(props.sourceContent, props.sourceSha256, props.sourceError))
-/** 段序列中的公式段渲染为 KaTeX，文字段保持转义原文。 */
+/** 段序列中的公式段渲染为 KaTeX，文字段保持转义原文，表格段在结构守卫下渲染单元格内公式。 */
 function renderMath(segments) {
   return segments.map((part) =>
-    part.type === 'math' ? { ...part, html: renderMathHtml(part) } : part)
+    part.type === 'math' ? { ...part, html: renderMathHtml(part) }
+    : part.type === 'table' ? { ...part, html: renderTableMathHtml(part.html) }
+    : part)
 }
 /** 正文与章节行切分后各自渲染：公式段 KaTeX，图片段鉴权加载，文字段保持原文转义。 */
 const entries = computed(() => sortedPreviewChunks(props.chunks).map((chunk) => {
