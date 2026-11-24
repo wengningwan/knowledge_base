@@ -89,7 +89,9 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 "model_spec": revision.model_spec,
                 "coverage": {
                     key: value for key, value in coverage.items()
-                    if key not in {"manual_review", "review_candidates", "canonical", "correction_tasks"}
+                    if key not in {
+                        "manual_review", "review_candidates", "canonical", "correction_tasks", "numeric_issue_candidates",
+                    }
                 },
                 "message": revision.error_message or "", "cards": [], "evidence": [],
                 "review_status": "machine_only",
@@ -302,7 +304,7 @@ async def retry_experiment_cards(kb_id, file_id, *, uid, revision_id, expected_s
 async def run_knowledge_structure(context):
     """从冻结正文分批抽取，只有有效 lease 可以保存草稿。"""
     from yuxi.knowledge.runtime import knowledge_base
-    from yuxi.knowledge.structure import extract_adsorption_record
+    from yuxi.knowledge.structure import extract_paper_record
 
     repo = KnowledgeStructureRepository()
     control = StructureTaskControl(context)
@@ -322,9 +324,9 @@ async def run_knowledge_structure(context):
     parse_assets = await _read_structure_assets(revision)
     original = await knowledge_base.get_file_download(revision.kb_id, revision.file_id)
     if b"%PDF-" not in original["content"][:1024]:
-        raise ValueError("规范吸附分离 JSON 需要 PDF 原件及可核对的期刊页码")
+        raise ValueError("论文结构化需要 PDF 原件")
     await control.check_cancelled()
-    result = await extract_adsorption_record(
+    result = await extract_paper_record(
         markdown, pdf_content=original["content"], file_id=revision.file_id,
         model_spec=revision.model_spec, parse_assets=parse_assets, control=control,
     )

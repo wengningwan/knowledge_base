@@ -18,11 +18,14 @@ def project_rejected_corrections(record: dict, sources: dict, rejected: list[dic
             for index, (metric, result) in enumerate(_candidate_values(candidate)):
                 fields = _candidate_fields(candidate, record, refs)
                 fields.update(metric=_text(metric), result=_text(result))
-                tasks.append({
+                task = {
                     "task_id": f'{entry["issue_id"]}:{index}', "kind": "candidate", "fields": fields,
                     "reason": "模型提取的结果或归属未通过校验，请对照原文确认。",
                     "detail": entry["message"],
-                })
+                }
+                if entry["issue_type"] == "unverified_observation" and candidate["observation_type"] == "quantitative_measurement":
+                    task.update(candidate_id=candidate["observation_id"], run_id=candidate["run_id"])
+                tasks.append(task)
         elif collection == "synthesis_routes":
             operations = candidate.get("operations")
             for index, operation in enumerate(operations if isinstance(operations, list) else []):
@@ -40,6 +43,7 @@ def project_rejected_corrections(record: dict, sources: dict, rejected: list[dic
 def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: dict[str, dict]) -> list[dict]:
     """从同版本候选、缺失信息及人工回执读取当前待办。"""
     tasks = deepcopy(coverage.get("correction_tasks", []))
+    numeric_candidates = {task["candidate_id"]: task for task in tasks if "candidate_id" in task}
     resolutions = coverage.get("manual_review", {}).get("resolutions", {})
     canonical = coverage.get("canonical") or {}
     refs = {
@@ -57,11 +61,18 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
     }
     for item in canonical.get("missing_information", []):
         linked = linked_records.get(item["record_id"], {})
+        missing_sources = [refs[ref] for ref in item.get("evidence_ids", []) if ref in refs]
         for index, field in enumerate(item["fields"]):
+            task_id = f'{item["missing_id"]}:{index}'
+            if item.get("status") == "not_reported" and missing_sources and task_id not in resolutions:
+                continue
             fields = _candidate_fields(linked, canonical, refs)
             fields["metric"] = _text(field)
+            fields["evidence_ids"] = list(dict.fromkeys([
+                *missing_sources, *fields["evidence_ids"],
+            ]))[:32]
             tasks.append({
-                "task_id": f'{item["missing_id"]}:{index}', "kind": "missing", "fields": fields,
+                "task_id": task_id, "kind": "missing", "fields": fields,
                 "reason": "模型没有找到这项数据。原文未提供时，直接保持缺失即可。",
                 "detail": item["reason"],
             })
@@ -69,6 +80,19 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
         if item["issue_id"].startswith(("issue:filtered:", "issue:pagination:")):
             continue
         ids = item.get("record_ids") or ([item["record_id"]] if item.get("record_id") else [])
+        covered = coverage.get("numeric_issue_candidates", {}).get(item["issue_id"], [])
+        sources = {refs[ref] for ref in ids if ref in refs}
+        issue_id = item["issue_id"]
+        if (
+            item["issue_type"] == "missing_numeric_observation" and covered
+            and not any(key == issue_id or key.startswith(f"{issue_id}:") for key in resolutions)
+            and all(
+                (candidate := numeric_candidates.get(candidate_id)) is not None
+                and candidate["run_id"] in ids and bool(sources.intersection(candidate["fields"]["evidence_ids"]))
+                for candidate_id in covered
+            )
+        ):
+            continue
         linked = [linked_records[ref] for ref in ids if ref in linked_records]
         fields = _candidate_fields(linked[0] if len(linked) == 1 else {}, canonical, refs)
         fields["evidence_ids"] = list(dict.fromkeys([

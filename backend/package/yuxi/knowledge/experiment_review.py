@@ -73,6 +73,7 @@ def experiment_record_fields(kind: str, sample: dict | None, entry: dict) -> dic
     ids = [evidence_id for field in fields if field for evidence_id in field.get("evidence_ids", [])]
     return {
         **({"canonical_id": entry["canonical_id"]} if entry.get("canonical_id") else {}),
+        **({"table_cells": entry["table_cells"]} if entry.get("table_cells") else {}),
         "kind": kind,
         "sample": (sample or {}).get("raw_text", ""),
         "test": (entry.get("method") or {}).get("raw_text", ""),

@@ -6,6 +6,14 @@
         <button type="button" :disabled="saving" :aria-pressed="mode === 'processed'" @click="changeMode('processed')">已处理 <strong>{{ processed.length }}</strong></button>
       </div>
     </header>
+    <details v-if="unreported.length" class="missing-notes">
+      <summary>原文未提供 · {{ unreported.length }} 组</summary>
+      <ul>
+        <li v-for="item in unreported" :key="item.missing_id">
+          <strong>{{ item.fields.join('、') }}</strong> {{ item.reason }}
+        </li>
+      </ul>
+    </details>
     <div class="correction-columns">
       <nav class="correction-list" aria-label="校对待办">
         <button v-for="task in queue" :key="task.task_id" type="button" :disabled="saving" :aria-pressed="activeTask?.task_id === task.task_id" @click="chooseTask(task.task_id)">
@@ -21,9 +29,9 @@
         <section class="correction-source" aria-label="对应原文">
           <header><h3>对应原文</h3><span>{{ selectedSources.length ? selectedSources.length + ' 处' : '尚未定位' }}</span></header>
           <p v-if="!selectedSources.length" class="source-empty">模型没有保留可定位的出处。可在右侧选择当前正文中的出处后继续。</p>
-          <article v-for="source in selectedSources" :key="source.evidence_id" class="correction-quote">
+          <article v-for="source in sourcePreviews" :key="source.evidence_id" class="correction-quote">
             <strong>{{ source.page ? 'PDF 第 ' + source.page + ' 页' : '正文出处' }}</strong>
-            <MarkdownPreview :content="experimentEvidenceMarkdown(source.quote, fields)" :highlight-text="/^\s*<table\b/i.test(source.quote) ? '' : fields.result" compact />
+            <MarkdownPreview :content="source.preview.content" :highlight-text="source.preview.table ? '' : fields.result" compact />
           </article>
         </section>
         <section class="correction-editor" aria-label="处理当前待办">
@@ -68,7 +76,7 @@
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
-import { experimentEvidenceMarkdown, experimentLabel } from '@/utils/experimentPresentation'
+import { experimentEvidencePreview, experimentLabel } from '@/utils/experimentPresentation'
 
 const props = defineProps({
   snapshot: { type: Object, required: true },
@@ -87,6 +95,7 @@ const saving = ref(false)
 const error = ref('')
 const recordingMissing = ref(false)
 const tasks = computed(() => props.snapshot.review?.tasks || [])
+const unreported = computed(() => props.paper.missing_information.filter(item => item.status === 'not_reported' && item.evidence_ids?.length))
 const pending = computed(() => tasks.value.filter(task => !task.resolution))
 const processed = computed(() => tasks.value.filter(task => task.resolution))
 const queue = computed(() => mode.value === 'pending' ? pending.value : processed.value)
@@ -94,6 +103,9 @@ const activeTask = computed(() => queue.value.find(task => task.task_id === sele
 const canRecord = computed(() => activeTask.value && (activeTask.value.kind !== 'source' || activeTask.value.record_id))
 const showRecordFields = computed(() => canRecord.value && (activeTask.value.kind !== 'missing' || recordingMissing.value))
 const selectedSources = computed(() => (props.snapshot.evidence || []).filter(source => fields.value.evidence_ids.includes(source.evidence_id)))
+const sourcePreviews = computed(() => selectedSources.value.map(source => ({
+  ...source, preview: experimentEvidencePreview(source.quote, fields.value, source.evidence_id)
+})))
 const readyToSave = computed(() => fields.value.sample?.trim() && fields.value.metric?.trim() &&
   (fields.value.kind === 'preparation' || fields.value.result?.trim()) && selectedSources.value.length)
 const sampleOptions = computed(() => [...new Set([

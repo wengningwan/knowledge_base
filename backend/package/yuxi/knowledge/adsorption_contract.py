@@ -10,7 +10,8 @@ from importlib.resources import files
 from jsonschema import Draft202012Validator
 
 STRUCTURE_VERSION = 2
-STRUCTURE_PROMPT_VERSION = "paper-general-v8"
+STRUCTURE_PROMPT_VERSION = "paper-general-v11"
+PAPER_SCHEMA_ID = "paper-canonical"
 REGISTRIES = {
     "evidence": "evidence_id",
     "chemical_entities": "entity_id",
@@ -70,6 +71,11 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
             ]}}
 
     definitions = {}
+    derived_fields = {
+        "paper_run": {"series_set_ids"},
+        "paper_series": {"observation_ids"},
+        "paper_series_member": {"data_points"},
+    }
 
     def include(value):
         """递归收集所选字段引用的定义。"""
@@ -77,8 +83,15 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
             if "$ref" in value:
                 name = value["$ref"].rsplit("/", 1)[-1]
                 if name not in definitions:
-                    definitions[name] = schema["$defs"][name]
-                    include(definitions[name])
+                    shape = schema["$defs"][name]
+                    if omitted := derived_fields.get(name):
+                        shape = {
+                            **shape,
+                            "properties": {key: field for key, field in shape["properties"].items() if key not in omitted},
+                            "required": [key for key in shape["required"] if key not in omitted],
+                        }
+                    definitions[name] = shape
+                    include(shape)
             for child in value.values():
                 include(child)
         elif isinstance(value, list):
@@ -236,6 +249,7 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
                     problems[position[:2]] = f"记录编号重复（{value}），无法确定归属。"
     formulas = {item.get("formula_ascii") for item in record["chemical_entities"]} - {None}
     series_runs = {run["run_id"] for run in record["experiment_runs"] if "series_set_ids" in run}
+    run_by_series = {series["series_set_id"]: series["run_id"] for series in record["series_sets"]}
     runs = {run["run_id"]: run for run in record["experiment_runs"]}
     for collection in REGISTRIES:
         for index, item in enumerate(record[collection]):
@@ -258,6 +272,13 @@ def _reference_problems(record: dict, *, notices: list[Notice] | None = None) ->
                 if item.get("entity_id") is not None and item["entity_id"] not in run.get("species_entity_ids", []):
                     problems[position] = "观测物种未在所关联实验中登记。"
                     continue
+                if (series_id := item.get("series_set_id")) and run_by_series.get(series_id) != item["run_id"]:
+                    reason = "观测引用的曲线未在所关联实验中登记。"
+                    if notices is None:
+                        problems[position] = reason
+                        continue
+                    notices.append(("invalid_observation_series", f'{item["observation_id"]}: {reason}'))
+                    del item["series_set_id"]
             if collection == "observations" and item["observation_type"] in {
                 "kinetic_selectivity", "diffusion_time_constant",
             }:

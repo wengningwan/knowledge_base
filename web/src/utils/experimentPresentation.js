@@ -18,7 +18,7 @@ const labels = {
   kinetic_uptake_curve: '吸附动力学曲线', kinetic_scalar_values: '动力学数值', species_pair: '气体对',
   mixture_prediction: '混合气预测', isosteric_heat_derivation: '等量吸附热推导',
   breakthrough: '动态穿透', computational_adsorption: '计算吸附',
-  gas_physisorption: '氮气吸附测试', scanning_electron_microscopy: '扫描电子显微镜',
+  gas_physisorption: '气体物理吸附', scanning_electron_microscopy: '扫描电子显微镜',
   Raman_spectroscopy: '拉曼光谱', thermogravimetric_analysis: '热重分析',
   'X-ray_photoelectron_spectroscopy': 'X 射线光电子能谱',
   'textural.surface_area.specific': 'BET 比表面积', 'textural.pore_volume.total': '总孔容',
@@ -26,7 +26,7 @@ const labels = {
   spectral_ratio: '光谱比值', spectral_peak_assignments: '光谱峰归属',
   surface_elemental_composition: '表面元素组成', qualitative_characterization: '定性表征',
   qualitative_results: '文字观察', reported_observation: '文字观察',
-  equilibrium_uptake: '平衡吸附量', qualitative_ordering: '吸附量排序',
+  equilibrium_uptake: '平衡吸附量', qualitative_ordering: '定性排序',
   selectivity: '选择性', isosteric_heat: '等量吸附热', breakthrough_working_capacity: '穿透工作容量',
   dynamic_selectivity: '动态选择性', qualitative_breakthrough_behavior: '穿透行为', binding_energy: '结合能',
   C_percent: '表面碳含量', O_percent: '表面氧含量', N_percent: '表面氮含量',
@@ -34,8 +34,8 @@ const labels = {
   isotherm_shape_class_reported: '等温线类型', hysteresis_class_reported: '滞后环类型',
   hysteresis_size_qualifier: '滞后环大小', pore_structure_interpretation: '孔结构解释',
   dissolution_and_mixing: '溶解与混合', stirring: '搅拌', rotary_evaporation: '旋转蒸发',
-  'rotary evaporation': '旋转蒸发', thermal_treatment: '炭化与活化',
-  acid_washing: '酸洗与水洗', washing: '洗涤', vacuum_drying: '真空干燥',
+  'rotary evaporation': '旋转蒸发', thermal_treatment: '热处理',
+  acid_washing: '酸洗', washing: '洗涤', vacuum_drying: '真空干燥',
   adsorption_desorption_isotherm: '吸附／脱附等温线', pore_size_distribution: '孔径分布',
   thermogravimetric_curve: '热重曲线', pure_component_equilibrium_isotherm: '纯组分吸附等温线',
   surface_area_normalized_isotherm: '按表面积归一的等温线',
@@ -141,7 +141,7 @@ const evidenceMarkdownRenderer = createMarkdownRenderer({ themeName: 'github-lig
 
 /** 表头与审核指标的括号单位不参与名称匹配。 */
 function tableMetricName(value) {
-  return evidenceText(value).replace(/%$/, '')
+  return evidenceText(value).replace(/\/?%$/, '')
     .replace(/^(.+)\([^()]*\)$/, '$1').replace(/^\(([^()]+)\)$/, '$1')
 }
 
@@ -171,9 +171,14 @@ function evidenceValue(value, metric) {
 }
 
 /** 规则表格只接受样品、指标和结果的唯一交点。 */
-function locateTableResult(table, record) {
-  if (!table || !record?.sample || !record.metric || !record.result) return null
+function locateTableResult(table, record, evidenceId) {
+  if (!record?.result) return null
   const rows = Array.from(table.rows)
+  if (record.table_cells) {
+    const position = record.table_cells[evidenceId]
+    return position ? rows[position[0]]?.cells[position[1]] || null : null
+  }
+  if (!record.sample || !record.metric) return null
   const regular = rows.every(row => row.cells.length === rows[0].cells.length &&
     Array.from(row.cells).every(cell => cell.colSpan === 1 && cell.rowSpan === 1))
   if (!regular) return null
@@ -196,30 +201,32 @@ function locateTableResult(table, record) {
 }
 
 /** 表格核对唯一交点，正文复用逐字高亮定位当前结果。 */
-export function experimentEvidenceMatches(quote, record) {
+export function experimentEvidenceMatches(quote, record, evidenceId) {
   if (!quote || !record?.result) return false
-  if (/^\s*<table\b/i.test(quote)) {
-    const table = new DOMParser().parseFromString(quote, 'text/html').querySelector('table')
-    return Boolean(locateTableResult(table, record))
-  }
-  const content = experimentEvidencePreview(quote, record).content
-  const html = DOMPurify.sanitize(evidenceMarkdownRenderer.render(content))
+  const preview = experimentEvidencePreview(quote, record, evidenceId)
+  if (preview.table) return preview.matched
+  const html = DOMPurify.sanitize(evidenceMarkdownRenderer.render(preview.content))
   const body = new DOMParser().parseFromString(html, 'text/html').body
   highlightMarkdownText(body, record.result)
   return Boolean(body.querySelector('mark'))
 }
 
 /** 原表保留顺序和文字，定位结果与高亮共用交点规则。 */
-export function experimentEvidencePreview(quote, record) {
+export function experimentEvidencePreview(quote, record, evidenceId) {
   const text = String(quote ?? '')
-  if (!/^\s*<table\b/i.test(text)) {
+  let contentHtml = ''
+  if (/^\s*<table\b/i.test(text)) {
+    contentHtml = text
+  } else if (/^(?:[^\n]*\|[^\n]*\n)\s*\|?\s*:?-{3,}:?\s*\|/m.test(text)) {
+    contentHtml = DOMPurify.sanitize(evidenceMarkdownRenderer.render(text))
+  }
+  const table = contentHtml && new DOMParser().parseFromString(contentHtml, 'text/html').querySelector('body > table')
+  if (!table) {
     const content = /^(?:\\(?:frac|ln)\b|[A-Za-z]\s*=.*\\frac\b)/.test(text.trim())
       ? '$$\n' + text + '\n$$' : mathMarkdown(text)
     return { content, table: false }
   }
-  const table = new DOMParser().parseFromString(text, 'text/html').querySelector('table')
-  if (!table) return { content: '', table: true }
-  const target = locateTableResult(table, record)
+  const target = locateTableResult(table, record, evidenceId)
   const content = '<table>' + Array.from(table.rows, (row, rowIndex) => '<tr>' +
     Array.from(row.cells, (cell, columnIndex) => {
       const tag = rowIndex === 0 || columnIndex === 0 ? 'th' : 'td'
@@ -228,19 +235,19 @@ export function experimentEvidencePreview(quote, record) {
         (cell === target ? '<mark>' + content + '</mark>' : content) + '</' + tag + '>'
     }).join('') + '</tr>'
   ).join('') + '</table>'
-  return { content, table: true }
+  return { content, table: true, matched: Boolean(target) }
 }
 
 /** 审核页复用同一份表格匹配和受控渲染。 */
-export function experimentEvidenceMarkdown(quote, record) {
-  return experimentEvidencePreview(quote, record).content
+export function experimentEvidenceMarkdown(quote, record, evidenceId) {
+  return experimentEvidencePreview(quote, record, evidenceId).content
 }
 
 /** 按实验用途归类审核记录，保留未知方法的原始名称。 */
 export function experimentCategory(method) {
   if (['equilibrium_isotherm', 'mixture_prediction', 'isosteric_heat_derivation', 'isotherm_model_fit'].includes(method)) return 'adsorption'
   if (['breakthrough', 'computational_adsorption'].includes(method)) return 'breakthrough'
-  return 'character'
+  return 'measurement'
 }
 
 /** 提取已报告的测试条件供就地展开。 */

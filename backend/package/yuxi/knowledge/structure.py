@@ -16,6 +16,7 @@ from pypdf import PdfReader
 
 from yuxi.config.options import document_model_concurrency_policy
 from yuxi.knowledge.adsorption_contract import (
+    PAPER_SCHEMA_ID,
     REGISTRIES,
     STRUCTURE_PROMPT_VERSION,
     STRUCTURE_VERSION,
@@ -38,9 +39,11 @@ from yuxi.utils.datetime_utils import utc_now
 from yuxi.utils.logging_config import logger
 
 _SOURCE_BLOCK_CHARACTERS = 16_000
+_OBSERVATION_GROUP_CHARACTERS = 24_000
+_OBSERVATION_GROUP_RUNS = 4
 
 
-async def extract_adsorption_record(
+async def extract_paper_record(
     markdown: str, *, pdf_content: bytes, file_id: str, model_spec: str, parse_assets: dict | None, control,
 ) -> dict:
     """保留通过校验的规范记录及同源的审核卡片。"""
@@ -58,25 +61,25 @@ async def extract_adsorption_record(
 
     model = select_model(model_spec, safe_error_logging=True, timeout=None, max_tokens=12000, max_retries=0)
     executor = await PdfModelExecutor(
-        model_spec, control=control, stage="adsorption_canonical", model=model,
+        model_spec, control=control, stage="paper_structure", model=model,
     ).initialize()
     document_id = f"doc:{file_id}"
-    record_id = f"ads-sep:{file_id}"
+    record_id = f"paper:{file_id}"
     record = {
-        "schema_id": "adsorption-separation-canonical", "schema_version": "1.0.0-draft", "record_id": record_id,
+        "schema_id": PAPER_SCHEMA_ID, "schema_version": "1.0.0-draft", "record_id": record_id,
         **{collection: [] for collection in REGISTRIES},
     }
     notices: list[Notice] = []
-    source_input = [
-        {"evidence_id": ref, "pdf_page": item["page"], "section": item["section"], "text": item["quote"]}
+    source_input = {
+        ref: {"evidence_id": ref, "pdf_page": item["page"], "section": item["section"], "text": item["quote"]}
         for ref, item in sources.items()
-    ]
+    }
 
-    async def extract(stage, fields, instruction, *, catalog=None, source_ids=None):
+    async def extract(stage, fields, instruction, *, catalog=None, selected_sources=None):
         """提取并校验当前字段组，后续阶段只引用已登记的编号。"""
         payload = {
             "document_id": document_id, "record_id": record_id, "catalog": catalog or {},
-            "sources": [item for item in source_input if source_ids is None or item["evidence_id"] in source_ids],
+            "sources": list(source_input.values()) if selected_sources is None else selected_sources,
         }
         if stage == "registry":
             payload["pdf_first_page"] = pages[0][:16_000]
@@ -91,7 +94,7 @@ async def extract_adsorption_record(
         "可从 pdf_first_page 读取题录。日期保留原文精度，缺少月日不补齐，doi保留原文DOI编号。"
         "为不同材料、样品状态、路线、操作和试剂使用建立互不重复的编号。"
         "登记原文实际报告的实体、材料和样品，后续记录只引用这些编号。"
-        "factor_assignments 仅登记原文报告的样品变量，使用 raw_text、value、unit 保存原文参数；"
+        "factor_assignments 仅登记原文报告的样品变量，以表头或原文变量名为键，使用 raw_text、value、unit 保存原文参数；"
         "未报告或不适用的因素省略，不填零。操作条件也仅填写原文参数，保留电压、流量、距离等实际条件。"
         "制备最终产物用 output_sample_state_ids 引用已登记样品，不添加原文未报告的操作。"
         "表格中的每个已命名样品独立登记，制备路线按步骤和顺序拆分。"
@@ -129,20 +132,30 @@ async def extract_adsorption_record(
         "分别登记测量、拟合、预测、推导和计算，不把推导结果当作实测。"
         "逐节登记原文实际报告的实验、计算、拟合或分析，run_type、technique、method及series_kind使用原文名称。"
         "保持不同方法、对象、变量和取值基准的区别，不为了套用某类论文而改写实验含义。"
-        "记录公共方法、图下注释及后续均使用某样品等继承条件，未知条件省略，不从相邻实验借用。"
+        "只登记实验方法、对象和公共条件。随样品或数据点变化的条件与测得结果留给观测阶段。"
+        "已在制备路线登记的操作与参数留在路线，另外报告的独立测量仍登记实验。"
+        "仅在原文明确适用时继承公共条件，未知条件省略。方法和曲线类型使用简短原文名称。"
         "每项实验的 evidence_ids 必须覆盖方法及该实验全部结果段、数表、表头和图注，不只引用方法。"
         "input_run_ids关联实际使用的前置实验，同时显式登记本实验的样品和物种。"
         "没有物理样品或物种时对应编号列表为空，不补造关联。"
-        "实验与曲线编号双向一致。曲线没有可见数表时 data_points 为 null，不估读曲线。",
+        "曲线登记所属实验、轴、取值基准及证据。series_members 只保留图例用来区分线条的样品、物种和分组条件，"
+        "如同图多条温度曲线各自的温度。数表的逐点条件和数值、拟合结果及其他测量留给观测，不扫描或转录图中数据点。",
         catalog={name: record[name] for name in (
             "chemical_entities", "material_identities", "sample_batches", "sample_states",
         )},
     )
     record.update(runs)
     notices.extend(run_notices)
+    series_by_run = defaultdict(list)
+    for series in record["series_sets"]:
+        for member in series["series_members"]:
+            member["data_points"] = None
+        series_by_run[series["run_id"]].append(series["series_set_id"])
+    for run in record["experiment_runs"]:
+        run["series_set_ids"] = series_by_run[run["run_id"]]
     filter_record_references(record, notices)
 
-    tasks = _observation_tasks(record, sources)
+    tasks = _observation_tasks(record, source_input)
     group_count = len(tasks)
     if not record["experiment_runs"]:
         notices.append(("missing_experiment_registry", "没有登记到有效实验，不能据此认定原文没有实验结果。"))
@@ -155,36 +168,25 @@ async def extract_adsorption_record(
     async def extract_observation_group(item):
         """并发提取独立观测组，串行记录已处理组数。"""
         index, task = item
-        run_ids = {run["run_id"] for run in task["runs"]}
-        sample_ids = task["sample_ids"]
-        selected_states = [state for state in record["sample_states"] if state["sample_state_id"] in sample_ids]
-        batch_ids = {state["sample_batch_id"] for state in selected_states}
-        selected = {
-            **record, "experiment_runs": list(task["context_runs"].values()), "sample_states": selected_states,
-            "sample_batches": [batch for batch in record["sample_batches"] if batch["sample_batch_id"] in batch_ids],
-            "series_sets": [series for series in record["series_sets"] if series["run_id"] in run_ids],
-        }
         result = await extract(
             f"observations-{index}", ("observations",),
             "只为catalog.target_run_ids中的目标实验生成观测，其他实验只用于追溯输入、物种和样品。"
             f"本阶段每条 observation_id 使用 obs:observations-{index}: 前缀且互不重复。"
             "每个样品与数值必须在引用原文中有对应关系。表格引用包含数据和表头的块。"
-            "所有指标都使用原文指标名作为metric_id，不限技术、学科或指标种类。"
+            "表头用实验变量区分数据时，以原文表头名称为条件键，保留单元格的值，数值单位按表头登记。"
+            "所有指标都使用原文指标名作为metric_id。表格结果使用对应表头的指标名，单位单独填写。"
             "数值结果使用quantitative_measurement的标量或范围，定性结果使用reported_result并保留连续原文。"
-            "不同对象、物种、条件和数值独立一条；保留全部已报告条件和取值基准，不把总结果拆成未测的贡献。"
+            "不同对象、物种、条件和数值独立一条。共享条件从该实验继承，conditions 只填本条新增或有差异的条件。"
+            "保留原文的取值基准，不把总结果拆成未测的贡献。数值确属已登记曲线时填写其 series_set_id。"
             "没有样品或物种关联时使用null或空列表，不创建占位样品。"
             "raw_text保留原文数字及小数分组，value/范围端点使用可计算的数字；未写单位使用null，"
             "不能把未知单位当无量纲，也不改变原数值后只替换单位。"
+            "数值的raw_text只摘录包含数字、比较符号及单位的原文短语。"
             "保留原文数字、单位、范围、约数及符号；对照原文区分实测、预测和定性描述。"
             "定性结果和排序使用可从所引证据中定位的连续原文短语。"
             "不同实验、样品、气体和条件的结果分开。",
-            catalog={
-                **{name: selected[name] for name in (
-                    "chemical_entities", "sample_batches", "sample_states", "experiment_runs", "series_sets",
-                )},
-                "target_run_ids": sorted(run_ids),
-            },
-            source_ids=task["source_ids"],
+            catalog=task["catalog"],
+            selected_sources=task["sources"],
         )
         async with progress_lock:
             observation_results[index] = result
@@ -203,24 +205,53 @@ async def extract_adsorption_record(
     filter_record_references(record, notices)
     measurement_values = filter_observation_values(record, sources, markdown, notices)
     filter_record_references(record, notices)
+    conditions_by_run = {run["run_id"]: run["conditions"] for run in record["experiment_runs"]}
+    for observation in record["observations"]:
+        common = conditions_by_run[observation["run_id"]]
+        observation["conditions"] = {
+            key: value for key, value in observation["conditions"].items() if value != common.get(key)
+        }
 
+    rejected_numeric = [
+        candidate["record"] for kind, _, *details in notices if kind == "unverified_observation"
+        for candidate in details if candidate["record"]["observation_type"] == "quantitative_measurement"
+    ]
     await control.set_progress(80, "核对机制、未报告信息和冲突")
     quality, quality_notices = await extract(
         "quality", ("mechanism_claims", "missing_information", "validation_issues"),
         "机制结论区分作者解释、背景资料与直接观测。指出缺失和冲突，引用已登记的编号。"
-        "数值结果应已进入observations，机制只简述作者解释及其依据，不逐段改写正文、不重复罗列数值。"
+        "只登记有独立内容的作者机理解释，用观测编号引用结果，附作者解释的证据。"
+        "目录中的观测条件继承该实验的公共条件。"
+        "重点核对正文、相邻章节、图注和表头中的数值与归属冲突，引用互相矛盾的原文。"
         "对照完整sources与目录检查遗漏实验或数值；遗漏分别用issue_type missed_experiment、"
         "missing_numeric_observation，在record_ids中关联当前record_id及原文编号，不能把未抽到说成原文未报告。"
+        "rejected_numeric_candidates 是尚待人工核对的候选。仅当缺数提醒中的所有结果已有对应候选时，"
+        "在 covered_by_candidate_ids 填写这些候选的 observation_id，并在 record_ids 引用对应实验和原文。"
+        "已作为制备操作条件登记的参数无需再生成观测。"
         "validation_issues 的 message 使用简短中文，指出具体要核对的数值、单位或条件，并关联 record_ids 和原文出处。"
-        "图像中未得到可引用数值的必填字段写入 missing_information，关联对应实验或曲线。"
+        "missing_information 关联具体实验或曲线。有关原文可核对但没有提供所需数值的字段，标记 not_reported，"
+        "引用讨论该字段的正文或图表。是否报告无法确认时标记 needs_review。"
         "模板仅展示允许的字段；没有相关内容时返回空列表。",
-        catalog={name: record[name] for name in (
-            "chemical_entities", "sample_states", "synthesis_routes", "experiment_runs", "series_sets", "observations",
-        )},
+        catalog=_quality_catalog({
+            **{name: record[name] for name in (
+                "chemical_entities", "sample_states", "synthesis_routes", "experiment_runs", "series_sets", "observations",
+            )},
+            "rejected_numeric_candidates": rejected_numeric,
+        }),
     )
     record.update(quality)
     notices.extend(quality_notices)
     filter_record_references(record, notices)
+    numeric_issue_candidates = {
+        issue["issue_id"]: issue.pop("covered_by_candidate_ids")
+        for issue in record["validation_issues"] if "covered_by_candidate_ids" in issue
+    }
+    observations_by_series = defaultdict(list)
+    for observation in record["observations"]:
+        if series_id := observation.get("series_set_id"):
+            observations_by_series[series_id].append(observation["observation_id"])
+    for series in record["series_sets"]:
+        series["observation_ids"] = observations_by_series[series["series_set_id"]]
     observed = {item["run_id"] for item in record["observations"]}
     for run in record["experiment_runs"]:
         if run["run_id"] not in observed:
@@ -257,7 +288,7 @@ async def extract_adsorption_record(
             "issue_id": issue_id, "severity": "warning", "issue_type": kind, "message": message,
         })
         if len(notice) == 3:
-            rejected.append({**notice[2], "issue_id": issue_id, "message": message})
+            rejected.append({**notice[2], "issue_id": issue_id, "issue_type": kind, "message": message})
     partial_result = partial_source or bool(notices) or any(
         item["issue_type"] in {"missed_experiment", "missing_numeric_observation"}
         for item in record["validation_issues"]
@@ -282,6 +313,7 @@ async def extract_adsorption_record(
             "partial_result": partial_result,
             "validation_notice_count": len(notices),
             "correction_tasks": correction_tasks,
+            "numeric_issue_candidates": numeric_issue_candidates,
             "excluded_characters": excluded, "exhaustive_extraction": False,
             "observation_task_count": group_count, "model_execution": executor.stats(),
             "elapsed_seconds": round(monotonic() - started, 2),
@@ -290,12 +322,32 @@ async def extract_adsorption_record(
 
 
 def _observation_tasks(record: dict, sources: dict) -> list[dict]:
-    """按证据体量合并全部实验，单个实验的必要上下文保持完整。"""
+    """按请求载荷和目标实验数合并，单个实验的必要上下文保持完整。"""
     runs = {run["run_id"]: run for run in record["experiment_runs"]}
     tasks = []
+
+    def make_task(target_ids, context_runs, refs):
+        """构造实际发给模型的分组载荷。"""
+        sample_ids = {ref for parent in context_runs.values() for ref in parent.get("sample_state_ids", [])}
+        states = [state for state in record["sample_states"] if state["sample_state_id"] in sample_ids]
+        batch_ids = {state["sample_batch_id"] for state in states}
+        batches = [batch for batch in record["sample_batches"] if batch["sample_batch_id"] in batch_ids]
+        refs = refs | evidence_references(states) | evidence_references(batches)
+        return {
+            "catalog": {
+                "target_run_ids": target_ids,
+                "experiment_runs": list(context_runs.values()),
+                "chemical_entities": record["chemical_entities"],
+                "sample_states": states, "sample_batches": batches,
+                "series_sets": [series for series in record["series_sets"] if series["run_id"] in context_runs],
+            },
+            "sources": [source for ref, source in sources.items() if ref in refs],
+        }
+
     for run in record["experiment_runs"]:
+        target_id = run["run_id"]
         related = {}
-        pending = [run["run_id"]]
+        pending = [target_id]
         while pending:
             run_id = pending.pop()
             if run_id in related:
@@ -309,26 +361,42 @@ def _observation_tasks(record: dict, sources: dict) -> list[dict]:
                     for ref in series["evidence_ids"])
         sections = {sources[ref]["section"] for ref in refs}
         refs.update(ref for ref, source in sources.items() if source["section"] in sections)
-        sample_ids = {ref for parent in related.values() for ref in parent.get("sample_state_ids", [])}
-        states = [state for state in record["sample_states"] if state["sample_state_id"] in sample_ids]
-        batch_ids = {state["sample_batch_id"] for state in states}
-        refs.update(evidence_references(states))
-        refs.update(evidence_references([
-            batch for batch in record["sample_batches"] if batch["sample_batch_id"] in batch_ids
-        ]))
-        combined = refs | tasks[-1]["source_ids"] if tasks else refs
-        # 预算只决定是否合并，不裁掉长实验的原文或结果。
-        if not tasks or (
-            refs - tasks[-1]["source_ids"]
-            and sum(len(sources[ref]["quote"]) for ref in combined) > _SOURCE_BLOCK_CHARACTERS
-        ):
-            tasks.append({"runs": [], "source_ids": set(), "sample_ids": set(), "context_runs": {}})
-        task = tasks[-1]
-        task["runs"].append(run)
-        task["source_ids"].update(refs)
-        task["sample_ids"].update(sample_ids)
-        task["context_runs"].update(related)
+        task = make_task([target_id], related, refs)
+        if tasks:
+            previous = tasks[-1]
+            catalog = previous["catalog"]
+            if len(catalog["target_run_ids"]) < _OBSERVATION_GROUP_RUNS:
+                context = {item["run_id"]: item for item in catalog["experiment_runs"]}
+                combined = make_task(
+                    [*catalog["target_run_ids"], target_id], {**context, **related},
+                    refs | {source["evidence_id"] for source in previous["sources"]},
+                )
+                # 原文被某组完整覆盖时只比较目录，避免重复发送同一份超长原文。
+                shared_sources = len(combined["sources"]) == max(len(previous["sources"]), len(task["sources"]))
+                sized = combined["catalog"] if shared_sources else combined
+                if len(json.dumps(sized, ensure_ascii=False, separators=(",", ":"))) <= _OBSERVATION_GROUP_CHARACTERS:
+                    tasks[-1] = combined
+                    continue
+        # 预算只约束合并。单个实验及其依赖可能超出预算。
+        tasks.append(task)
     return tasks
+
+
+def _quality_catalog(value):
+    """精简全文核对目录，保留编号、取值基准、共享条件、差异和出处。"""
+    if isinstance(value, list):
+        return [_quality_catalog(item) for item in value]
+    if isinstance(value, dict):
+        compact = {
+            key: _quality_catalog(item) for key, item in value.items()
+            if item not in (None, [], {})
+        }
+        if value.get("kind") == "scalar":
+            number, unit = str(value["value"]), value["unit_raw"] or ""
+            if value["raw_text"].strip() in {number, f"{number}{unit}", f"{number} {unit}"}:
+                del compact["raw_text"]
+        return compact
+    return value
 
 
 async def _request_stage(executor, control, stage, schema, instruction, payload):

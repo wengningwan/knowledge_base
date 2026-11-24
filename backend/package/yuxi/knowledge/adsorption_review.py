@@ -8,7 +8,7 @@ import unicodedata
 from decimal import Decimal, InvalidOperation
 
 from yuxi.knowledge.adsorption_contract import Notice
-from yuxi.knowledge.structure_tables import table_cells
+from yuxi.knowledge.structure_tables import CellPosition, Span, table_cells
 
 _NUMBER = re.compile(
     r"(?<![A-Za-z0-9_.])[+−-]?(?:\d+(?:\.\d{3}(?:[ \u00a0\u2009]\d{1,3})+|\.\d+)?|\.\d+)"
@@ -23,6 +23,7 @@ _TEXTURAL_LABELS = {
     "textural.surface_area.specific": "BET 比表面积",
     "textural.pore_volume.total": "总孔容",
 }
+type Measurement = tuple[str, str, dict[str, CellPosition]]
 
 
 class _UnverifiedObservation(ValueError):
@@ -34,6 +35,9 @@ def filter_observation_values(record: dict, sources: dict, markdown: str, notice
     states = {item["sample_state_id"]: item["reported_name"] for item in record["sample_states"]}
     sample_names = {name.casefold() for name in states.values()}
     entities = {item["entity_id"]: item["reported_name"] for item in record["chemical_entities"]}
+    runs = {item["run_id"]: item for item in record["experiment_runs"]}
+    batches = {item["sample_batch_id"]: item for item in record["sample_batches"]}
+    sample_batches = {item["sample_state_id"]: batches[item["sample_batch_id"]] for item in record["sample_states"]}
     kept = []
     values = {}
     for index, observation in enumerate(record["observations"], 1):
@@ -76,8 +80,12 @@ def filter_observation_values(record: dict, sources: dict, markdown: str, notice
         else:
             try:
                 if observation["observation_type"] == "quantitative_measurement":
+                    run = runs[observation["run_id"]]
+                    sample_id = observation["sample_state_id"]
+                    names = [*samples, sample_batches[sample_id]["reported_name"]] if sample_id else []
+                    parameters = _table_parameters(observation, run, sample_batches)
                     measurements = [_verified_quantitative_measurement(
-                        observation, evidence,
+                        observation, evidence, names, parameters,
                     )]
                 else:
                     measurements = _verified_measurements(
@@ -155,19 +163,20 @@ def project_experiment_cards(record: dict, sources: dict, measurement_values: di
         sample_ids = _sample_ids(observation)
         run = runs.get(observation.get("run_id"), {})
         method = run.get("technique") or run.get("method") or run.get("run_type")
+        differences = _observation_conditions(observation, entities)
         conditions = [
-            {"name": name, "value": field(text, [*run.get("evidence_ids", []), *refs])}
-            for name, value in {
-                **run.get("conditions", {}), **_observation_conditions(observation, entities),
-            }.items()
+            {"name": name, "value": field(text, refs if name in differences else run["evidence_ids"])}
+            for name, value in {**run.get("conditions", {}), **differences}.items()
             if (text := _display_value(value)) is not None
         ]
-        for label, text in measurement_values[observation["observation_id"]]:
+        for label, text, cells in measurement_values[observation["observation_id"]]:
             measurement = {
                 "canonical_id": observation["observation_id"],
                 "property": field(label, refs), "result": field(text, refs),
                 "method": field(method, run["evidence_ids"]) if method else None, "conditions": conditions,
             }
+            if cells:
+                measurement["table_cells"] = {review_ids[ref]: list(cell) for ref, cell in cells.items()}
             for sample_id in sample_ids:
                 add(sample_id, "measurements", measurement, refs)
     return list(cards.values()), evidence
@@ -199,12 +208,14 @@ def _verified_measurements(observation, evidence, samples, sample_names, entitie
                 metric, {"kind": "scalar", "value": numeric, "raw_text": str(text)},
                 evidence, samples, sample_names, markdown,
             )
-        measurements.append((label, text))
+        measurements.append((label, text, {}))
     return measurements
 
 
-def _verified_quantitative_measurement(observation: dict, evidence: list[dict]) -> tuple[str, str]:
-    """仅定位原文数量和单位；实验归属、条件含义继续保持待审核。"""
+def _verified_quantitative_measurement(
+    observation: dict, evidence: list[dict], names: list[str], parameters: dict,
+) -> Measurement:
+    """规则表格核对交点，独立正文按原有数量与单位规则保留。"""
     value = observation["value"]
     numbers = (
         [Decimal(str(value["value"]))] if value["kind"] == "scalar"
@@ -216,18 +227,143 @@ def _verified_quantitative_measurement(observation: dict, evidence: list[dict]) 
     if not expected <= _numbers(value["raw_text"]):
         raise _UnverifiedObservation("数值与原文写法不一致。")
     unit = value["unit_raw"]
-    for source in evidence:
+    metric = observation["metric_id"]
+    matches = {}
+    table_raw = None
+    prose_raw = None
+    relevant_table = False
+    for ref, source in zip(observation["evidence_ids"], evidence, strict=True):
         quote = source["quote"]
-        if not expected <= _numbers(quote) or (unit and not _unit_matches(unit, quote, case_sensitive=True)):
+        grid = table_cells(quote, 0, len(quote))
+        if grid is not None:
+            relevant_table |= _table_name(metric) in _table_name(quote) and expected <= _numbers(_plain_cell(quote))
+            if grid and (cell := _locate_table_value(quote, grid, metric, unit, expected, names, parameters)):
+                matches[ref] = cell
+                left, right = grid[cell[0]][cell[1]]
+                table_raw = table_raw or _plain_cell(quote[left:right])
+            continue
+        if prose_raw is not None or not expected <= _numbers(quote) or (
+            unit and not _unit_matches(unit, quote, case_sensitive=True)
+        ):
             continue
         raw = value["raw_text"]
         if raw not in quote and len(numbers) == 1:
             raw = next(match.group() for match in _NUMBER.finditer(quote) if _number(match.group()) == numbers[0])
-        label = observation["metric_id"]
-        if unit and unit not in raw:
-            label = f"{label} ({unit})"
-        return label, raw
+        prose_raw = raw
+    if raw := table_raw or (prose_raw if not relevant_table else None):
+        return (f"{metric} ({unit})" if unit and unit not in raw else metric), raw, matches
+    if relevant_table:
+        raise _UnverifiedObservation("无法在所引表格中唯一核对样品或条件、指标和数值。")
     raise _UnverifiedObservation("数值或已报告单位无法在所引原文中定位。")
+
+
+def _table_parameters(observation: dict, run: dict, sample_batches: dict) -> dict:
+    """用样品因素定位多样品表，单样品实验也可按本条实际条件定位。"""
+    sample_id = observation["sample_state_id"]
+    conditions = {**run["conditions"], **observation["conditions"]}
+    if sample_id is None:
+        return conditions
+    factors = sample_batches[sample_id].get("factor_assignments", {})
+    if len(run["sample_state_ids"]) == 1:
+        return {**conditions, **factors}
+
+    def parameter_value(item):
+        """原文名写法不同的参数必须有相同的登记值与单位。"""
+        return item["value"], item["unit"]
+
+    other = [
+        parameter_value(item) for other_id in run["sample_state_ids"] if other_id != sample_id
+        for item in sample_batches[other_id].get("factor_assignments", {}).values()
+    ]
+    unique_factors = {key: item for key, item in factors.items() if parameter_value(item) not in other}
+    own = [parameter_value(item) for item in unique_factors.values()]
+    aliases = {
+        key: item for key, item in conditions.items() if parameter_value(item) in own
+    }
+    return {**aliases, **unique_factors}
+
+
+def _locate_table_value(quote, grid: list[list[Span]], metric, unit, expected, names, parameters) -> CellPosition | None:
+    """在横表、纵表或明确的指标列与数值列中寻找唯一有依据的单元格。"""
+    rows = [[_plain_cell(quote[left:right]) for left, right in row] for row in grid]
+    header = rows[0]
+    sample_names = {_table_name(name) for name in names}
+    metric_name = _table_heading(metric, unit)[0]
+    matches = []
+
+    def axis_matches(label, heading):
+        """有样品归属时要求名称或有依据的变量与轴对应。"""
+        if _table_name(label) in sample_names:
+            return True
+        for name, parameter in parameters.items():
+            key, unit_in_header = _table_heading(heading, parameter["unit"])
+            if key != _table_heading(name, parameter["unit"])[0]:
+                continue
+            value = parameter["value"]
+            if type(value) in {int, float}:
+                if (number := _NUMBER.match(label)) and _number(number.group()) == Decimal(str(value)):
+                    suffix = label[number.end():].strip()
+                    return (
+                        not suffix and (unit_in_header or not parameter["unit"])
+                        or bool(parameter["unit"] and _unit_matches(parameter["unit"], suffix, exact=True, case_sensitive=True))
+                    )
+                return False
+            return _table_name(label) in {_table_name(str(value).split("(", 1)[0]), _table_name(parameter["raw_text"])}
+        return not sample_names
+
+    columns = [_table_name(label) for label in header]
+    metric_columns = [index for index, label in enumerate(columns) if label in {"指标", "metric"}]
+    value_columns = [index for index, label in enumerate(columns) if label in {"数值", "结果", "value", "result"}]
+    unit_columns = [index for index, label in enumerate(columns) if label in {"单位", "單位", "unit", "units"}]
+    for row_index, row in enumerate(rows[1:], 1):
+        if row[0] and _table_name(row[0]) == columns[0]:
+            header = row
+            continue
+        for column, cell in enumerate(row[1:], 1):
+            if expected != _numbers(cell):
+                continue
+            row_metric, row_unit = _table_heading(row[0], unit)
+            col_metric, col_unit = _table_heading(header[column], unit)
+            if row_metric == metric_name and axis_matches(header[column], header[0]):
+                declared_unit = row_unit
+            elif col_metric == metric_name and axis_matches(row[0], header[0]):
+                declared_unit = col_unit
+            elif value_columns == [column] and len(metric_columns) == 1 and axis_matches(row[0], header[0]):
+                long_metric, declared_unit = _table_heading(row[metric_columns[0]], unit)
+                if long_metric != metric_name:
+                    continue
+                if unit and len(unit_columns) == 1:
+                    declared_unit |= _unit_matches(unit, row[unit_columns[0]], exact=True, case_sensitive=True)
+            else:
+                continue
+            bare_number = re.fullmatch(r"[\s<>≤≥≈~+\-−–—±.,至到]*", re.sub(r"\bto\b", "", _NUMBER.sub("", cell)))
+            if not unit or (declared_unit and bare_number) or _unit_matches(unit, cell, case_sensitive=True):
+                matches.append((row_index, column))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _plain_cell(text: str) -> str:
+    """还原表格单元格的可见文字。"""
+    return unicodedata.normalize("NFKC", html.unescape(re.sub(r"<[^>]+>", "", text))).strip()
+
+
+def _table_name(text: str) -> str:
+    """忽略表头的数学与排版标记。"""
+    return _phrase(_table_label(_plain_cell(text)))
+
+
+def _table_heading(text: str, unit: str | None) -> tuple[str, bool]:
+    """分离指标名和明确写在末尾的单位，复合单位保留整体。"""
+    text = _plain_cell(text).replace(r"\%", "%")
+    if unit:
+        bracket = re.fullmatch(r"(.+)\(([^()]*)\)\s*", text)
+        if bracket and _unit_matches(unit, bracket[2], exact=True, case_sensitive=True):
+            return _table_name(bracket[1]), True
+        for slash in re.finditer("/", text):
+            title, suffix = text[:slash.start()].strip(), text[slash.end():]
+            if title and _unit_matches(unit, suffix, exact=True, case_sensitive=True):
+                return _table_name(title), True
+    return _table_name(text), False
 
 
 def _measurement_values(observation: dict):

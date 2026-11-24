@@ -671,7 +671,7 @@ const handleDownloadStructured = async () => {
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = 'adsorption-' + fileId + '.json'
+    link.download = 'paper-structure-' + fileId + '.json'
     link.click()
     setTimeout(() => window.URL.revokeObjectURL(url), 1000)
     message.success('下载成功')

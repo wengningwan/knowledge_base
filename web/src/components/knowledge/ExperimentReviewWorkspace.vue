@@ -166,7 +166,7 @@
             {{ source.evidence_id }} · Markdown 第 {{ source.line_start === source.line_end ? source.line_start : `${source.line_start}–${source.line_end}` }} 行
             <span v-if="source.page"> · PDF 第 {{ source.page }} 页</span>
           </p>
-          <MarkdownPreview :content="experimentEvidenceMarkdown(source.quote, sourceRecord)" :highlight-text="highlightText" compact />
+          <MarkdownPreview :content="experimentEvidenceMarkdown(source.quote, sourceRecord, source.evidence_id)" :highlight-text="highlightText" compact />
         </section>
       </aside>
     </div>

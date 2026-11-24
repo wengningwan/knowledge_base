@@ -11,7 +11,7 @@
     </nav>
     <form v-if="view !== 'review'" class="paper-search" @submit.prevent="search">
       <label for="experiment-search">查结果</label>
-      <a-input id="experiment-search" v-model:value="searchInput" placeholder="输入样品、指标或数值，例如 C-700-3 BET" allow-clear />
+      <a-input id="experiment-search" v-model:value="searchInput" placeholder="输入样品、指标或数值" allow-clear />
       <a-button html-type="submit" type="primary">搜索</a-button>
       <a-button v-if="query" @click="clearSearch">清除搜索</a-button>
     </form>
@@ -51,7 +51,7 @@
             <span><ExperimentText :text="metricTitle(record)" /><small>{{ record.sample }} · {{ experimentLabel(record.test) }}</small><small v-if="record.conditions"><ExperimentText :text="record.conditions" /></small></span>
             <ExperimentText :text="recordResult(record)" /><span class="muted">{{ recordPage(record) }}</span>
           </button>
-          <p v-if="!searchResults.length" class="empty">没有匹配的结果。可以试试样品编号、BET 或总孔容。</p>
+          <p v-if="!searchResults.length" class="empty">没有匹配的结果。</p>
         </template>
         <template v-else-if="view === 'samples'">
           <header class="pane-heading">
@@ -200,7 +200,7 @@ const props = defineProps({
 
 const views = { samples: '样品与结果', runs: '实验与曲线', review: '人工校对', json: '原始 JSON' }
 const statusLabels = { machine: '机器草稿', pending: '待确认', edited: '已修改', confirmed: '已人工确认', excluded: '已排除' }
-const categoryLabels = { character: '材料性质', adsorption: '吸附与选择性', breakthrough: '穿透与计算' }
+const categoryLabels = { measurement: '其他测量', adsorption: '吸附与选择性', breakthrough: '穿透与计算' }
 const view = ref('samples')
 const selectedSample = ref('')
 const sampleMode = ref('results')
@@ -304,7 +304,9 @@ const inspection = computed(() => {
 })
 const activeSource = computed(() => inspection.value.sources.find(source => source.evidence_id === sourceId.value) ||
   preferredSource(inspection.value.sources))
-const activePreview = computed(() => experimentEvidencePreview(activeSource.value?.quote, inspection.value.record))
+const activePreview = computed(() => experimentEvidencePreview(
+  activeSource.value?.quote, inspection.value.record, activeSource.value?.evidence_id
+))
 
 watch([() => activePreview.value.content, () => activeSource.value?.evidence_id, () => inspection.value.record?.record_id], () => {
   sourceHasHighlight.value = null
@@ -312,14 +314,14 @@ watch([() => activePreview.value.content, () => activeSource.value?.evidence_id,
 
 /** 默认出处和结果行页码共同使用可定位的原表。 */
 function preferredSource(sources) {
-  return sources.find(source => /^\s*<table\b/i.test(source.quote)) || sources[0]
+  return sources.find(source => /^\s*(?:<table\b|\|)/i.test(source.quote)) || sources[0]
 }
 
 /** 测量记录只展示包含当前结果的片段，保留原记录的完整关联。 */
 function recordSources(record) {
   const sources = record.evidence_ids.map(id => sourceMap.value.get(id)).filter(Boolean)
   return record.kind === 'measurement'
-    ? sources.filter(source => experimentEvidenceMatches(source.quote, record)) : sources
+    ? sources.filter(source => experimentEvidenceMatches(source.quote, record, source.evidence_id)) : sources
 }
 
 /** 根据当前预览的实际高亮反馈定位状态。 */

@@ -3,7 +3,7 @@
   "title": "Paper canonical output 1.0.0-draft",
   "type": "object",
   "properties": {
-    "schema_id": {"const": "adsorption-separation-canonical"},
+    "schema_id": {"enum": ["paper-canonical", "adsorption-separation-canonical"]},
     "schema_version": {"const": "1.0.0-draft"},
     "record_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "extraction_metadata": {"$ref": "#/$defs/extraction_metadata"},
@@ -175,10 +175,22 @@
         "series_kind": {"type": "string", "minLength": 1},
         "x": {"$ref": "#/$defs/paper_axis"},
         "y": {"$ref": "#/$defs/paper_axis"},
-        "series_members": {"type": "array", "items": {"type": "object", "properties": {"sample_state_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]}, "entity_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]}, "conditions": {"$ref": "#/$defs/reported_parameters"}, "data_points": {"type": "null"}}, "required": ["sample_state_id", "entity_id", "data_points"], "additionalProperties": false}},
+        "series_members": {"type": "array", "items": {"$ref": "#/$defs/paper_series_member"}},
+        "observation_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
         "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
       },
       "required": ["series_set_id", "run_id", "series_kind", "x", "y", "series_members", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_series_member": {
+      "type": "object",
+      "properties": {
+        "sample_state_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
+        "entity_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
+        "conditions": {"$ref": "#/$defs/reported_parameters"},
+        "data_points": {"type": "null"}
+      },
+      "required": ["sample_state_id", "entity_id", "data_points"],
       "additionalProperties": false
     },
     "paper_scalar": {
@@ -213,6 +225,7 @@
         "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "observation_type": {"const": "quantitative_measurement"},
         "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "series_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "sample_state_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
         "entity_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
         "metric_id": {"type": "string", "minLength": 1},
@@ -1115,9 +1128,13 @@
         "missing_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "record_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "fields": {"type": "array", "items": {"type": "string"}},
-        "reason": {"type": "string"}
+        "reason": {"type": "string"},
+        "status": {"enum": ["not_reported", "needs_review"]},
+        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true}
       },
       "required": ["missing_id", "record_id", "fields", "reason"],
+      "if": {"required": ["status"], "properties": {"status": {"const": "not_reported"}}},
+      "then": {"required": ["evidence_ids"]},
       "additionalProperties": false
     },
     "observations_binding_energy": {
@@ -2375,6 +2392,7 @@
         "severity": {"type": "string"},
         "issue_type": {"type": "string"},
         "record_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+        "covered_by_candidate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true},
         "message": {"type": "string"}
       },
       "required": ["issue_id", "severity", "issue_type", "record_ids", "message"],
