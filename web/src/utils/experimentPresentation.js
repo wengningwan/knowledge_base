@@ -25,7 +25,7 @@ const labels = {
   'raman.I_D/I_G': '拉曼强度比 Iᴅ/Iɢ', textural_properties: '孔结构参数',
   spectral_ratio: '光谱比值', spectral_peak_assignments: '光谱峰归属',
   surface_elemental_composition: '表面元素组成', qualitative_characterization: '定性表征',
-  qualitative_results: '文字观察', reported_observation: '文字观察',
+  qualitative_results: '文字观察', reported_observation: '文字观察', result_group: '成组结果',
   equilibrium_uptake: '平衡吸附量', qualitative_ordering: '定性排序',
   selectivity: '选择性', isosteric_heat: '等量吸附热', breakthrough_working_capacity: '穿透工作容量',
   dynamic_selectivity: '动态选择性', qualitative_breakthrough_behavior: '穿透行为', binding_energy: '结合能',
@@ -254,8 +254,10 @@ export function experimentCategory(method) {
 export function experimentMethodFacts(run) {
   const prep = run.preconditioning
   const program = run.temperature_program
+  const instrument = run.instrument
   return [
-    ['仪器', run.instrument?.model],
+    ['仪器', typeof instrument === 'string' ? instrument :
+      instrument?.model || instrument?.manufacturer_reported || instrument?.manufacturer || instrument?.manufacturer_normalized],
     ['方法', run.measurement_method || run.method],
     ['测试温度', (run.temperatures || [run.probe?.temperature || run.temperature]).filter(value => value != null).map(experimentValue).join('、')],
     ['测试压力', run.pressure == null ? '' : experimentValue(run.pressure)],
@@ -286,8 +288,9 @@ export function experimentObservationValues(observation) {
         add(observation.observation_type, item)
         continue
       }
-      add(item.metric_id || item.entity_id || item.peak_name || item.assignment || observation.observation_type,
-        item.value ?? item.position ?? item.binding_energy_eV)
+      const metric = item.metric_id || item.entity_id || item.peak_name || item.assignment || observation.observation_type
+      add(metric, item.value ?? item.position ?? item.binding_energy_eV)
+      add(metric, item.result)
     }
   } else if (observation.results && typeof observation.results === 'object') {
     for (const [metric, value] of Object.entries(observation.results)) add(metric, value)

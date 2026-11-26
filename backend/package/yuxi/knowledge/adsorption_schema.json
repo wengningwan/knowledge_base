@@ -1,34 +1,53 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Paper canonical output 1.0.0-draft",
+  "title": "Paper structure export",
   "type": "object",
   "properties": {
-    "schema_id": {"enum": ["paper-canonical", "adsorption-separation-canonical"]},
-    "schema_version": {"const": "1.0.0-draft"},
-    "record_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "record_id": {"$ref": "#/$defs/record_identifier"},
     "extraction_metadata": {"$ref": "#/$defs/extraction_metadata"},
-    "document": {"anyOf": [{"$ref": "#/$defs/document"}, {"$ref": "#/$defs/paper_document"}]},
+    "document": {"$ref": "#/$defs/paper_document"},
     "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
-    "chemical_entities": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/chemical_entities"}, {"$ref": "#/$defs/chemical_entities_2"}, {"$ref": "#/$defs/chemical_entities_3"}, {"$ref": "#/$defs/chemical_entities_4"}, {"$ref": "#/$defs/chemical_entities_5"}, {"$ref": "#/$defs/paper_entity"}]}},
-    "material_identities": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/material_identities"}, {"$ref": "#/$defs/paper_material"}]}},
-    "sample_batches": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/sample_batches"}, {"$ref": "#/$defs/paper_batch"}]}},
-    "sample_states": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/sample_states"}, {"$ref": "#/$defs/paper_state"}]}},
-    "synthesis_routes": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/synthesis_routes"}, {"$ref": "#/$defs/paper_route"}]}},
-    "experiment_runs": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/experiment_runs_gas_physisorption"}, {"$ref": "#/$defs/experiment_runs_scanning_electron_microscopy"}, {"$ref": "#/$defs/experiment_runs_Raman_spectroscopy"}, {"$ref": "#/$defs/experiment_runs_thermogravimetric_analysis"}, {"$ref": "#/$defs/experiment_runs_X_ray_photoelectron_spectroscopy"}, {"$ref": "#/$defs/experiment_runs_equilibrium_isotherm"}, {"$ref": "#/$defs/experiment_runs_isotherm_model_fit"}, {"$ref": "#/$defs/experiment_runs_mixture_prediction"}, {"$ref": "#/$defs/experiment_runs_isosteric_heat_derivation"}, {"$ref": "#/$defs/experiment_runs_breakthrough"}, {"$ref": "#/$defs/experiment_runs_computational_adsorption"}, {"$ref": "#/$defs/experiment_runs_adsorption_kinetics"}, {"$ref": "#/$defs/paper_run"}]}},
-    "series_sets": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/series_sets_adsorption_desorption_isotherm"}, {"$ref": "#/$defs/series_sets_pore_size_distribution"}, {"$ref": "#/$defs/series_sets_thermogravimetric_curve"}, {"$ref": "#/$defs/series_sets_pure_component_equilibrium_isotherm"}, {"$ref": "#/$defs/series_sets_surface_area_normalized_isotherm"}, {"$ref": "#/$defs/paper_series"}]}},
-    "observations": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/observations_textural_properties"}, {"$ref": "#/$defs/observations_qualitative_characterization"}, {"$ref": "#/$defs/observations_qualitative_characterization_2"}, {"$ref": "#/$defs/observations_qualitative_characterization_3"}, {"$ref": "#/$defs/observations_spectral_peak_assignments"}, {"$ref": "#/$defs/observations_spectral_ratio"}, {"$ref": "#/$defs/observations_qualitative_characterization_4"}, {"$ref": "#/$defs/observations_surface_elemental_composition"}, {"$ref": "#/$defs/observations_spectral_peak_assignments_2"}, {"$ref": "#/$defs/observations_spectral_peak_assignments_3"}, {"$ref": "#/$defs/observations_equilibrium_uptake"}, {"$ref": "#/$defs/observations_qualitative_ordering"}, {"$ref": "#/$defs/observations_selectivity"}, {"$ref": "#/$defs/observations_selectivity_2"}, {"$ref": "#/$defs/observations_isosteric_heat"}, {"$ref": "#/$defs/observations_isosteric_heat_2"}, {"$ref": "#/$defs/observations_breakthrough_working_capacity"}, {"$ref": "#/$defs/observations_dynamic_selectivity"}, {"$ref": "#/$defs/observations_qualitative_breakthrough_behavior"}, {"$ref": "#/$defs/observations_binding_energy"}, {"$ref": "#/$defs/observations_kinetic_selectivity"}, {"$ref": "#/$defs/observations_diffusion_time_constant"}, {"$ref": "#/$defs/observations_quantitative_measurement"}, {"$ref": "#/$defs/observations_reported_result"}]}},
-    "mechanism_claims": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/mechanism_claims"}, {"$ref": "#/$defs/mechanism_claims_2"}, {"$ref": "#/$defs/mechanism_claims_3"}, {"$ref": "#/$defs/paper_claim"}]}},
+    "chemical_entities": {"type": "array", "items": {"$ref": "#/$defs/paper_entity"}},
+    "material_identities": {"type": "array", "items": {"$ref": "#/$defs/paper_material"}},
+    "sample_batches": {"type": "array", "items": {"$ref": "#/$defs/paper_batch"}},
+    "sample_states": {"type": "array", "items": {"$ref": "#/$defs/paper_state"}},
+    "synthesis_routes": {"type": "array", "items": {"$ref": "#/$defs/paper_route"}},
+    "experiment_runs": {"type": "array", "items": {"$ref": "#/$defs/paper_run"}},
+    "series_sets": {"type": "array", "items": {"$ref": "#/$defs/paper_series"}},
+    "observations": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {"$ref": "#/$defs/observations_quantitative_measurement"},
+          {"$ref": "#/$defs/observations_reported_result"},
+          {"$ref": "#/$defs/observations_result_group"}
+        ]
+      }
+    },
+    "mechanism_claims": {"type": "array", "items": {"$ref": "#/$defs/paper_claim"}},
     "missing_information": {"type": "array", "items": {"$ref": "#/$defs/missing_information"}},
-    "validation_issues": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/validation_issues"}, {"$ref": "#/$defs/validation_issues_2"}, {"$ref": "#/$defs/validation_issues_3"}]}},
+    "validation_issues": {"type": "array", "items": {"$ref": "#/$defs/validation_issues"}},
     "quality_summary": {"$ref": "#/$defs/quality_summary"}
   },
-  "required": ["schema_id", "schema_version", "record_id", "extraction_metadata", "document", "evidence", "chemical_entities", "material_identities", "sample_batches", "sample_states", "synthesis_routes", "experiment_runs", "series_sets", "observations", "mechanism_claims", "missing_information", "validation_issues", "quality_summary"],
+  "required": [
+    "record_id", "extraction_metadata", "document", "evidence", "chemical_entities", "material_identities",
+    "sample_batches", "sample_states", "synthesis_routes", "experiment_runs", "series_sets", "observations",
+    "mechanism_claims", "missing_information", "validation_issues", "quality_summary"
+  ],
   "additionalProperties": false,
   "$defs": {
+    "extraction_metadata": {
+      "type": "object",
+      "properties": {
+        "created_on": {"type": "string", "format": "date"}
+      },
+      "required": ["created_on"],
+      "additionalProperties": false
+    },
     "paper_document": {
       "type": "object",
       "properties": {
-        "document_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "document_id": {"$ref": "#/$defs/record_identifier"},
         "title": {"type": "string"},
         "authors": {"type": "array", "items": {"type": "string"}},
         "journal": {"type": "string"},
@@ -41,357 +60,6 @@
         "accepted_date": {"type": "string", "minLength": 1},
         "online_date": {"type": "string", "minLength": 1},
         "article_type": {"type": "string"},
-        "provenance_scope": {"type": "string"},
-        "keywords": {"type": "array", "items": {"type": "string"}},
-        "pdf_page_to_printed_page": {"type": "object", "propertyNames": {"pattern": "^[1-9][0-9]*$"}, "additionalProperties": {"type": "integer", "minimum": 1}}
-      },
-      "required": ["document_id", "title", "pdf_page_to_printed_page"],
-      "additionalProperties": false
-    },
-    "paper_entity": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "canonical_name": {"type": "string"},
-        "entity_class": {"type": "string"},
-        "standard_or_grade": {"type": "string"},
-        "supplier": {"type": "string"},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true},
-        "formula_ascii": {"type": "string"},
-        "purity": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/paper_scalar"}]},
-        "display_formula": {"type": "string"}
-      },
-      "required": ["entity_id", "reported_name", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "paper_material": {
-      "type": "object",
-      "properties": {
-        "material_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_family_name": {"type": "string"},
-        "abbreviation": {"type": "string"},
-        "material_class": {"type": "string"},
-        "carbon_source_entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "activation_type": {"type": "string"},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true}
-      },
-      "required": ["material_id", "reported_family_name", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "paper_batch": {
-      "type": "object",
-      "properties": {
-        "sample_batch_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "material_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "series_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "factor_assignments": {"$ref": "#/$defs/sample_batches_factor_assignments"},
-        "batch_number": {"type": ["string", "number", "null"]},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true}
-      },
-      "required": ["sample_batch_id", "material_id", "reported_name", "factor_assignments", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "paper_state": {
-      "type": "object",
-      "properties": {
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_batch_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "state": {"type": "string"},
-        "physical_form": {"type": ["string", "null"]},
-        "parent_state_ids": {"type": "array", "items": {"type": "string"}},
-        "preparation_route_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true}
-      },
-      "required": ["sample_state_id", "sample_batch_id", "reported_name", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "paper_operation": {
-      "type": "object",
-      "properties": {
-        "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sequence": {"type": "integer", "minimum": 1},
-        "operation_type": {"type": "string", "minLength": 1},
-        "conditions": {"$ref": "#/$defs/reported_parameters"},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1},
-        "equipment": {"type": ["string", "null"]},
-        "input_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "output_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "input_intermediate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "output_intermediate_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reagent_uses": {"type": "array", "items": {"type": "object", "properties": {"reagent_use_id": {"type": "string", "minLength": 1, "maxLength": 128}, "entity_id": {"type": "string", "minLength": 1, "maxLength": 128}, "role": {"type": "string", "minLength": 1}, "amount": {"$ref": "#/$defs/reported_parameter"}}, "required": ["reagent_use_id", "entity_id", "amount"], "additionalProperties": false}}
-      },
-      "required": ["operation_id", "sequence", "operation_type", "conditions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "paper_route": {
-      "type": "object",
-      "properties": {
-        "route_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "route_name": {"type": "string", "minLength": 1},
-        "target_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "operations": {"type": "array", "items": {"$ref": "#/$defs/paper_operation"}},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
-      },
-      "required": ["route_id", "route_name", "target_sample_state_ids", "operations", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "paper_run": {
-      "type": "object",
-      "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"type": "string", "minLength": 1},
-        "method": {"type": "string", "minLength": 1},
-        "technique": {"type": "string", "minLength": 1},
-        "data_origin": {"type": "string", "minLength": 1},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "species_entity_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "input_run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "instrument": {"type": ["string", "null"]},
-        "conditions": {"$ref": "#/$defs/reported_parameters"},
-        "series_set_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
-      },
-      "required": ["run_id", "run_type", "method", "sample_state_ids", "species_entity_ids", "conditions", "series_set_ids", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "paper_axis": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string", "minLength": 1},
-        "unit": {"type": ["string", "null"]},
-        "symbol": {"type": "string"}
-      },
-      "required": ["quantity", "unit"],
-      "additionalProperties": false
-    },
-    "paper_series": {
-      "type": "object",
-      "properties": {
-        "series_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "series_kind": {"type": "string", "minLength": 1},
-        "x": {"$ref": "#/$defs/paper_axis"},
-        "y": {"$ref": "#/$defs/paper_axis"},
-        "series_members": {"type": "array", "items": {"$ref": "#/$defs/paper_series_member"}},
-        "observation_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
-      },
-      "required": ["series_set_id", "run_id", "series_kind", "x", "y", "series_members", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "paper_series_member": {
-      "type": "object",
-      "properties": {
-        "sample_state_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
-        "entity_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
-        "conditions": {"$ref": "#/$defs/reported_parameters"},
-        "data_points": {"type": "null"}
-      },
-      "required": ["sample_state_id", "entity_id", "data_points"],
-      "additionalProperties": false
-    },
-    "paper_scalar": {
-      "type": "object",
-      "properties": {
-        "kind": {"const": "scalar"},
-        "raw_text": {"type": "string", "minLength": 1},
-        "value": {"type": "number"},
-        "unit_raw": {"type": ["string", "null"]},
-        "operator": {"type": "string"},
-        "basis": {"type": "string"}
-      },
-      "required": ["kind", "raw_text", "value", "unit_raw"],
-      "additionalProperties": false
-    },
-    "paper_range": {
-      "type": "object",
-      "properties": {
-        "kind": {"const": "range"},
-        "raw_text": {"type": "string", "minLength": 1},
-        "minimum": {"type": "number"},
-        "maximum": {"type": "number"},
-        "unit_raw": {"type": ["string", "null"]},
-        "range_semantics": {"type": "string"}
-      },
-      "required": ["kind", "raw_text", "minimum", "maximum", "unit_raw"],
-      "additionalProperties": false
-    },
-    "observations_quantitative_measurement": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "quantitative_measurement"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "series_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
-        "entity_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
-        "metric_id": {"type": "string", "minLength": 1},
-        "data_origin": {"type": "string", "minLength": 1},
-        "conditions": {"$ref": "#/$defs/reported_parameters"},
-        "value": {"anyOf": [{"$ref": "#/$defs/paper_scalar"}, {"$ref": "#/$defs/paper_range"}]},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "entity_id", "metric_id", "conditions", "value", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_reported_result": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "reported_result"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "metric_id": {"type": "string", "minLength": 1},
-        "result": {"type": "string", "minLength": 1},
-        "conditions": {"$ref": "#/$defs/reported_parameters"},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_ids", "metric_id", "result", "conditions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "paper_claim": {
-      "type": "object",
-      "properties": {
-        "claim_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "claim_type": {"type": "string", "minLength": 1},
-        "claim": {"type": "string", "minLength": 1},
-        "supported_by_observation_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true, "minItems": 1}
-      },
-      "required": ["claim_id", "claim_type", "claim", "supported_by_observation_ids", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "chemical_entities": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "canonical_name": {"type": "string"},
-        "entity_class": {"type": "string"},
-        "standard_or_grade": {"type": "string"},
-        "supplier": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["entity_id", "reported_name", "canonical_name", "entity_class", "standard_or_grade", "supplier", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "chemical_entities_2": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "canonical_name": {"type": "string"},
-        "formula_ascii": {"type": "string"},
-        "entity_class": {"type": "string"},
-        "supplier": {"type": "string"},
-        "purity": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/chemical_entities_purity"}]},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["entity_id", "reported_name", "canonical_name", "formula_ascii", "entity_class", "supplier", "purity", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "chemical_entities_3": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "canonical_name": {"type": "string"},
-        "formula_ascii": {"type": "string"},
-        "display_formula": {"type": "string"},
-        "entity_class": {"type": "string"},
-        "purity": {"$ref": "#/$defs/chemical_entities_purity"},
-        "supplier": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["entity_id", "reported_name", "canonical_name", "formula_ascii", "display_formula", "entity_class", "purity", "supplier", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "chemical_entities_4": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "canonical_name": {"type": "string"},
-        "formula_ascii": {"type": "string"},
-        "entity_class": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["entity_id", "reported_name", "canonical_name", "formula_ascii", "entity_class", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "chemical_entities_5": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "canonical_name": {"type": "string"},
-        "formula_ascii": {"type": "string"},
-        "entity_class": {"type": "string"},
-        "purity": {"type": "null"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["entity_id", "reported_name", "canonical_name", "formula_ascii", "entity_class", "purity", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "chemical_entities_purity": {
-      "type": "object",
-      "properties": {
-        "kind": {"const": "scalar"},
-        "raw_text": {"type": "string"},
-        "operator": {"type": "string"},
-        "value": {"type": "number"},
-        "unit_raw": {"type": "string"},
-        "unit_canonical": {"type": "string"},
-        "basis": {"type": "string"}
-      },
-      "required": ["kind", "raw_text", "operator", "value", "unit_raw", "unit_canonical", "basis"],
-      "additionalProperties": false
-    },
-    "document": {
-      "type": "object",
-      "properties": {
-        "document_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "title": {"type": "string"},
-        "authors": {"type": "array", "items": {"type": "string"}},
-        "journal": {"type": "string"},
-        "volume": {"type": "integer"},
-        "year": {"type": "integer"},
-        "pages": {"type": "string"},
-        "doi": {"type": "string", "pattern": "^10\\.[0-9]{4,9}/\\S+$"},
-        "received_date": {"type": "string", "format": "date"},
-        "revised_date": {"type": "string", "format": "date"},
-        "accepted_date": {"type": "string", "format": "date"},
-        "online_date": {"type": "string", "format": "date"},
-        "article_type": {"type": "string"},
-        "provenance_scope": {"type": "string"},
         "keywords": {"type": "array", "items": {"type": "string"}},
         "pdf_page_to_printed_page": {
           "type": "object",
@@ -399,15 +67,15 @@
           "additionalProperties": {"type": "integer", "minimum": 1}
         }
       },
-      "required": ["document_id", "title", "authors", "journal", "volume", "year", "pages", "doi", "received_date", "revised_date", "accepted_date", "online_date", "article_type", "provenance_scope", "keywords", "pdf_page_to_printed_page"],
+      "required": ["document_id", "title", "pdf_page_to_printed_page"],
       "additionalProperties": false
     },
     "evidence": {
       "type": "object",
       "properties": {
-        "evidence_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "document_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "provenance_scope": {"type": "string"},
+        "evidence_id": {"$ref": "#/$defs/record_identifier"},
+        "document_id": {"$ref": "#/$defs/record_identifier"},
+        "provenance_scope": {"$ref": "#/$defs/provenance_scope"},
         "pdf_page": {"type": "integer", "minimum": 1},
         "printed_page": {"type": ["integer", "null"], "minimum": 1},
         "section": {"type": "string"},
@@ -415,1311 +83,523 @@
         "quote_raw": {"type": "string"},
         "extraction_origin": {"type": "string"}
       },
-      "required": ["evidence_id", "document_id", "provenance_scope", "pdf_page", "printed_page", "section", "location", "quote_raw", "extraction_origin"],
+      "required": [
+        "evidence_id", "document_id", "provenance_scope", "pdf_page", "printed_page",
+        "section", "location", "quote_raw", "extraction_origin"
+      ],
       "additionalProperties": false
     },
-    "experiment_runs_Raman_spectroscopy": {
+    "paper_entity": {
       "type": "object",
       "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "characterization"},
-        "technique": {"const": "Raman_spectroscopy"},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "instrument": {"$ref": "#/$defs/experiment_runs_instrument_2"},
-        "excitation": {"$ref": "#/$defs/experiment_runs_excitation"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
+        "entity_id": {"$ref": "#/$defs/record_identifier"},
+        "reported_name": {"type": "string"},
+        "canonical_name": {"type": "string"},
+        "entity_class": {"type": "string"},
+        "formula_ascii": {"type": "string"},
+        "display_formula": {"type": "string"},
+        "standard_or_grade": {"type": "string"},
+        "supplier": {"type": "string"},
+        "purity": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/paper_quantity"}]},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["run_id", "run_type", "technique", "sample_state_ids", "instrument", "excitation", "evidence_ids"],
+      "required": ["entity_id", "reported_name", "evidence_ids"],
       "additionalProperties": false
     },
-    "experiment_runs_X_ray_photoelectron_spectroscopy": {
+    "paper_material": {
       "type": "object",
       "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "characterization"},
-        "technique": {"const": "X-ray_photoelectron_spectroscopy"},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "instrument": {"$ref": "#/$defs/experiment_runs_instrument_2"},
-        "preconditioning": {"$ref": "#/$defs/experiment_runs_preconditioning_2"},
+        "material_id": {"$ref": "#/$defs/record_identifier"},
+        "reported_family_name": {"type": "string"},
+        "abbreviation": {"type": "string"},
+        "material_class": {"type": "string"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
+      },
+      "required": ["material_id", "reported_family_name", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_batch": {
+      "type": "object",
+      "properties": {
+        "sample_batch_id": {"$ref": "#/$defs/record_identifier"},
+        "material_id": {"$ref": "#/$defs/record_identifier"},
+        "reported_name": {"type": "string"},
+        "series_id": {"$ref": "#/$defs/record_identifier"},
+        "factor_assignments": {"$ref": "#/$defs/reported_parameters"},
+        "batch_number": {"type": ["string", "number", "null"]},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
+      },
+      "required": ["sample_batch_id", "material_id", "reported_name", "factor_assignments", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_state": {
+      "type": "object",
+      "properties": {
+        "sample_state_id": {"$ref": "#/$defs/record_identifier"},
+        "sample_batch_id": {"$ref": "#/$defs/record_identifier"},
+        "reported_name": {"type": "string"},
+        "state": {"type": "string"},
+        "physical_form": {"type": ["string", "null"]},
+        "parent_state_ids": {"$ref": "#/$defs/record_identifiers"},
+        "preparation_route_id": {"$ref": "#/$defs/record_identifier"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
+      },
+      "required": ["sample_state_id", "sample_batch_id", "reported_name", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_route": {
+      "type": "object",
+      "properties": {
+        "route_id": {"$ref": "#/$defs/record_identifier"},
+        "route_name": {"type": "string", "minLength": 1},
+        "target_sample_state_ids": {"$ref": "#/$defs/record_identifiers"},
+        "operations": {"type": "array", "items": {"$ref": "#/$defs/paper_operation"}},
+        "yield": {"$ref": "#/$defs/paper_condition_value"},
+        "replicate_count": {"type": "integer", "minimum": 1},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
+      },
+      "required": ["route_id", "route_name", "target_sample_state_ids", "operations", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_operation": {
+      "type": "object",
+      "properties": {
+        "operation_id": {"$ref": "#/$defs/record_identifier"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "operation_type": {"type": "string", "minLength": 1},
+        "operation_labels": {"type": "array", "items": {"type": "string"}},
+        "equipment": {"type": ["string", "null"]},
+        "input_sample_state_ids": {"$ref": "#/$defs/record_identifiers"},
+        "output_sample_state_ids": {"$ref": "#/$defs/record_identifiers"},
+        "input_intermediate_ids": {"$ref": "#/$defs/record_identifiers"},
+        "output_intermediate_id": {"$ref": "#/$defs/record_identifier"},
+        "simultaneous_processes": {"type": "boolean"},
+        "reagent_uses": {"type": "array", "items": {"$ref": "#/$defs/paper_reagent_use"}},
+        "conditions": {"$ref": "#/$defs/paper_operation_conditions"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
+      },
+      "required": ["operation_id", "sequence", "operation_type", "conditions", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "paper_reagent_use": {
+      "type": "object",
+      "properties": {
+        "reagent_use_id": {"$ref": "#/$defs/record_identifier"},
+        "entity_id": {"$ref": "#/$defs/record_identifier"},
+        "role": {"type": "string", "minLength": 1},
+        "amount": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/paper_condition_value"}]},
+        "concentration": {"$ref": "#/$defs/paper_condition_value"},
+        "ratio": {"$ref": "#/$defs/paper_reagent_ratio"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
+      },
+      "required": ["reagent_use_id", "entity_id"],
+      "additionalProperties": false
+    },
+    "paper_reagent_ratio": {
+      "type": "object",
+      "properties": {
+        "basis": {"type": "string", "minLength": 1},
+        "numerator_entity_id": {"$ref": "#/$defs/record_identifier"},
+        "denominator_entity_id": {"$ref": "#/$defs/record_identifier"},
+        "value": {"$ref": "#/$defs/paper_quantity"},
+        "per_sample_values": {"$ref": "#/$defs/paper_batch_parameters"}
+      },
+      "required": ["basis", "numerator_entity_id", "denominator_entity_id"],
+      "additionalProperties": false
+    },
+    "paper_operation_conditions": {
+      "type": "object",
+      "properties": {
+        "temperature_by_sample": {"$ref": "#/$defs/paper_batch_parameters"},
+        "atmosphere_streams": {"type": "array", "items": {"$ref": "#/$defs/paper_atmosphere_stream"}},
+        "temperature_qualifier": {"type": "string"},
+        "pressure_qualifier": {"type": "string"},
+        "cooling_protocol": {"type": "string"},
+        "repeat_count": {"type": "integer", "minimum": 1},
+        "repeat_qualifier": {"type": "string"},
+        "endpoint": {"type": "string"},
+        "endpoint_test_method": {"type": "string"}
+      },
+      "propertyNames": {"type": "string", "minLength": 1},
+      "additionalProperties": {"$ref": "#/$defs/paper_condition_value"}
+    },
+    "paper_batch_parameters": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/record_identifier"},
+      "additionalProperties": {"$ref": "#/$defs/reported_parameter"}
+    },
+    "paper_atmosphere_stream": {
+      "type": "object",
+      "properties": {
+        "entity_id": {"$ref": "#/$defs/record_identifier"},
+        "composition": {"$ref": "#/$defs/paper_condition_value"},
+        "flow_rate": {"$ref": "#/$defs/paper_condition_value"}
+      },
+      "required": ["entity_id"],
+      "additionalProperties": false
+    },
+    "paper_run": {
+      "type": "object",
+      "properties": {
+        "run_id": {"$ref": "#/$defs/record_identifier"},
+        "run_type": {"type": "string", "minLength": 1},
+        "method": {"type": "string", "minLength": 1},
+        "technique": {"type": "string", "minLength": 1},
+        "data_origin": {"type": "string", "minLength": 1},
+        "sample_state_ids": {"$ref": "#/$defs/record_identifiers"},
+        "species_entity_ids": {"$ref": "#/$defs/record_identifiers"},
+        "input_run_ids": {"$ref": "#/$defs/record_identifiers"},
+        "instrument": {"anyOf": [{"type": ["string", "null"]}, {"$ref": "#/$defs/paper_instrument"}]},
+        "probe": {"$ref": "#/$defs/paper_test_medium"},
+        "sample_preparation": {"$ref": "#/$defs/paper_conditions"},
+        "image_metadata": {"type": "array", "items": {"$ref": "#/$defs/paper_image_metadata"}},
+        "preconditioning": {"$ref": "#/$defs/paper_conditions"},
+        "analysis_methods": {"type": "array", "items": {"$ref": "#/$defs/paper_analysis_method"}},
+        "excitation": {"$ref": "#/$defs/paper_conditions"},
+        "temperature_program": {"$ref": "#/$defs/paper_conditions"},
+        "atmosphere": {"$ref": "#/$defs/paper_atmosphere_stream"},
         "high_resolution_regions": {"type": "array", "items": {"type": "string"}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["run_id", "run_type", "technique", "sample_state_ids", "instrument", "preconditioning", "high_resolution_regions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "experiment_runs_adsorption_kinetics": {
-      "type": "object",
-      "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "adsorption_kinetics"},
-        "data_origin": {"type": "string"},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true},
-        "method": {"type": "string"},
-        "instrument": {
-          "anyOf": [{"type": ["string", "null"]}, {"$ref": "#/$defs/experiment_runs_instrument"}, {"$ref": "#/$defs/experiment_runs_instrument_2"}]
-        },
-        "species_entity_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-        "conditions": {"$ref": "#/$defs/reported_parameters"},
-        "series_set_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["run_id", "run_type", "data_origin", "sample_state_ids", "method", "conditions", "series_set_ids", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "experiment_runs_adsorptives": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "purity_value": {"type": "number"},
-        "purity_unit": {"type": "string"}
-      },
-      "required": ["entity_id", "purity_value", "purity_unit"],
-      "additionalProperties": false
-    },
-    "experiment_runs_analysis_methods": {
-      "type": "object",
-      "properties": {
-        "derived_metric": {"type": "string"},
-        "method": {"type": "string"},
-        "relative_pressure_interval": {"$ref": "#/$defs/experiment_runs_analysis_methods_relative_pressure_interval"},
-        "rouquerol_consistency_reported": {"type": "null"}
-      },
-      "required": ["derived_metric", "method", "relative_pressure_interval", "rouquerol_consistency_reported"],
-      "additionalProperties": false
-    },
-    "experiment_runs_analysis_methods_2": {
-      "type": "object",
-      "properties": {
-        "derived_metric": {"type": "string"},
-        "method": {"type": "string"},
-        "relative_pressure": {"type": "number"}
-      },
-      "required": ["derived_metric", "method", "relative_pressure"],
-      "additionalProperties": false
-    },
-    "experiment_runs_analysis_methods_3": {
-      "type": "object",
-      "properties": {
-        "derived_metric": {"type": "string"},
-        "method_reported": {"type": "string"},
-        "method_normalized": {"type": "string"},
-        "kernel": {"type": "null"},
-        "pore_geometry": {"type": "null"},
-        "adsorption_branch": {"type": "null"}
-      },
-      "required": ["derived_metric", "method_reported", "method_normalized", "kernel", "pore_geometry", "adsorption_branch"],
-      "additionalProperties": false
-    },
-    "experiment_runs_analysis_methods_relative_pressure_interval": {
-      "type": "object",
-      "properties": {
-        "minimum": {"type": "number"},
-        "maximum": {"type": "number"},
-        "minimum_inclusive": {"type": "boolean"},
-        "maximum_inclusive": {"type": "boolean"}
-      },
-      "required": ["minimum", "maximum", "minimum_inclusive", "maximum_inclusive"],
-      "additionalProperties": false
-    },
-    "experiment_runs_atmosphere": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "flow_rate": {"type": "null"}
-      },
-      "required": ["entity_id", "flow_rate"],
-      "additionalProperties": false
-    },
-    "experiment_runs_bed": {
-      "type": "object",
-      "properties": {
-        "column_inner_diameter": {"type": "null"},
-        "column_length": {"type": "null"},
-        "bed_height": {"type": "null"},
-        "adsorbent_mass": {"type": "null"},
-        "particle_size": {"type": "null"},
-        "packing_density": {"type": "null"},
-        "missing_reason": {"type": "string"}
-      },
-      "required": ["column_inner_diameter", "column_length", "bed_height", "adsorbent_mass", "particle_size", "packing_density", "missing_reason"],
-      "additionalProperties": false
-    },
-    "experiment_runs_breakthrough": {
-      "type": "object",
-      "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "breakthrough"},
-        "data_origin": {"type": "string"},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "bed_type": {"type": "string"},
-        "feed": {"type": "array", "items": {"$ref": "#/$defs/experiment_runs_feed_2"}},
-        "temperature": {"$ref": "#/$defs/experiment_runs_probe_temperature"},
-        "pressure": {"$ref": "#/$defs/experiment_runs_probe_temperature"},
-        "bed": {"$ref": "#/$defs/experiment_runs_bed"},
-        "flow": {"$ref": "#/$defs/experiment_runs_flow"},
-        "detector": {"type": "null"},
-        "breakthrough_threshold": {"type": "null"},
-        "series_set_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["run_id", "run_type", "data_origin", "sample_state_ids", "bed_type", "feed", "temperature", "pressure", "bed", "flow", "detector", "breakthrough_threshold", "series_set_ids", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "experiment_runs_computational_adsorption": {
-      "type": "object",
-      "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "computational_adsorption"},
-        "data_origin": {"type": "string"},
-        "subject_scope": {"$ref": "#/$defs/experiment_runs_subject_scope"},
-        "software": {"$ref": "#/$defs/experiment_runs_software"},
-        "level_of_theory": {"$ref": "#/$defs/experiment_runs_level_of_theory"},
-        "binding_energy_definition": {"type": "string"},
-        "input_files": {"type": "null"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["run_id", "run_type", "data_origin", "subject_scope", "software", "level_of_theory", "binding_energy_definition", "input_files", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "experiment_runs_equilibrium_isotherm": {
-      "type": "object",
-      "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "equilibrium_isotherm"},
         "component_mode": {"type": "string"},
-        "data_origin": {"type": "string"},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "adsorptives": {"type": "array", "items": {"$ref": "#/$defs/experiment_runs_adsorptives"}},
-        "measurement_method": {"type": "string"},
-        "instrument": {"$ref": "#/$defs/experiment_runs_instrument_2"},
-        "temperatures": {"type": "array", "items": {"$ref": "#/$defs/experiment_runs_probe_temperature"}},
-        "preconditioning": {"$ref": "#/$defs/experiment_runs_preconditioning"},
-        "free_space_measurement": {"$ref": "#/$defs/experiment_runs_free_space_measurement"},
+        "adsorptives": {"type": "array", "items": {"$ref": "#/$defs/paper_test_medium"}},
+        "temperatures": {"type": "array", "items": {"$ref": "#/$defs/paper_condition_value"}},
+        "free_space_measurement": {"$ref": "#/$defs/paper_test_medium"},
+        "ordered_species_pair": {"$ref": "#/$defs/paper_species_pair"},
+        "selectivity_definition": {"type": "string"},
+        "feed": {"type": "array", "items": {"$ref": "#/$defs/paper_test_medium"}},
+        "temperature": {"$ref": "#/$defs/paper_condition_value"},
+        "pressure": {"$ref": "#/$defs/paper_condition_value"},
+        "pressure_domain": {"$ref": "#/$defs/paper_quantity"},
         "pressure_basis": {"type": "string"},
-        "pressure_max_explicit_in_results": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
+        "pressure_max_explicit_in_results": {"$ref": "#/$defs/paper_quantity"},
         "loading_unit_reported": {"type": "string"},
-        "loading_definition": {"type": "null"},
-        "mass_basis": {"type": "null"},
-        "equilibrium_criterion": {"type": "null"},
-        "series_set_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
+        "loading_definition": {"type": "string"},
+        "mass_basis": {"type": "string"},
+        "equilibrium_criterion": {"type": "string"},
+        "input_temperatures": {"type": "array", "items": {"$ref": "#/$defs/paper_condition_value"}},
+        "loading_domain": {"$ref": "#/$defs/paper_quantity"},
+        "bed_type": {"type": "string"},
+        "bed": {"$ref": "#/$defs/paper_conditions"},
+        "flow": {"$ref": "#/$defs/paper_conditions"},
+        "detector": {"type": "string"},
+        "breakthrough_threshold": {"$ref": "#/$defs/paper_condition_value"},
+        "subject_scope": {"$ref": "#/$defs/paper_subject_scope"},
+        "software": {"$ref": "#/$defs/paper_software"},
+        "level_of_theory": {"$ref": "#/$defs/paper_conditions"},
+        "binding_energy_definition": {"type": "string"},
+        "input_files": {"type": "array", "items": {"type": "string"}},
+        "conditions": {"$ref": "#/$defs/paper_conditions"},
+        "calculation_settings": {"$ref": "#/$defs/paper_conditions"},
+        "model_name": {"type": "string"},
+        "abbreviation": {"type": "string"},
+        "equation_reported": {"type": "string"},
+        "parameter_definitions": {
+          "type": "object",
+          "propertyNames": {"type": "string", "minLength": 1},
+          "additionalProperties": {"type": "string", "minLength": 1}
+        },
+        "model_parameters": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/paper_conditions"}]},
+        "model_parameters_missing_reason": {"type": "string"},
+        "fit_quality_summary": {"$ref": "#/$defs/paper_conditions"},
+        "series_set_ids": {"$ref": "#/$defs/record_identifiers"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["run_id", "run_type", "component_mode", "data_origin", "sample_state_ids", "adsorptives", "measurement_method", "instrument", "temperatures", "preconditioning", "free_space_measurement", "pressure_basis", "pressure_max_explicit_in_results", "loading_unit_reported", "loading_definition", "mass_basis", "equilibrium_criterion", "series_set_ids", "evidence_ids"],
+      "required": [
+        "run_id", "run_type", "method", "sample_state_ids", "species_entity_ids",
+        "conditions", "series_set_ids", "evidence_ids"
+      ],
       "additionalProperties": false
     },
-    "experiment_runs_excitation": {
+    "paper_test_medium": {
       "type": "object",
       "properties": {
-        "laser_type": {"type": "string"},
-        "wavelength": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"}
-      },
-      "required": ["laser_type", "wavelength"],
-      "additionalProperties": false
-    },
-    "experiment_runs_feed": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "entity_id": {"$ref": "#/$defs/record_identifier"},
+        "temperature": {"$ref": "#/$defs/paper_condition_value"},
+        "method_reported": {"type": "string"},
+        "purity_value": {"type": "number"},
+        "purity_unit": {"type": "string"},
         "reported_ratio_part": {"type": "number"},
+        "mole_fraction": {"type": "number"},
         "mole_fraction_derived": {"type": "number"}
       },
-      "required": ["entity_id", "reported_ratio_part", "mole_fraction_derived"],
+      "required": ["entity_id"],
       "additionalProperties": false
     },
-    "experiment_runs_feed_2": {
+    "paper_image_metadata": {
       "type": "object",
       "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_ratio_part": {"type": "number"},
-        "mole_fraction": {"type": "number"}
-      },
-      "required": ["entity_id", "reported_ratio_part", "mole_fraction"],
-      "additionalProperties": false
-    },
-    "experiment_runs_fit_quality_summary": {
-      "type": "object",
-      "properties": {
-        "raw_text": {"type": "string"},
-        "maximum_reported_R2": {"type": "number"},
-        "per_fit_values": {"type": "null"}
-      },
-      "required": ["raw_text", "maximum_reported_R2", "per_fit_values"],
-      "additionalProperties": false
-    },
-    "experiment_runs_flow": {
-      "type": "object",
-      "properties": {
-        "total_flow_rate": {"type": "null"},
-        "carrier_gas": {"type": "null"},
-        "missing_reason": {"type": "string"}
-      },
-      "required": ["total_flow_rate", "carrier_gas", "missing_reason"],
-      "additionalProperties": false
-    },
-    "experiment_runs_free_space_measurement": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "method_reported": {"type": "string"}
-      },
-      "required": ["entity_id", "method_reported"],
-      "additionalProperties": false
-    },
-    "experiment_runs_gas_physisorption": {
-      "type": "object",
-      "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "characterization"},
-        "technique": {"const": "gas_physisorption"},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "instrument": {"$ref": "#/$defs/experiment_runs_instrument"},
-        "probe": {"$ref": "#/$defs/experiment_runs_probe"},
-        "preconditioning": {"$ref": "#/$defs/experiment_runs_preconditioning"},
-        "analysis_methods": {
-          "type": "array",
-          "items": {
-            "anyOf": [{"$ref": "#/$defs/experiment_runs_analysis_methods"}, {"$ref": "#/$defs/experiment_runs_analysis_methods_2"}, {"$ref": "#/$defs/experiment_runs_analysis_methods_3"}]
-          }
-        },
-        "series_set_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["run_id", "run_type", "technique", "sample_state_ids", "instrument", "probe", "preconditioning", "analysis_methods", "series_set_ids", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "experiment_runs_image_metadata": {
-      "type": "object",
-      "properties": {
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "sample_state_id": {"$ref": "#/$defs/record_identifier"},
         "figure_panels": {"type": "array", "items": {"type": "string"}},
-        "magnifications": {"type": "array", "items": {"type": "string"}},
-        "scale_bars": {"type": "array", "items": {"type": "string"}},
-        "accelerating_voltage": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "working_distance": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"}
+        "magnifications": {"type": "array", "items": {"$ref": "#/$defs/paper_condition_value"}},
+        "scale_bars": {"type": "array", "items": {"$ref": "#/$defs/paper_condition_value"}},
+        "accelerating_voltage": {"$ref": "#/$defs/paper_condition_value"},
+        "working_distance": {"$ref": "#/$defs/paper_condition_value"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["sample_state_id", "figure_panels", "magnifications", "scale_bars", "accelerating_voltage", "working_distance"],
       "additionalProperties": false
     },
-    "experiment_runs_instrument": {
+    "paper_subject_scope": {
       "type": "object",
       "properties": {
+        "kind": {"type": "string"},
+        "material_id": {"$ref": "#/$defs/record_identifier"},
+        "sample_specific_assignment": {"type": ["string", "boolean"]},
+        "model_description": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "paper_software": {
+      "type": "object",
+      "properties": {"name": {"type": "string"}, "version": {"type": ["string", "null"]}},
+      "required": ["name"],
+      "additionalProperties": false
+    },
+    "paper_instrument": {
+      "type": "object",
+      "properties": {
+        "manufacturer": {"type": "string"},
         "manufacturer_reported": {"type": "string"},
         "manufacturer_normalized": {"type": "string"},
         "model": {"type": "string"},
         "normalization_status": {"type": "string"}
       },
-      "required": ["manufacturer_reported", "manufacturer_normalized", "model", "normalization_status"],
+      "minProperties": 1,
       "additionalProperties": false
     },
-    "experiment_runs_instrument_2": {
+    "paper_analysis_method": {
       "type": "object",
       "properties": {
-        "manufacturer": {"type": "string"},
-        "model": {"type": "string"}
+        "method": {"type": "string", "minLength": 1},
+        "derived_metric": {"type": "string"},
+        "conditions": {"$ref": "#/$defs/paper_conditions"}
       },
-      "required": ["manufacturer", "model"],
+      "required": ["method"],
       "additionalProperties": false
     },
-    "experiment_runs_isosteric_heat_derivation": {
+    "paper_series": {
       "type": "object",
       "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "isosteric_heat_derivation"},
-        "data_origin": {"type": "string"},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "source_run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "method": {"type": "string"},
-        "input_temperatures": {"type": "array", "items": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"}},
-        "loading_domain": {"$ref": "#/$defs/experiment_runs_pressure_domain_2"},
-        "series_set_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
+        "series_set_id": {"$ref": "#/$defs/record_identifier"},
+        "run_id": {"$ref": "#/$defs/record_identifier"},
+        "series_kind": {"type": "string", "minLength": 1},
+        "x": {"$ref": "#/$defs/paper_axis"},
+        "y": {"$ref": "#/$defs/paper_axis"},
+        "analysis_method": {"type": "string"},
+        "temperature": {"$ref": "#/$defs/paper_condition_value"},
+        "series_members": {"type": "array", "items": {"$ref": "#/$defs/paper_series_member"}},
+        "source": {"$ref": "#/$defs/paper_series_source"},
+        "x_axis_reported_in_figure": {"$ref": "#/$defs/paper_axis"},
+        "x_axis_described_in_text_and_model": {"$ref": "#/$defs/paper_axis"},
+        "axis_consistency_status": {"enum": ["consistent", "needs_review", "unknown"]},
+        "observation_ids": {"$ref": "#/$defs/record_identifiers"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
+      },
+      "required": [
+        "series_set_id", "run_id", "series_kind", "x", "y", "series_members", "source",
+        "observation_ids", "evidence_ids"
+      ],
+      "if": {"required": ["axis_consistency_status"], "properties": {"axis_consistency_status": {"const": "needs_review"}}},
+      "then": {
+        "required": ["x_axis_reported_in_figure", "x_axis_described_in_text_and_model"],
+        "properties": {
+          "x_axis_reported_in_figure": {"required": ["evidence_ids"], "properties": {"quantity": {"type": "string"}}},
+          "x_axis_described_in_text_and_model": {"required": ["evidence_ids"], "properties": {"quantity": {"type": "string"}}}
         }
       },
-      "required": ["run_id", "run_type", "data_origin", "sample_state_ids", "source_run_ids", "method", "input_temperatures", "loading_domain", "series_set_ids", "evidence_ids"],
       "additionalProperties": false
     },
-    "experiment_runs_isotherm_model_fit": {
+    "paper_axis": {
       "type": "object",
       "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "isotherm_model_fit"},
-        "data_origin": {"type": "string"},
-        "input_run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "model_name": {"type": "string"},
-        "abbreviation": {"type": "string"},
-        "equation_reported": {"type": "string"},
-        "parameter_definitions": {"$ref": "#/$defs/experiment_runs_parameter_definitions"},
-        "fit_quality_summary": {"$ref": "#/$defs/experiment_runs_fit_quality_summary"},
-        "model_parameters": {"type": "null"},
-        "model_parameters_missing_reason": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["run_id", "run_type", "data_origin", "input_run_ids", "model_name", "abbreviation", "equation_reported", "parameter_definitions", "fit_quality_summary", "model_parameters", "model_parameters_missing_reason", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "experiment_runs_level_of_theory": {
-      "type": "object",
-      "properties": {
-        "family": {"type": "string"},
-        "functional": {"type": "string"},
-        "basis_set": {"type": "string"},
-        "basis_abbreviation": {"type": "string"}
-      },
-      "required": ["family", "functional", "basis_set", "basis_abbreviation"],
-      "additionalProperties": false
-    },
-    "experiment_runs_mixture_prediction": {
-      "type": "object",
-      "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "mixture_prediction"},
-        "data_origin": {"type": "string"},
-        "method": {"type": "string"},
-        "source_model_run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "ordered_species_pair": {"$ref": "#/$defs/experiment_runs_ordered_species_pair"},
-        "selectivity_definition": {"type": "string"},
-        "feed": {
-          "type": "array",
-          "items": {"anyOf": [{"$ref": "#/$defs/experiment_runs_feed"}, {"$ref": "#/$defs/experiment_runs_feed_2"}]}
-        },
-        "temperature": {"$ref": "#/$defs/experiment_runs_probe_temperature"},
-        "pressure_domain": {
-          "anyOf": [{"$ref": "#/$defs/experiment_runs_pressure_domain"}, {"$ref": "#/$defs/experiment_runs_pressure_domain_2"}]
-        },
-        "series_set_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["run_id", "run_type", "data_origin", "method", "source_model_run_ids", "ordered_species_pair", "selectivity_definition", "feed", "temperature", "pressure_domain", "series_set_ids", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "experiment_runs_ordered_species_pair": {
-      "type": "object",
-      "properties": {
-        "numerator_entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "denominator_entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "preferential_component_entity_id": {"type": "string", "minLength": 1, "maxLength": 128}
-      },
-      "required": ["numerator_entity_id", "denominator_entity_id", "preferential_component_entity_id"],
-      "additionalProperties": false
-    },
-    "experiment_runs_parameter_definitions": {
-      "type": "object",
-      "properties": {
-        "qm1_qm2": {"type": "string"},
-        "b1_b2": {"type": "string"},
-        "c": {"type": "string"},
-        "t": {"type": "string"},
-        "n1_n2": {"type": "string"}
-      },
-      "required": ["qm1_qm2", "b1_b2", "c", "t", "n1_n2"],
-      "additionalProperties": false
-    },
-    "experiment_runs_preconditioning": {
-      "type": "object",
-      "properties": {
-        "sample_mass": {"$ref": "#/$defs/chemical_entities_purity"},
-        "temperature": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "duration": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "atmosphere": {"type": "string"},
-        "vacuum_pressure": {"type": "null"}
-      },
-      "required": ["sample_mass", "temperature", "duration", "atmosphere", "vacuum_pressure"],
-      "additionalProperties": false
-    },
-    "experiment_runs_preconditioning_2": {
-      "type": "object",
-      "properties": {
-        "temperature": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "duration": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "atmosphere": {"type": "string"},
-        "scope_status": {"type": "string"}
-      },
-      "required": ["temperature", "duration", "atmosphere", "scope_status"],
-      "additionalProperties": false
-    },
-    "experiment_runs_pressure_domain": {
-      "type": "object",
-      "properties": {
-        "operator": {"type": "string"},
-        "value": {"type": "number"},
-        "unit": {"type": "string"}
-      },
-      "required": ["operator", "value", "unit"],
-      "additionalProperties": false
-    },
-    "experiment_runs_pressure_domain_2": {
-      "type": "object",
-      "properties": {
-        "minimum": {"type": "number"},
+        "quantity": {"type": ["string", "null"], "minLength": 1},
+        "unit": {"type": ["string", "null"]},
+        "unit_raw": {"type": ["string", "null"]},
+        "symbol": {"type": "string"},
+        "expression": {"type": "string"},
+        "loading_definition": {"type": "string"},
+        "range": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
         "maximum": {"type": "number"},
-        "unit": {"type": "string"}
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["minimum", "maximum", "unit"],
+      "required": ["quantity", "unit"],
       "additionalProperties": false
     },
-    "experiment_runs_probe": {
+    "paper_series_source": {
       "type": "object",
       "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "temperature": {"$ref": "#/$defs/experiment_runs_probe_temperature"}
+        "figure": {"type": "string", "minLength": 1},
+        "data_availability": {"enum": ["reported_points", "figure_only_not_digitized", "not_reported", "needs_review"]}
       },
-      "required": ["entity_id", "temperature"],
+      "required": ["data_availability"],
       "additionalProperties": false
     },
-    "experiment_runs_probe_temperature": {
+    "paper_series_member": {
       "type": "object",
       "properties": {
-        "reported_value": {"type": "number"},
-        "reported_unit": {"type": "string"},
-        "normalized_value": {"type": "number"},
-        "normalized_unit": {"type": "string"}
-      },
-      "required": ["reported_value", "reported_unit", "normalized_value", "normalized_unit"],
-      "additionalProperties": false
-    },
-    "experiment_runs_sample_preparation": {
-      "type": "object",
-      "properties": {
-        "coating": {"type": "string"}
-      },
-      "required": ["coating"],
-      "additionalProperties": false
-    },
-    "experiment_runs_scanning_electron_microscopy": {
-      "type": "object",
-      "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "characterization"},
-        "technique": {"const": "scanning_electron_microscopy"},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "instrument": {"$ref": "#/$defs/experiment_runs_instrument_2"},
-        "sample_preparation": {"$ref": "#/$defs/experiment_runs_sample_preparation"},
-        "image_metadata": {"type": "array", "items": {"$ref": "#/$defs/experiment_runs_image_metadata"}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
+        "sample_state_id": {"anyOf": [{"$ref": "#/$defs/record_identifier"}, {"type": "null"}]},
+        "entity_id": {"anyOf": [{"$ref": "#/$defs/record_identifier"}, {"type": "null"}]},
+        "label": {"type": "string"},
+        "branches": {"type": "array", "items": {"type": "string"}},
+        "conditions": {"$ref": "#/$defs/paper_conditions"},
+        "data_points": {
+          "type": ["array", "null"],
           "minItems": 1,
-          "uniqueItems": true
+          "items": {
+            "type": "object",
+            "properties": {
+              "x": {"type": "number"},
+              "y": {"type": "number"},
+              "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
+            },
+            "required": ["x", "y", "evidence_ids"],
+            "additionalProperties": false
+          }
         }
       },
-      "required": ["run_id", "run_type", "technique", "sample_state_ids", "instrument", "sample_preparation", "image_metadata", "evidence_ids"],
+      "required": ["sample_state_id", "entity_id", "data_points"],
       "additionalProperties": false
     },
-    "experiment_runs_software": {
+    "observations_quantitative_measurement": {
       "type": "object",
       "properties": {
-        "name": {"type": "string"},
-        "version": {"type": "null"}
-      },
-      "required": ["name", "version"],
-      "additionalProperties": false
-    },
-    "experiment_runs_subject_scope": {
-      "type": "object",
-      "properties": {
-        "kind": {"const": "representative_material_model"},
-        "material_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_specific_assignment": {"type": "null"},
-        "model_description": {"type": "string"}
-      },
-      "required": ["kind", "material_id", "sample_specific_assignment", "model_description"],
-      "additionalProperties": false
-    },
-    "experiment_runs_temperature_program": {
-      "type": "object",
-      "properties": {
-        "start": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "end": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "heating_rate": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"}
-      },
-      "required": ["start", "end", "heating_rate"],
-      "additionalProperties": false
-    },
-    "experiment_runs_thermogravimetric_analysis": {
-      "type": "object",
-      "properties": {
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_type": {"const": "characterization"},
-        "technique": {"const": "thermogravimetric_analysis"},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "instrument": {"$ref": "#/$defs/experiment_runs_instrument_2"},
-        "temperature_program": {"$ref": "#/$defs/experiment_runs_temperature_program"},
-        "atmosphere": {"$ref": "#/$defs/experiment_runs_atmosphere"},
-        "series_set_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["run_id", "run_type", "technique", "sample_state_ids", "instrument", "temperature_program", "atmosphere", "series_set_ids", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "extraction_metadata": {
-      "type": "object",
-      "properties": {
-        "created_on": {"type": "string", "format": "date"},
-        "extraction_scope": {"type": "string"},
-        "supplementary_information_available": {"type": "boolean"},
-        "figure_curves_digitized": {"type": "boolean"},
-        "normalization_policy": {"type": "string"},
-        "source_priority": {"type": "array", "items": {"type": "string"}},
-        "controlled_vocabulary": {"$ref": "#/$defs/extraction_metadata_controlled_vocabulary"}
-      },
-      "required": ["created_on", "extraction_scope", "supplementary_information_available", "figure_curves_digitized", "normalization_policy", "source_priority", "controlled_vocabulary"],
-      "additionalProperties": false
-    },
-    "extraction_metadata_controlled_vocabulary": {
-      "type": "object",
-      "properties": {
-        "pore_and_isotherm_terms": {"type": "string"},
-        "adsorption_exchange_profile": {"type": "string"},
-        "quantity_model": {"type": "string"}
-      },
-      "required": ["quantity_model"],
-      "additionalProperties": false
-    },
-    "material_identities": {
-      "type": "object",
-      "properties": {
-        "material_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_family_name": {"type": "string"},
-        "abbreviation": {"type": "string"},
-        "material_class": {"type": "string"},
-        "carbon_source_entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "activation_type": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["material_id", "reported_family_name", "abbreviation", "material_class", "carbon_source_entity_id", "activation_type", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "mechanism_claims": {
-      "type": "object",
-      "properties": {
-        "claim_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "claim_type": {"type": "string"},
-        "claim": {"type": "string"},
-        "supported_by_observation_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "causal_strength": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["claim_id", "claim_type", "claim", "supported_by_observation_ids", "causal_strength", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "mechanism_claims_2": {
-      "type": "object",
-      "properties": {
-        "claim_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "claim_type": {"type": "string"},
-        "claim": {"type": "string"},
-        "reported_order": {"type": "string"},
-        "causal_strength": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["claim_id", "claim_type", "claim", "reported_order", "causal_strength", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "mechanism_claims_3": {
-      "type": "object",
-      "properties": {
-        "claim_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "claim_type": {"type": "string"},
-        "claim": {"type": "string"},
-        "provenance_scope": {"type": "string"},
-        "reported_background_values": {"$ref": "#/$defs/mechanism_claims_reported_background_values"},
-        "normalization_note": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["claim_id", "claim_type", "claim", "provenance_scope", "reported_background_values", "normalization_note", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "mechanism_claims_reported_background_values": {
-      "type": "object",
-      "properties": {
-        "kinetic_diameter_angstrom": {"$ref": "#/$defs/mechanism_claims_reported_background_values_kinetic_diameter_angstrom"},
-        "polarizability_raw": {"$ref": "#/$defs/mechanism_claims_reported_background_values_polarizability_raw"}
-      },
-      "required": ["kinetic_diameter_angstrom", "polarizability_raw"],
-      "additionalProperties": false
-    },
-    "mechanism_claims_reported_background_values_kinetic_diameter_angstrom": {
-      "type": "object",
-      "propertyNames": {"type": "string", "minLength": 1, "maxLength": 128},
-      "additionalProperties": {"type": "number"}
-    },
-    "mechanism_claims_reported_background_values_polarizability_raw": {
-      "type": "object",
-      "propertyNames": {"type": "string", "minLength": 1, "maxLength": 128},
-      "additionalProperties": {"type": "string"}
-    },
-    "missing_information": {
-      "type": "object",
-      "properties": {
-        "missing_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "record_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "fields": {"type": "array", "items": {"type": "string"}},
-        "reason": {"type": "string"},
-        "status": {"enum": ["not_reported", "needs_review"]},
-        "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true}
-      },
-      "required": ["missing_id", "record_id", "fields", "reason"],
-      "if": {"required": ["status"], "properties": {"status": {"const": "not_reported"}}},
-      "then": {"required": ["evidence_ids"]},
-      "additionalProperties": false
-    },
-    "observations_binding_energy": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "binding_energy"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_origin": {"type": "string"},
-        "signed_value_from_figure": {"$ref": "#/$defs/chemical_entities_purity"},
-        "magnitude_reported_in_prose": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "interaction_distance_from_figure": {"$ref": "#/$defs/observations_interaction_distance_from_figure"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "entity_id", "data_origin", "signed_value_from_figure", "magnitude_reported_in_prose", "interaction_distance_from_figure", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_breakthrough_working_capacity": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "breakthrough_working_capacity"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_origin": {"type": "string"},
-        "results": {"type": "array", "items": {"$ref": "#/$defs/observations_results_6"}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "data_origin", "results", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_conditions": {
-      "type": "object",
-      "properties": {
-        "temperature": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "pressure": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"}
-      },
-      "required": ["temperature", "pressure"],
-      "additionalProperties": false
-    },
-    "observations_diffusion_time_constant": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "diffusion_time_constant"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_origin": {"type": "string"},
-        "conditions": {"$ref": "#/$defs/reported_parameters"},
-        "value": {"$ref": "#/$defs/chemical_entities_purity"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "entity_id", "data_origin", "conditions", "value", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_dynamic_selectivity": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "dynamic_selectivity"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_origin": {"type": "string"},
-        "ordered_species_pair": {"$ref": "#/$defs/observations_ordered_species_pair"},
-        "value": {"$ref": "#/$defs/observations_value_scalar"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "data_origin", "ordered_species_pair", "value", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_equilibrium_uptake": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "equilibrium_uptake"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_origin": {"type": "string"},
-        "temperature": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "pressure": {"$ref": "#/$defs/observations_pressure"},
-        "loading": {"$ref": "#/$defs/chemical_entities_purity"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "entity_id", "data_origin", "temperature", "pressure", "loading", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_interaction_distance_from_figure": {
-      "type": "object",
-      "properties": {
-        "value": {"type": "number"},
-        "unit": {"type": "null"},
-        "unit_status": {"type": "string"}
-      },
-      "required": ["value", "unit", "unit_status"],
-      "additionalProperties": false
-    },
-    "observations_isosteric_heat": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "isosteric_heat"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "loading_domain": {"$ref": "#/$defs/experiment_runs_pressure_domain_2"},
-        "value": {"$ref": "#/$defs/observations_value_range"},
+        "observation_id": {"$ref": "#/$defs/record_identifier"},
+        "observation_type": {"const": "quantitative_measurement"},
+        "run_id": {"$ref": "#/$defs/record_identifier"},
+        "series_set_id": {"$ref": "#/$defs/record_identifier"},
+        "sample_state_id": {"anyOf": [{"$ref": "#/$defs/record_identifier"}, {"type": "null"}]},
+        "entity_id": {"anyOf": [{"$ref": "#/$defs/record_identifier"}, {"type": "null"}]},
+        "ordered_species_pair": {"$ref": "#/$defs/paper_species_pair"},
+        "metric_id": {"type": "string", "minLength": 1},
+        "data_origin": {"type": "string", "minLength": 1},
+        "conditions": {"$ref": "#/$defs/paper_conditions"},
+        "condition_context": {"type": "string"},
+        "value": {"$ref": "#/$defs/paper_quantity"},
         "sign_convention": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "entity_id", "loading_domain", "value", "sign_convention", "evidence_ids"],
+      "required": [
+        "observation_id", "observation_type", "run_id", "sample_state_id", "entity_id", "metric_id",
+        "conditions", "value", "evidence_ids"
+      ],
       "additionalProperties": false
     },
-    "observations_isosteric_heat_2": {
+    "observations_reported_result": {
       "type": "object",
       "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "isosteric_heat"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "loading": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "value": {"$ref": "#/$defs/chemical_entities_purity"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
+        "observation_id": {"$ref": "#/$defs/record_identifier"},
+        "observation_type": {"const": "reported_result"},
+        "run_id": {"$ref": "#/$defs/record_identifier"},
+        "series_set_id": {"$ref": "#/$defs/record_identifier"},
+        "sample_state_ids": {"$ref": "#/$defs/record_identifiers"},
+        "entity_id": {"$ref": "#/$defs/record_identifier"},
+        "ordered_species_pair": {"$ref": "#/$defs/paper_species_pair"},
+        "metric_id": {"type": "string", "minLength": 1},
+        "data_origin": {"type": "string", "minLength": 1},
+        "result": {"type": "string", "minLength": 1},
+        "reported_order": {"type": "string"},
+        "author_interpretation": {"type": "string"},
+        "conditions": {"$ref": "#/$defs/paper_conditions"},
+        "condition_context": {"type": "string"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "entity_id", "loading", "value", "evidence_ids"],
+      "required": [
+        "observation_id", "observation_type", "run_id", "sample_state_ids",
+        "metric_id", "result", "conditions", "evidence_ids"
+      ],
       "additionalProperties": false
     },
-    "observations_kinetic_selectivity": {
+    "observations_result_group": {
       "type": "object",
       "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "kinetic_selectivity"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "ordered_species_pair": {"$ref": "#/$defs/observations_ordered_species_pair"},
-        "data_origin": {"type": "string"},
-        "conditions": {"$ref": "#/$defs/reported_parameters"},
-        "value": {"$ref": "#/$defs/chemical_entities_purity"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
+        "observation_id": {"$ref": "#/$defs/record_identifier"},
+        "observation_type": {"const": "result_group"},
+        "run_id": {"$ref": "#/$defs/record_identifier"},
+        "series_set_id": {"$ref": "#/$defs/record_identifier"},
+        "sample_state_id": {"anyOf": [{"$ref": "#/$defs/record_identifier"}, {"type": "null"}]},
+        "entity_id": {"anyOf": [{"$ref": "#/$defs/record_identifier"}, {"type": "null"}]},
+        "ordered_species_pair": {"$ref": "#/$defs/paper_species_pair"},
+        "data_origin": {"type": "string", "minLength": 1},
+        "conditions": {"$ref": "#/$defs/paper_conditions"},
+        "condition_context": {"type": "string"},
+        "composition_basis": {"type": "string"},
+        "results": {"type": "array", "items": {"$ref": "#/$defs/paper_observation_member"}},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "ordered_species_pair", "data_origin", "conditions", "value", "evidence_ids"],
+      "required": [
+        "observation_id", "observation_type", "run_id", "sample_state_id", "entity_id",
+        "conditions", "results", "evidence_ids"
+      ],
       "additionalProperties": false
     },
-    "observations_ordered_species_pair": {
+    "paper_observation_member": {
       "type": "object",
       "properties": {
-        "numerator_entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "denominator_entity_id": {"type": "string", "minLength": 1, "maxLength": 128}
+        "metric_id": {"type": "string", "minLength": 1},
+        "entity_id": {"$ref": "#/$defs/record_identifier"},
+        "value": {"$ref": "#/$defs/paper_quantity"},
+        "result": {"type": "string", "minLength": 1},
+        "sign_convention": {"type": "string"},
+        "reported_order": {"type": "string"},
+        "author_interpretation": {"type": "string"},
+        "reported_assignment": {"type": "string"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
+      },
+      "required": ["metric_id", "evidence_ids"],
+      "anyOf": [{"required": ["value"]}, {"required": ["result"]}],
+      "additionalProperties": false
+    },
+    "paper_species_pair": {
+      "type": "object",
+      "properties": {
+        "numerator_entity_id": {"$ref": "#/$defs/record_identifier"},
+        "denominator_entity_id": {"$ref": "#/$defs/record_identifier"},
+        "preferential_component_entity_id": {"$ref": "#/$defs/record_identifier"}
       },
       "required": ["numerator_entity_id", "denominator_entity_id"],
       "additionalProperties": false
     },
-    "observations_pressure": {
+    "paper_claim": {
       "type": "object",
       "properties": {
-        "value": {"type": "number"},
-        "unit": {"type": "string"},
-        "pressure_type": {"type": "string"}
-      },
-      "required": ["value", "unit", "pressure_type"],
-      "additionalProperties": false
-    },
-    "observations_qualitative_breakthrough_behavior": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "qualitative_breakthrough_behavior"},
-        "run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "results": {"type": "array", "items": {"type": "string"}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_ids", "results", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_qualitative_characterization": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "qualitative_characterization"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "results": {"$ref": "#/$defs/observations_results_2"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_ids", "results", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_qualitative_characterization_2": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "qualitative_characterization"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "result": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_ids", "result", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_qualitative_characterization_3": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "qualitative_characterization"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "result": {"type": "string"},
-        "quantitative_particle_size": {"type": "null"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_ids", "result", "quantitative_particle_size", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_qualitative_characterization_4": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "qualitative_characterization"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "reported_observation": {"type": "string"},
-        "author_interpretation": {"type": "string"},
-        "numeric_mass_loss": {"type": "null"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_ids", "reported_observation", "author_interpretation", "numeric_mass_loss", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_qualitative_ordering": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "qualitative_ordering"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "metric_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "conditions": {"$ref": "#/$defs/observations_conditions"},
+        "claim_id": {"$ref": "#/$defs/record_identifier"},
+        "claim_type": {"type": "string", "minLength": 1},
+        "claim": {"type": "string", "minLength": 1},
         "reported_order": {"type": "string"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
+        "causal_strength": {"type": "string"},
+        "provenance_scope": {"$ref": "#/$defs/provenance_scope"},
+        "reported_background_values": {"$ref": "#/$defs/paper_conditions"},
+        "normalization_note": {"type": "string"},
+        "supported_by_observation_ids": {"$ref": "#/$defs/record_identifiers"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["observation_id", "observation_type", "run_id", "metric_id", "conditions", "reported_order", "evidence_ids"],
+      "required": ["claim_id", "claim_type", "claim", "supported_by_observation_ids", "evidence_ids"],
       "additionalProperties": false
     },
-    "observations_results": {
+    "missing_information": {
       "type": "object",
       "properties": {
-        "metric_id": {"enum": ["textural.surface_area.specific", "textural.pore_volume.total"]},
-        "value": {"$ref": "#/$defs/chemical_entities_purity"}
+        "missing_id": {"$ref": "#/$defs/record_identifier"},
+        "record_id": {"$ref": "#/$defs/record_identifier"},
+        "fields": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "reason": {"type": "string"},
+        "status": {"enum": ["not_reported", "unavailable", "needs_review"]},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["metric_id", "value"],
+      "required": ["missing_id", "record_id", "fields", "reason", "status"],
+      "if": {"properties": {"status": {"const": "not_reported"}}},
+      "then": {"required": ["evidence_ids"]},
       "additionalProperties": false
     },
-    "observations_results_2": {
+    "validation_issues": {
       "type": "object",
       "properties": {
-        "isotherm_shape_class_reported": {"type": "string"},
-        "hysteresis_class_reported": {"type": "string"},
-        "hysteresis_size_qualifier": {"type": "string"},
-        "pore_structure_interpretation": {"type": "array", "items": {"type": "string"}}
+        "issue_id": {"$ref": "#/$defs/record_identifier"},
+        "severity": {"type": "string"},
+        "issue_type": {"type": "string"},
+        "record_ids": {"$ref": "#/$defs/record_identifiers", "minItems": 1},
+        "message": {"type": "string"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_identifiers"}
       },
-      "required": ["isotherm_shape_class_reported", "hysteresis_class_reported", "hysteresis_size_qualifier", "pore_structure_interpretation"],
-      "additionalProperties": false
-    },
-    "observations_results_3": {
-      "type": "object",
-      "properties": {
-        "peak_name": {"type": "string"},
-        "position": {"$ref": "#/$defs/observations_results_position"},
-        "reported_assignment": {"type": "string"}
-      },
-      "required": ["peak_name", "position", "reported_assignment"],
-      "additionalProperties": false
-    },
-    "observations_results_4": {
-      "type": "object",
-      "properties": {
-        "C_percent": {"type": "number"},
-        "O_percent": {"type": "number"},
-        "N_percent": {"type": "number"},
-        "O_over_C_percent": {"type": "number"},
-        "N_over_C_percent": {"type": "number"}
-      },
-      "required": ["C_percent", "O_percent", "N_percent", "O_over_C_percent", "N_over_C_percent"],
-      "additionalProperties": false
-    },
-    "observations_results_5": {
-      "type": "object",
-      "properties": {
-        "binding_energy_eV": {"type": "number"},
-        "uncertainty_eV": {"type": "number"},
-        "assignment": {"type": "string"}
-      },
-      "required": ["binding_energy_eV", "uncertainty_eV", "assignment"],
-      "additionalProperties": false
-    },
-    "observations_results_6": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "value": {"$ref": "#/$defs/chemical_entities_purity"}
-      },
-      "required": ["entity_id", "value"],
-      "additionalProperties": false
-    },
-    "observations_results_position": {
-      "type": "object",
-      "properties": {
-        "kind": {"const": "scalar"},
-        "raw_text": {"type": "string"},
-        "operator": {"type": "string"},
-        "value": {"type": "number"},
-        "unit_raw": {"type": "string"},
-        "unit_canonical": {"type": "string"},
-        "basis": {"type": "null"}
-      },
-      "required": ["kind", "raw_text", "operator", "value", "unit_raw", "unit_canonical", "basis"],
-      "additionalProperties": false
-    },
-    "observations_selectivity": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "selectivity"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_origin": {"type": "string"},
-        "ordered_species_pair": {"$ref": "#/$defs/observations_ordered_species_pair"},
-        "selectivity": {"$ref": "#/$defs/observations_selectivity_range"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "data_origin", "ordered_species_pair", "selectivity", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_selectivity_2": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "selectivity"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_origin": {"type": "string"},
-        "condition_context": {"type": "string"},
-        "exact_pressure_assignment_status": {"type": "string"},
-        "selectivity": {"$ref": "#/$defs/observations_value_scalar"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "data_origin", "condition_context", "exact_pressure_assignment_status", "selectivity", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_selectivity_range": {
-      "type": "object",
-      "properties": {
-        "kind": {"const": "range"},
-        "raw_text": {"type": "string"},
-        "minimum": {"type": "number"},
-        "maximum": {"type": "number"},
-        "unit_raw": {"type": "null"},
-        "unit_canonical": {"type": "string"},
-        "range_semantics": {"type": "string"}
-      },
-      "required": ["kind", "raw_text", "minimum", "maximum", "unit_raw", "unit_canonical", "range_semantics"],
-      "additionalProperties": false
-    },
-    "observations_spectral_peak_assignments": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "spectral_peak_assignments"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "results": {"type": "array", "items": {"$ref": "#/$defs/observations_results_3"}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "results", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_spectral_peak_assignments_2": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "spectral_peak_assignments"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "region": {"type": "string"},
-        "results": {"type": "array", "items": {"$ref": "#/$defs/observations_results_5"}},
-        "qualitative_result": {"type": "string"},
-        "relative_component_fractions": {"type": "null"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "region", "results", "qualitative_result", "relative_component_fractions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_spectral_peak_assignments_3": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "spectral_peak_assignments"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "region": {"type": "string"},
-        "results": {"type": "array", "items": {"$ref": "#/$defs/observations_results_5"}},
-        "qualitative_results": {"type": "array", "items": {"type": "string"}},
-        "relative_component_fractions": {"type": "null"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "region", "results", "qualitative_results", "relative_component_fractions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_spectral_ratio": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "spectral_ratio"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "metric_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "value": {"$ref": "#/$defs/observations_value_scalar"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "metric_id", "value", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_surface_elemental_composition": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "surface_elemental_composition"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "composition_basis": {"type": "string"},
-        "results": {"$ref": "#/$defs/observations_results_4"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "composition_basis", "results", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_textural_properties": {
-      "type": "object",
-      "properties": {
-        "observation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "observation_type": {"const": "textural_properties"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "results": {"type": "array", "items": {"$ref": "#/$defs/observations_results"}},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["observation_id", "observation_type", "run_id", "sample_state_id", "results", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "observations_value_range": {
-      "type": "object",
-      "properties": {
-        "kind": {"const": "range"},
-        "raw_text": {"type": "string"},
-        "minimum": {"type": "number"},
-        "maximum": {"type": "number"},
-        "unit_raw": {"type": "string"},
-        "unit_canonical": {"type": "string"},
-        "range_semantics": {"type": "string"}
-      },
-      "required": ["kind", "raw_text", "minimum", "maximum", "unit_raw", "unit_canonical", "range_semantics"],
-      "additionalProperties": false
-    },
-    "observations_value_scalar": {
-      "type": "object",
-      "properties": {
-        "kind": {"const": "scalar"},
-        "raw_text": {"type": "string"},
-        "operator": {"type": "string"},
-        "value": {"type": "number"},
-        "unit_raw": {"type": "null"},
-        "unit_canonical": {"type": "string"},
-        "basis": {"type": "string"}
-      },
-      "required": ["kind", "raw_text", "operator", "value", "unit_raw", "unit_canonical", "basis"],
+      "required": ["issue_id", "severity", "issue_type", "record_ids", "message"],
       "additionalProperties": false
     },
     "quality_summary": {
@@ -1728,22 +608,37 @@
         "document_identity": {"type": "string"},
         "sample_registry": {"type": "string"},
         "synthesis_route": {"type": "string"},
-        "characterization_scalar_values": {"type": "string"},
-        "equilibrium_scalar_values": {"type": "string"},
-        "kinetic_scalar_values": {"type": "string"},
-        "IAST_ranges": {"type": "string"},
-        "Qst_ranges_and_2_mmol_g_points": {"type": "string"},
-        "breakthrough_working_capacities_and_selectivities": {"type": "string"},
-        "raw_curve_points": {"type": "string"},
-        "supplementary_information": {"type": "string"},
         "overall_status": {"type": "string"},
         "experiment_count": {"type": "integer", "minimum": 0},
         "quantitative_observation_count": {"type": "integer", "minimum": 0},
-        "experiments": {"type": "array", "items": {"type": "object", "properties": {"run_id": {"type": "string", "minLength": 1, "maxLength": 128}, "observation_count": {"type": "integer", "minimum": 0}, "status": {"enum": ["extracted_pending_review", "not_extracted"]}}, "required": ["run_id", "observation_count", "status"], "additionalProperties": false}}
+        "experiments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "run_id": {"$ref": "#/$defs/record_identifier"},
+              "observation_count": {"type": "integer", "minimum": 0},
+              "status": {"enum": ["extracted_pending_review", "not_extracted"]}
+            },
+            "required": ["run_id", "observation_count", "status"],
+            "additionalProperties": false
+          }
+        }
       },
-      "required": ["document_identity", "sample_registry", "synthesis_route", "raw_curve_points", "supplementary_information", "overall_status"],
+      "required": [
+        "document_identity", "sample_registry", "synthesis_route", "overall_status",
+        "experiment_count", "quantitative_observation_count", "experiments"
+      ],
       "additionalProperties": false
     },
+    "record_identifier": {"type": "string", "minLength": 1, "maxLength": 128},
+    "record_identifiers": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/record_identifier"},
+      "uniqueItems": true
+    },
+    "evidence_identifiers": {"$ref": "#/$defs/record_identifiers", "minItems": 1},
+    "provenance_scope": {"enum": ["this_work", "cited_work", "mixed", "unknown"]},
     "reported_parameter": {
       "type": "object",
       "properties": {
@@ -1759,666 +654,58 @@
       "propertyNames": {"type": "string", "minLength": 1},
       "additionalProperties": {"$ref": "#/$defs/reported_parameter"}
     },
-    "sample_batches": {
-      "type": "object",
-      "properties": {
-        "sample_batch_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "material_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "series_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "factor_assignments": {"$ref": "#/$defs/sample_batches_factor_assignments"},
-        "batch_number": {"type": "null"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["sample_batch_id", "material_id", "reported_name", "series_id", "factor_assignments", "batch_number", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "sample_batches_factor_assignments": {
+    "paper_conditions": {
       "type": "object",
       "propertyNames": {"type": "string", "minLength": 1},
-      "additionalProperties": {
-        "anyOf": [{"$ref": "#/$defs/reported_parameter"}, {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"}, {"type": "number"}]
-      }
+      "additionalProperties": {"$ref": "#/$defs/paper_condition_value"}
     },
-    "sample_batches_factor_assignments_activation_temperature": {
+    "paper_condition_value": {
+      "anyOf": [{"$ref": "#/$defs/reported_parameter"}, {"$ref": "#/$defs/paper_quantity"}]
+    },
+    "paper_quantity": {
+      "anyOf": [{"$ref": "#/$defs/paper_scalar"}, {"$ref": "#/$defs/paper_range"}]
+    },
+    "paper_scalar": {
       "type": "object",
       "properties": {
+        "kind": {"const": "scalar"},
+        "raw_text": {"type": "string", "minLength": 1},
         "value": {"type": "number"},
-        "unit": {"type": "string"}
-      },
-      "required": ["value", "unit"],
-      "additionalProperties": false
-    },
-    "sample_states": {
-      "type": "object",
-      "properties": {
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sample_batch_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reported_name": {"type": "string"},
-        "state": {"type": "string"},
-        "physical_form": {"type": "null"},
-        "parent_state_ids": {"type": "array", "items": {"type": "string"}},
-        "preparation_route_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["sample_state_id", "sample_batch_id", "reported_name", "state", "physical_form", "parent_state_ids", "preparation_route_id", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "series_sets_adsorption_desorption_isotherm": {
-      "type": "object",
-      "properties": {
-        "series_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "series_kind": {
-          "enum": ["adsorption_desorption_isotherm", "selectivity_vs_pressure", "isosteric_heat_vs_loading", "breakthrough_curve", "kinetic_uptake_curve"]
-        },
-        "x": {"anyOf": [{"$ref": "#/$defs/series_sets_x"}, {"$ref": "#/$defs/series_sets_x_2"}]},
-        "y": {
-          "anyOf": [{"$ref": "#/$defs/series_sets_y"}, {"$ref": "#/$defs/series_sets_x_2"}, {"$ref": "#/$defs/series_sets_y_2"}]
-        },
-        "series_members": {
-          "type": "array",
-          "items": {
-            "anyOf": [{"$ref": "#/$defs/series_sets_series_members"}, {"$ref": "#/$defs/series_sets_series_members_2"}, {"$ref": "#/$defs/series_sets_series_members_3"}, {"$ref": "#/$defs/series_sets_series_members_4"}]
-          }
-        },
-        "source": {"$ref": "#/$defs/series_sets_source"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["series_set_id", "run_id", "series_kind", "x", "y", "series_members", "source", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "series_sets_pore_size_distribution": {
-      "type": "object",
-      "properties": {
-        "series_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "series_kind": {"const": "pore_size_distribution"},
-        "x": {"$ref": "#/$defs/series_sets_x_3"},
-        "y": {"$ref": "#/$defs/series_sets_y_3"},
-        "analysis_method": {"type": "string"},
-        "series_members": {"type": "array", "items": {"$ref": "#/$defs/series_sets_series_members_2"}},
-        "source": {"$ref": "#/$defs/series_sets_source"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["series_set_id", "run_id", "series_kind", "x", "y", "analysis_method", "series_members", "source", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "series_sets_pure_component_equilibrium_isotherm": {
-      "type": "object",
-      "properties": {
-        "series_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "series_kind": {"const": "pure_component_equilibrium_isotherm"},
-        "temperature": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "x_axis_reported_in_figure": {"$ref": "#/$defs/series_sets_x_axis_reported_in_figure"},
-        "x_axis_described_in_text_and_model": {"$ref": "#/$defs/series_sets_x_axis_described_in_text_and_model"},
-        "axis_consistency_status": {"type": "string"},
-        "y": {"$ref": "#/$defs/series_sets_y_4"},
-        "series_members": {"type": "array", "items": {"$ref": "#/$defs/series_sets_series_members_3"}},
-        "source": {"$ref": "#/$defs/series_sets_source"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["series_set_id", "run_id", "series_kind", "temperature", "x_axis_reported_in_figure", "x_axis_described_in_text_and_model", "axis_consistency_status", "y", "series_members", "source", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "series_sets_series_members": {
-      "type": "object",
-      "properties": {
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "branches": {"type": "array", "items": {"type": "string"}},
-        "data_points": {"type": "null"}
-      },
-      "required": ["sample_state_id", "branches", "data_points"],
-      "additionalProperties": false
-    },
-    "series_sets_series_members_2": {
-      "type": "object",
-      "properties": {
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_points": {"type": "null"}
-      },
-      "required": ["sample_state_id", "data_points"],
-      "additionalProperties": false
-    },
-    "series_sets_series_members_3": {
-      "type": "object",
-      "properties": {
-        "sample_state_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_points": {"type": "null"}
-      },
-      "required": ["sample_state_id", "entity_id", "data_points"],
-      "additionalProperties": false
-    },
-    "series_sets_series_members_4": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "data_points": {"type": "null"}
-      },
-      "required": ["entity_id", "data_points"],
-      "additionalProperties": false
-    },
-    "series_sets_source": {
-      "type": "object",
-      "properties": {
-        "figure": {"type": "string"},
-        "data_availability": {"type": "string"}
-      },
-      "required": ["figure", "data_availability"],
-      "additionalProperties": false
-    },
-    "series_sets_surface_area_normalized_isotherm": {
-      "type": "object",
-      "properties": {
-        "series_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "series_kind": {"const": "surface_area_normalized_isotherm"},
-        "temperature": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "x": {"$ref": "#/$defs/series_sets_x_4"},
-        "y": {"$ref": "#/$defs/series_sets_x_3"},
-        "series_members": {"type": "array", "items": {"$ref": "#/$defs/series_sets_series_members_3"}},
-        "source": {"$ref": "#/$defs/series_sets_source"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["series_set_id", "run_id", "series_kind", "temperature", "x", "y", "series_members", "source", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "series_sets_thermogravimetric_curve": {
-      "type": "object",
-      "properties": {
-        "series_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "series_kind": {"const": "thermogravimetric_curve"},
-        "series_members": {"type": "array", "items": {"$ref": "#/$defs/series_sets_series_members_2"}},
-        "source": {"$ref": "#/$defs/series_sets_source"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["series_set_id", "run_id", "series_kind", "series_members", "source", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "series_sets_x": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "unit": {"type": "string"},
-        "symbol": {"type": "string"}
-      },
-      "required": ["quantity", "unit", "symbol"],
-      "additionalProperties": false
-    },
-    "series_sets_x_2": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "unit": {"type": "string"}
-      },
-      "required": ["quantity", "unit"],
-      "additionalProperties": false
-    },
-    "series_sets_x_3": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "unit_raw": {"type": "string"}
-      },
-      "required": ["quantity", "unit_raw"],
-      "additionalProperties": false
-    },
-    "series_sets_x_4": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "symbol": {"type": "string"},
-        "unit": {"type": "string"}
-      },
-      "required": ["quantity", "symbol", "unit"],
-      "additionalProperties": false
-    },
-    "series_sets_x_axis_described_in_text_and_model": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "unit": {"type": "string"},
-        "maximum": {"type": "number"}
-      },
-      "required": ["quantity", "unit", "maximum"],
-      "additionalProperties": false
-    },
-    "series_sets_x_axis_reported_in_figure": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "symbol": {"type": "string"},
-        "range": {"type": "array", "items": {"type": "number"}}
-      },
-      "required": ["quantity", "symbol", "range"],
-      "additionalProperties": false
-    },
-    "series_sets_y": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "unit_raw": {"type": "string"},
-        "loading_definition": {"type": "null"}
-      },
-      "required": ["quantity", "unit_raw", "loading_definition"],
-      "additionalProperties": false
-    },
-    "series_sets_y_2": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "expression": {"type": "string"},
-        "unit": {"type": "string"}
-      },
-      "required": ["quantity", "expression", "unit"],
-      "additionalProperties": false
-    },
-    "series_sets_y_3": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "unit_raw": {"type": "null"}
-      },
-      "required": ["quantity", "unit_raw"],
-      "additionalProperties": false
-    },
-    "series_sets_y_4": {
-      "type": "object",
-      "properties": {
-        "quantity": {"type": "string"},
-        "unit": {"type": "string"},
-        "loading_definition": {"type": "null"}
-      },
-      "required": ["quantity", "unit", "loading_definition"],
-      "additionalProperties": false
-    },
-    "synthesis_routes": {
-      "type": "object",
-      "properties": {
-        "route_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "route_name": {"type": "string"},
-        "target_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "operations": {
-          "type": "array",
-          "items": {
-            "anyOf": [{"$ref": "#/$defs/synthesis_routes_operations_dissolution_and_mixing"}, {"$ref": "#/$defs/synthesis_routes_operations_stirring"}, {"$ref": "#/$defs/synthesis_routes_operations_thermal_treatment"}, {"$ref": "#/$defs/synthesis_routes_operations_acid_washing"}, {"$ref": "#/$defs/synthesis_routes_operations_vacuum_drying"}, {"$ref": "#/$defs/synthesis_routes_operations_reported"}]
-          }
-        },
-        "yield": {"type": "null"},
-        "replicate_count": {"type": "null"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["route_id", "route_name", "target_sample_state_ids", "operations", "yield", "replicate_count", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_acid_washing": {
-      "type": "object",
-      "properties": {
-        "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sequence": {"type": "integer", "minimum": 1},
-        "operation_type": {"type": "string"},
-        "input_intermediate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "output_intermediate_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reagent_uses": {
-          "type": "array",
-          "items": {
-            "anyOf": [{"$ref": "#/$defs/synthesis_routes_operations_reagent_uses_3"}, {"$ref": "#/$defs/synthesis_routes_operations_reagent_uses_4"}]
-          }
-        },
-        "conditions": {
-          "anyOf": [{"$ref": "#/$defs/synthesis_routes_operations_conditions_5"}, {"$ref": "#/$defs/synthesis_routes_operations_conditions_6"}]
-        },
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["operation_id", "sequence", "operation_type", "input_intermediate_ids", "output_intermediate_id", "reagent_uses", "conditions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_conditions": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
-    "synthesis_routes_operations_conditions_2": {
-      "type": "object",
-      "properties": {
-        "duration": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "temperature": {"type": "null"},
-        "stirring_speed": {"type": "null"}
-      },
-      "required": ["duration", "temperature", "stirring_speed"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_conditions_3": {
-      "type": "object",
-      "properties": {
-        "temperature": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "duration": {"type": "null"},
-        "pressure": {"type": "null"},
-        "endpoint": {"type": "string"}
-      },
-      "required": ["temperature", "duration", "pressure", "endpoint"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_conditions_4": {
-      "type": "object",
-      "properties": {
-        "temperature_by_sample": {"$ref": "#/$defs/synthesis_routes_operations_conditions_temperature_by_sample"},
-        "hold_duration": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "heating_rate": {"type": "null"},
-        "cooling_protocol": {"type": "null"},
-        "pressure": {"type": "null"},
-        "atmosphere_streams": {"type": "array", "items": {"$ref": "#/$defs/synthesis_routes_operations_conditions_atmosphere_streams"}}
-      },
-      "required": ["temperature_by_sample", "hold_duration", "heating_rate", "cooling_protocol", "pressure", "atmosphere_streams"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_conditions_5": {
-      "type": "object",
-      "properties": {
-        "duration": {"type": "null"},
-        "temperature": {"type": "null"},
-        "endpoint": {"type": "string"}
-      },
-      "required": ["duration", "temperature", "endpoint"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_conditions_6": {
-      "type": "object",
-      "properties": {
-        "temperature_qualifier": {"type": "string"},
-        "repeat_count": {"type": "null"},
-        "repeat_qualifier": {"type": "string"},
-        "endpoint": {"type": "string"},
-        "endpoint_test_method": {"type": "null"}
-      },
-      "required": ["temperature_qualifier", "repeat_count", "repeat_qualifier", "endpoint", "endpoint_test_method"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_conditions_7": {
-      "type": "object",
-      "properties": {
-        "temperature": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "duration": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "pressure": {"type": "null"},
-        "pressure_qualifier": {"type": "string"}
-      },
-      "required": ["temperature", "duration", "pressure", "pressure_qualifier"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_conditions_atmosphere_streams": {
-      "type": "object",
-      "properties": {
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "composition": {"type": "null"},
-        "flow_rate": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"}
-      },
-      "required": ["entity_id", "composition", "flow_rate"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_conditions_temperature_by_sample": {
-      "type": "object",
-      "propertyNames": {"type": "string", "minLength": 1, "maxLength": 128},
-      "additionalProperties": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"}
-    },
-    "synthesis_routes_operations_dissolution_and_mixing": {
-      "type": "object",
-      "properties": {
-        "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sequence": {"type": "integer", "minimum": 1},
-        "operation_type": {"type": "string"},
-        "operation_labels": {"type": "array", "items": {"type": "string"}},
-        "input_sample_state_ids": {"type": "array", "items": {"type": "string"}},
-        "output_intermediate_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "reagent_uses": {
-          "type": "array",
-          "items": {
-            "anyOf": [{"$ref": "#/$defs/synthesis_routes_operations_reagent_uses"}, {"$ref": "#/$defs/synthesis_routes_operations_reagent_uses_2"}]
-          }
-        },
-        "conditions": {"$ref": "#/$defs/synthesis_routes_operations_conditions"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["operation_id", "sequence", "operation_type", "operation_labels", "input_sample_state_ids", "output_intermediate_id", "reagent_uses", "conditions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_reagent_uses": {
-      "type": "object",
-      "properties": {
-        "reagent_use_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "role": {"type": "string"},
-        "amount": {"$ref": "#/$defs/chemical_entities_purity"}
-      },
-      "required": ["reagent_use_id", "entity_id", "role", "amount"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_reagent_uses_2": {
-      "type": "object",
-      "properties": {
-        "reagent_use_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "role": {"type": "string"},
-        "amount": {"type": "null"},
-        "ratio": {"$ref": "#/$defs/synthesis_routes_operations_reagent_uses_ratio"}
-      },
-      "required": ["reagent_use_id", "entity_id", "role", "amount", "ratio"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_reagent_uses_3": {
-      "type": "object",
-      "properties": {
-        "reagent_use_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "role": {"type": "string"},
-        "concentration": {"$ref": "#/$defs/sample_batches_factor_assignments_activation_temperature"},
-        "amount": {"type": "null"}
-      },
-      "required": ["reagent_use_id", "entity_id", "role", "concentration", "amount"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_reagent_uses_4": {
-      "type": "object",
-      "properties": {
-        "reagent_use_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "role": {"type": "string"},
-        "amount": {"type": "null"}
-      },
-      "required": ["reagent_use_id", "entity_id", "role", "amount"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_reagent_uses_ratio": {
-      "type": "object",
-      "properties": {
+        "unit_raw": {"type": ["string", "null"]},
+        "operator": {"type": "string"},
         "basis": {"type": "string"},
-        "numerator_entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "denominator_entity_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "per_sample_values": {"$ref": "#/$defs/synthesis_routes_operations_reagent_uses_ratio_per_sample_values"}
+        "uncertainty": {"type": "number", "minimum": 0},
+        "normalized_value": {"type": "number"},
+        "unit_canonical": {"type": "string", "minLength": 1}
       },
-      "required": ["basis", "numerator_entity_id", "denominator_entity_id", "per_sample_values"],
+      "required": ["kind", "raw_text", "value", "unit_raw"],
+      "dependentRequired": {"normalized_value": ["unit_canonical"], "unit_canonical": ["normalized_value"]},
       "additionalProperties": false
     },
-    "synthesis_routes_operations_reagent_uses_ratio_per_sample_values": {
-      "type": "object",
-      "propertyNames": {"type": "string", "minLength": 1, "maxLength": 128},
-      "additionalProperties": {"type": "number"}
-    },
-    "synthesis_routes_operations_reported": {
+    "paper_range": {
       "type": "object",
       "properties": {
-        "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sequence": {"type": "integer", "minimum": 1},
-        "operation_type": {"type": "string", "minLength": 1},
-        "operation_labels": {"type": "array", "items": {"type": "string"}},
-        "input_intermediate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "input_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "output_intermediate_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "output_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true},
-        "reagent_uses": {
-          "type": "array",
-          "items": {
-            "anyOf": [{"$ref": "#/$defs/synthesis_routes_operations_reagent_uses"}, {"$ref": "#/$defs/synthesis_routes_operations_reagent_uses_2"}, {"$ref": "#/$defs/synthesis_routes_operations_reagent_uses_3"}, {"$ref": "#/$defs/synthesis_routes_operations_reagent_uses_4"}]
-          }
+        "kind": {"const": "range"},
+        "raw_text": {"type": "string", "minLength": 1},
+        "minimum": {"type": "number"},
+        "maximum": {"type": "number"},
+        "unit_raw": {"type": ["string", "null"]},
+        "operator": {"type": "string"},
+        "basis": {"type": "string"},
+        "range_semantics": {"type": "string"},
+        "normalized_value": {
+          "type": "object",
+          "properties": {
+            "minimum": {"type": "number"},
+            "maximum": {"type": "number"}
+          },
+          "required": ["minimum", "maximum"],
+          "additionalProperties": false
         },
-        "equipment": {"type": "string"},
-        "simultaneous_processes": {"type": "boolean"},
-        "conditions": {"$ref": "#/$defs/reported_parameters"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
+        "unit_canonical": {"type": "string", "minLength": 1}
       },
-      "required": ["operation_id", "sequence", "operation_type", "evidence_ids"],
-      "oneOf": [{"required": ["output_intermediate_id"]}, {"required": ["output_sample_state_ids"]}],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_stirring": {
-      "type": "object",
-      "properties": {
-        "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sequence": {"type": "integer", "minimum": 1},
-        "operation_type": {"type": "string"},
-        "input_intermediate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "output_intermediate_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "conditions": {
-          "anyOf": [{"$ref": "#/$defs/synthesis_routes_operations_conditions_2"}, {"$ref": "#/$defs/synthesis_routes_operations_conditions_3"}]
-        },
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["operation_id", "sequence", "operation_type", "input_intermediate_ids", "output_intermediate_id", "conditions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_thermal_treatment": {
-      "type": "object",
-      "properties": {
-        "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sequence": {"type": "integer", "minimum": 1},
-        "operation_type": {"type": "string"},
-        "operation_labels": {"type": "array", "items": {"type": "string"}},
-        "simultaneous_processes": {"type": "boolean"},
-        "input_intermediate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "output_intermediate_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "equipment": {"type": "string"},
-        "conditions": {"$ref": "#/$defs/synthesis_routes_operations_conditions_4"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["operation_id", "sequence", "operation_type", "operation_labels", "simultaneous_processes", "input_intermediate_ids", "output_intermediate_id", "equipment", "conditions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "synthesis_routes_operations_vacuum_drying": {
-      "type": "object",
-      "properties": {
-        "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "sequence": {"type": "integer", "minimum": 1},
-        "operation_type": {"type": "string"},
-        "input_intermediate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "output_sample_state_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "conditions": {"$ref": "#/$defs/synthesis_routes_operations_conditions_7"},
-        "evidence_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1, "maxLength": 128},
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": ["operation_id", "sequence", "operation_type", "input_intermediate_ids", "output_sample_state_ids", "conditions", "evidence_ids"],
-      "additionalProperties": false
-    },
-    "validation_issues": {
-      "type": "object",
-      "properties": {
-        "issue_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "severity": {"type": "string"},
-        "issue_type": {"type": "string"},
-        "record_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-        "covered_by_candidate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "minItems": 1, "uniqueItems": true},
-        "message": {"type": "string"}
-      },
-      "required": ["issue_id", "severity", "issue_type", "record_ids", "message"],
-      "additionalProperties": false
-    },
-    "validation_issues_2": {
-      "type": "object",
-      "properties": {
-        "issue_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "severity": {"type": "string"},
-        "issue_type": {"type": "string"},
-        "record_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "message": {"type": "string"}
-      },
-      "required": ["issue_id", "severity", "issue_type", "record_id", "message"],
-      "additionalProperties": false
-    },
-    "validation_issues_3": {
-      "type": "object",
-      "properties": {
-        "issue_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "severity": {"type": "string"},
-        "issue_type": {"type": "string"},
-        "message": {"type": "string"}
-      },
-      "required": ["issue_id", "severity", "issue_type", "message"],
+      "required": ["kind", "raw_text", "minimum", "maximum", "unit_raw"],
+      "dependentRequired": {"normalized_value": ["unit_canonical"], "unit_canonical": ["normalized_value"]},
       "additionalProperties": false
     }
   }
