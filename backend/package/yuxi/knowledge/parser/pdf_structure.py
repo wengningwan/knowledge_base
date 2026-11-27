@@ -400,13 +400,16 @@ def _delimit_caption_math(content: str) -> str:
 
 
 def _delimit_pipe_row(line: str) -> str:
-    """Markdown 管道表格行逐格定界：公式格整格包裹，纯叙述格做 token 片段。"""
+    """Markdown 管道表格行逐格定界：公式格整格包裹，<br>/换行连排格分段定界，
+    纯叙述格做 token 片段。"""
     cells = line.split("|")
     for index, cell in enumerate(cells):
         text = cell.strip()
         if not text or set(text) <= {"-", ":", " "}:
             continue
-        if _math_cell_line(text):
+        if _TABLE_CELL_SPLIT.search(text) and "$" not in text:
+            cells[index] = cell.replace(text, _delimit_table_parts(_TABLE_CELL_SPLIT.split(text)), 1)
+        elif _math_cell_line(text):
             cells[index] = cell.replace(text, f"${text}$", 1)
         elif "$" not in text and not _MATH_COMMAND_TOKEN.search(text):
             cells[index] = _MATH_FRAGMENT.sub(_wrap_math_fragment, cell)
@@ -450,7 +453,9 @@ def _standalone_math_line(line: str) -> bool:
 
 
 def _prose_run(line: str) -> bool:
-    """剥除命令、上下标与标点后存在连续 3 个普通英文单词即正文叙述。"""
+    """剥除命令、上下标、HTML 标签与标点后存在连续 3 个普通英文单词即正文叙述；
+    <br> 等标签名不充当英文词，避免连排公式格被误判为叙述。"""
+    line = re.sub(r"<[^>]+>", " ", line)
     stripped = re.sub(r"[^\w\s]", " ", _MATH_SCRIPT_TOKEN.sub(" ", re.sub(r"\\[A-Za-z]+", " ", line)))
     run = 0
     for token in stripped.split():
@@ -475,11 +480,13 @@ _TABLE_CELL_SPLIT = re.compile(r"(<br\s*/?>)|(\n)")
 
 
 def _delimit_table_math(content: str) -> str:
-    """table 块 Markdown 投影内为单元格裸公式补行内 $ 定界；块内容保持原 HTML。
+    """table 块 Markdown 投影内为单元格裸公式补行内 $ 定界；块内容保持原文。
 
-    <sup>/<sub> 引用是浏览器原生上下标，占位保护后参与判定；含图片等其它子标签、
-    $ 或 & 的单元格整格跳过。判定顺序：整格 → <br>/换行分段 → token 片段。
+    HTML 表格按 <td>/<th> 单元格处理；识别补入的 Markdown 管道表格逐行走
+    _delimit_pipe_row。<sup>/<sub> 引用是浏览器原生上下标，占位保护后参与判定；
+    含图片等其它子标签、$ 或 & 的单元格整格跳过。判定顺序：整格 → <br>/换行分段 → token 片段。
     """
+
     def wrap_cell(match: re.Match) -> str:
         open_tag, body, close_tag = match.groups()
         placeholders: dict[str, str] = {}
@@ -505,6 +512,12 @@ def _delimit_table_math(content: str) -> str:
             result = result.replace(key, html)
         return f"{open_tag}{result}{close_tag}"
 
+    if not _TABLE_CELL_RE.search(content):
+        # 管道表格（识别补入 format=markdown）：仅处理管道行，未知形态原样保留。
+        return "\n".join(
+            _delimit_pipe_row(line) if _PIPE_ROW.match(line.strip()) else line
+            for line in content.split("\n")
+        )
     return _TABLE_CELL_RE.sub(wrap_cell, content)
 
 
