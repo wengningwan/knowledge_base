@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 
 STRUCTURE_VERSION = 3
 READABLE_STRUCTURE_VERSIONS = (2, STRUCTURE_VERSION)
-STRUCTURE_PROMPT_VERSION = "paper-general-v13"
+STRUCTURE_PROMPT_VERSION = "paper-three-rounds-v1"
 REGISTRIES = {
     "evidence": "evidence_id",
     "chemical_entities": "entity_id",
@@ -57,30 +57,57 @@ def output_schema() -> dict:
 def stage_schema(fields: tuple[str, ...]) -> dict:
     """从导出契约派生阶段输出，程序负责生成派生字段。"""
     schema = output_schema()
-    properties = {
-        name: schema["properties"][name] for name in fields if name not in {"evidence_attributions", "table_mappings"}
-    }
-    if "table_mappings" in fields:
-        heading = {"type": "string", "minLength": 1}
-        columns = {"type": "array", "items": heading, "uniqueItems": True}
-        properties["table_mappings"] = {"type": "array", "items": {
-            "type": "object", "additionalProperties": False,
-            "required": ["run_id", "evidence_ids", "condition_columns", "result_columns"],
-            "properties": {
-                "run_id": {"$ref": "#/$defs/record_identifier"},
-                "evidence_ids": {"$ref": "#/$defs/evidence_identifiers", "maxItems": 1},
-                "entity_id": {"$ref": "#/$defs/record_identifier"},
-                "metric_column": heading, "sample_column": heading,
-                "condition_columns": columns, "result_columns": {**columns, "minItems": 1}, "ignored_columns": columns,
-            },
-        }}
-    if "evidence_attributions" in fields:
-        evidence_name = schema["properties"]["evidence"]["items"]["$ref"].rsplit("/", 1)[-1]
-        evidence_fields = schema["$defs"][evidence_name]["properties"]
-        properties["evidence_attributions"] = {"type": "array", "items": {
+    nonempty_text = {"type": "string", "minLength": 1}
+    field_names = {"type": "array", "items": nonempty_text}
+    record_id_ref = {"$ref": "#/$defs/record_identifier"}
+    evidence_ids_ref = {"$ref": "#/$defs/evidence_identifiers"}
+    evidence_fields = schema["$defs"]["evidence"]["properties"]
+    internal_items = {
+        "evidence_attributions": {
             "type": "object", "required": ["evidence_id", "provenance_scope"], "additionalProperties": False,
             "properties": {name: evidence_fields[name] for name in ("evidence_id", "provenance_scope")},
-        }}
+        },
+        "run_plans": {
+            "type": "object", "required": ["run_type", "method", "evidence_ids", "results"],
+            "additionalProperties": False,
+            "properties": {
+                "run_type": nonempty_text,
+                "method": nonempty_text,
+                "evidence_ids": evidence_ids_ref,
+                "results": {"type": "array", "items": {
+                    "type": "object", "required": ["evidence_ids", "fields"], "additionalProperties": False,
+                    "properties": {
+                        "evidence_ids": {**evidence_ids_ref, "maxItems": 1},
+                        "fields": {**field_names, "minItems": 1},
+                        "expected_count": {"type": "integer", "minimum": 1},
+                    },
+                }},
+            },
+        },
+        "review_targets": {
+            "type": "object", "required": ["message", "evidence_ids"], "additionalProperties": False,
+            "properties": {"message": nonempty_text, "evidence_ids": evidence_ids_ref},
+        },
+        "review_decisions": {
+            "type": "object", "required": ["check_id", "status", "message", "evidence_ids"],
+            "additionalProperties": False,
+            "properties": {
+                "check_id": record_id_ref,
+                "status": {"enum": ["confirmed", "corrected", "not_reported", "unavailable", "uncertain"]},
+                "message": nonempty_text,
+                "evidence_ids": evidence_ids_ref,
+                "record_ids": {"$ref": "#/$defs/record_identifiers"},
+                "fields": field_names,
+            },
+        },
+    }
+    properties = {
+        name: (
+            {"type": "array", "items": internal_items[name]}
+            if name in internal_items else schema["properties"][name]
+        )
+        for name in fields
+    }
     definitions = {}
     derived_fields = {
         "paper_run": {"series_set_ids"},
@@ -91,15 +118,20 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
         "paper_scalar": {"normalized_value", "unit_canonical"},
         "paper_range": {"normalized_value", "unit_canonical"},
     }
-    stage_fields = {
-        "paper_operation_conditions": {"temperature_factor": {"type": "string", "minLength": 1}},
-        "paper_reagent_ratio": {"sample_factor": {"type": "string", "minLength": 1}},
+    source_cell = {
+        "type": "object", "required": ["evidence_id", "row", "column"], "additionalProperties": False,
+        "properties": {
+            "evidence_id": record_id_ref,
+            "row": {"type": "integer", "minimum": 1},
+            "column": {"type": "integer", "minimum": 0},
+        },
     }
-    if "validation_issues" in properties:
-        issue_name = properties["validation_issues"]["items"]["$ref"].rsplit("/", 1)[-1]
-        stage_fields[issue_name] = {"covered_by_candidate_ids": {
-            "type": "array", "items": {"type": "string"}, "uniqueItems": True,
-        }}
+    stage_fields = {
+        "paper_operation_conditions": {"temperature_factor": nonempty_text},
+        "paper_reagent_ratio": {"sample_factor": nonempty_text},
+        "observations_quantitative_measurement": {"source_cell": source_cell},
+        "paper_observation_member": {"source_cell": source_cell},
+    }
 
     def include(value):
         """递归收集所选字段引用的定义。"""
@@ -214,7 +246,11 @@ def filter_stage_records(value: dict, schema: dict, stage: str, source_ids: set[
                                 {"collection": name, "record": item}))
             elif name == "evidence_attributions" and item["evidence_id"] not in source_ids:
                 notices.append(("invalid_evidence_attribution", f"{location}不能定位到本次原文。"))
-            elif name == "observations" and not item["observation_id"].startswith(f"obs:{stage}:"):
+            elif (
+                name == "observations"
+                and not stage.startswith(("fill-", "review-"))
+                and not item["observation_id"].startswith(f"obs:{stage}:")
+            ):
                 notices.append(("invalid_observation_id", f"{location}的编号不属于当前观测阶段。",
                                 {"collection": name, "record": item}))
             else:
@@ -259,7 +295,13 @@ def validate_references(record: dict) -> None:
 
 def evidence_references(value: object) -> set[str]:
     """收集需从本次解析正文物化的出处编号。"""
-    return {ref for key, values in _fields(value) if key == "evidence_ids" for ref in values}
+    refs = set()
+    for key, child in _fields(value):
+        if key == "evidence_ids":
+            refs.update(child)
+        elif key == "source_cell":
+            refs.add(child["evidence_id"])
+    return refs
 
 
 def _reference_problems(record: dict, *, notices: list[Notice] | None = None) -> dict[RecordPosition, str]:

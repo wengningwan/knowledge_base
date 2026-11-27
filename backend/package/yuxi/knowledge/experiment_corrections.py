@@ -5,43 +5,9 @@ from __future__ import annotations
 from copy import deepcopy
 
 
-def project_rejected_corrections(record: dict, sources: dict, rejected: list[dict]) -> list[dict]:
-    """保留被拒候选的明确字段，不猜测未知样品或出处。"""
-    refs = {ref: f"e{index}" for index, ref in enumerate(sources, 1)}
-    tasks = []
-    for entry in rejected:
-        candidate = entry["record"]
-        if not isinstance(candidate, dict):
-            continue
-        collection = entry["collection"]
-        if collection == "observations":
-            for index, (metric, result) in enumerate(_candidate_values(candidate)):
-                fields = _candidate_fields(candidate, record, refs)
-                fields.update(metric=_text(metric), result=_text(result))
-                task = {
-                    "task_id": f'{entry["issue_id"]}:{index}', "kind": "candidate", "fields": fields,
-                    "reason": "模型提取的结果或归属未通过校验，请对照原文确认。",
-                    "detail": entry["message"],
-                }
-                if entry["issue_type"] == "unverified_observation" and candidate["observation_type"] == "quantitative_measurement":
-                    task.update(candidate_id=candidate["observation_id"], run_id=candidate["run_id"])
-                tasks.append(task)
-        elif collection == "synthesis_routes":
-            operations = candidate.get("operations")
-            for index, operation in enumerate(operations if isinstance(operations, list) else []):
-                if not isinstance(operation, dict):
-                    continue
-                fields = _candidate_fields({**candidate, **operation}, record, refs)
-                fields.update(kind="preparation", metric=_text(operation.get("operation_type")))
-                tasks.append({
-                    "task_id": f'{entry["issue_id"]}:{index}', "kind": "candidate", "fields": fields,
-                    "reason": "这条制备操作需要确认样品或条件。", "detail": entry["message"],
-                })
-    return tasks
-
-
 def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: dict[str, dict]) -> list[dict]:
     """从同版本候选、缺失信息及人工回执读取当前待办。"""
+    third_round = coverage.get("review_source") == "third_round"
     tasks = deepcopy(coverage.get("correction_tasks", []))
     numeric_candidates = {task["candidate_id"]: task for task in tasks if "candidate_id" in task}
     resolutions = coverage.get("manual_review", {}).get("resolutions", {})
@@ -65,6 +31,8 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
         ) for item in canonical.get(collection, [])
     }
     for item in canonical.get("missing_information", []):
+        if third_round:
+            continue
         linked = linked_records.get(item["record_id"], {})
         missing_sources = [refs[ref] for ref in item.get("evidence_ids", []) if ref in refs]
         for index, field in enumerate(item["fields"]):
@@ -83,6 +51,8 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
             })
     for item in canonical.get("validation_issues", []):
         if item["issue_id"].startswith(("issue:filtered:", "issue:pagination:")):
+            continue
+        if third_round and not item["issue_id"].startswith("issue:review:"):
             continue
         ids = item.get("record_ids") or ([item["record_id"]] if item.get("record_id") else [])
         covered = coverage.get("numeric_issue_candidates", {}).get(item["issue_id"], [])
@@ -106,8 +76,7 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
             *(refs[ref] for ref in ids if ref in refs),
             *(refs[ref] for parent in linked for ref in parent.get("evidence_ids", []) if ref in refs),
         ]))[:32]
-        related = [candidate for candidate in records.values()
-                   if candidate.get("canonical_id") in ids]
+        related = [] if third_round else [candidate for candidate in records.values() if candidate.get("canonical_id") in ids]
         for candidate in related or [None]:
             related_fields = {key: candidate[key] for key in fields} if candidate else fields
             related_fields["evidence_ids"] = list(dict.fromkeys([
@@ -192,42 +161,6 @@ def _candidate_fields(candidate: dict, record: dict, refs: dict) -> dict:
             refs[ref] for ref in evidence_ids if isinstance(ref, str) and ref in refs
         ))[:32],
     }
-
-
-def _candidate_values(candidate: dict):
-    """读取尚未通过格式校验的结果，跳过不可解释的嵌套结构。"""
-    kind = candidate.get("observation_type", "")
-    results = candidate.get("results")
-    if isinstance(results, dict):
-        for metric, value in results.items():
-            yield metric, value
-    elif isinstance(results, list):
-        for value in results:
-            if isinstance(value, str):
-                yield kind, value
-            elif isinstance(value, dict):
-                if "binding_energy_eV" in value:
-                    yield value.get("assignment") or kind, {"value": value["binding_energy_eV"], "unit": "eV"}
-                else:
-                    metric = value.get("metric_id") or value.get("entity_id") or value.get("peak_name") or kind
-                    yield metric, value.get("value", value.get("position", value.get("result", value)))
-    found = False
-    for key in (
-        "value", "loading", "selectivity", "result", "reported_observation", "reported_order", "qualitative_result",
-        "signed_value_from_figure", "magnitude_reported_in_prose", "interaction_distance_from_figure",
-    ):
-        if key in candidate:
-            found = True
-            metric = candidate.get("metric_id") or (
-                kind if key in {"value", "result", "loading", "selectivity"} else key
-            )
-            yield metric or key, candidate[key]
-    written = candidate.get("qualitative_results")
-    for value in written if isinstance(written, list) else []:
-        found = True
-        yield kind, value
-    if not results and not found and candidate.get("metric_id"):
-        yield candidate["metric_id"], ""
 
 
 def _text(value) -> str:
