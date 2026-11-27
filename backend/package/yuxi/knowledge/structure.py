@@ -33,7 +33,8 @@ from yuxi.knowledge.adsorption_review import filter_curve_points, filter_observa
 from yuxi.knowledge.chunking.source import SourceDocument
 from yuxi.knowledge.experiment_corrections import project_rejected_corrections
 from yuxi.knowledge.structure_tables import Span
-from yuxi.models.chat import select_model
+from yuxi.knowledge.table_observations import project_table_observations, table_columns
+from yuxi.models.chat import ModelRequestError, select_model
 from yuxi.services.pdf_model_execution import InvalidPdfModelResponse, PdfModelExecutor, run_pdf_workers
 from yuxi.utils.datetime_utils import utc_now
 from yuxi.utils.logging_config import logger
@@ -70,7 +71,8 @@ async def extract_paper_record(
     source_input = {
         ref: {"evidence_id": ref, "pdf_page": item["page"], "section": item["section"],
               "location": item["location"], "origin": item["origin"], "text": item["quote"],
-              **({"figure_text": item["figure_text"]} if "figure_text" in item else {})}
+              **({"figure_text": item["figure_text"]} if "figure_text" in item else {}),
+              **({"table_columns": columns} if (columns := table_columns(item["quote"])) else {})}
         for ref, item in sources.items()
     }
 
@@ -82,7 +84,26 @@ async def extract_paper_record(
         }
         if stage == "registry":
             payload["pdf_first_page"] = pages[0][:16_000]
-        return await _request_stage(executor, control, stage, stage_schema(fields), instruction, payload)
+        try:
+            return await _request_stage(executor, control, stage, stage_schema(fields), instruction, payload)
+        except ModelRequestError as error:
+            phase = {
+                "registry": "论文与样品登记",
+                "runs": "实验与曲线登记",
+                "quality": "全文核对",
+            }.get(stage, "实验观测抽取")
+            reason = {
+                "credentials_rejected": "模型供应商拒绝了当前凭据",
+                "rate_limited": "模型供应商触发限流",
+                "connection_failed": "无法连接模型服务",
+                "provider_timeout": "模型服务响应超时",
+                "provider_unavailable": "模型服务暂时不可用",
+            }.get(error.reason, "模型服务请求失败")
+            logger.warning(
+                "[knowledge_structure] task_id={} batch_id={} model_request_failed reason={} http_status={}",
+                control.task_id, stage, error.reason, error.http_status,
+            )
+            raise RuntimeError(f"结构化在{phase}阶段中止。{reason}。") from error
 
     await control.set_progress(10, "抽取论文、化学实体、样品和制备路线")
     registry, registry_notices = await extract(
@@ -135,6 +156,7 @@ async def extract_paper_record(
         "逐节登记原文实际报告的实验、计算、拟合或分析，run_type、technique、method及series_kind使用原文名称。"
         "保持不同方法、对象、变量和取值基准的区别，不为了套用某类论文而改写实验含义。"
         "只登记实验方法、对象和公共条件。随样品或数据点变化的条件与测得结果留给观测阶段。"
+        "表格报告的检测范围、测量均值、去除率等测得值属于观测结果，不能填入实验条件。"
         "已在制备路线登记的操作与参数留在路线，另外报告的独立测量仍登记实验。"
         "仅在原文明确适用时继承公共条件，未知条件省略。方法和曲线类型使用简短原文名称。"
         "每项实验的 evidence_ids 必须覆盖方法及该实验全部结果段、数表、表头和图注，不只引用方法。"
@@ -143,6 +165,7 @@ async def extract_paper_record(
         "拟合记录保留模型名、原文公式、实际符号的定义、参数值、质量和缺失原因。只在论文使用该模型时填写。"
         "保留实际使用的仪器、测前处理、分析方法和计算设置。"
         "曲线登记所属实验、图号、轴、各线的条件和证据。图轴与正文不一致时分别保留轴定义和原文编号，标记 needs_review。"
+        "曲线有数表时引用对应的数表证据，轴的 quantity 使用原表列名中的量名，unit 单独保留原单位。"
         "figure_text 是同次解析的图内识别文字，只用明确标注。无法确认的轴数量和单位填 null，标记 unknown 并保留图号。"
         "有不同支路且存在原文数表时，各支路独立登记成员。"
         "仅在原文表格给出明确配对的坐标值时填写 data_points，点的出处需包含横列、纵列和同一行。只有图片时填 null。",
@@ -174,9 +197,17 @@ async def extract_paper_record(
         """并发提取独立观测组，串行记录已处理组数。"""
         index, task = item
         result = await extract(
-            f"observations-{index}", ("observations",),
+            f"observations-{index}", ("observations", "table_mappings"),
             "只为catalog.target_run_ids中的目标实验生成观测，其他实验只用于追溯输入、物种和样品。"
             f"本阶段每条 observation_id 使用 obs:observations-{index}: 前缀且互不重复。"
+            "当数表证据带 table_columns 且整表归属一个目标实验时，优先返回一条 table_mappings。"
+            "evidence_ids 只引用这一张表的编号，且该编号必须在目标实验的 evidence_ids 中。"
+            "result_columns 列出所有报告结果的原表列名，condition_columns 列出区分行的实验变量列名。"
+            "若指标名称写在单独一列，填 metric_column。若有一列是已登记样品的名称，填 sample_column。"
+            "ignored_columns 可列出明确不属于待提取数据的列，如行序号、检测方法和引用编号。"
+            "只在归属明确时填写 entity_id。所有列名逐字复制 table_columns，一列只指定一种用途。"
+            "同一张表只登记一次。程序按行取数，observations 中不要重复抄写已映射的结果列。"
+            "无明确整表归属或表头不简单时，按下述观测规则处理有据可查的单项数据。"
             "每个样品与数值必须在引用原文中有对应关系。表格引用包含数据和表头的块。"
             "表头用实验变量区分数据时，以原文表头名称为条件键，保留单元格的值，数值单位按表头登记。"
             "所有指标都使用原文指标名作为metric_id。表格结果使用对应表头的指标名，单位单独填写。"
@@ -206,13 +237,21 @@ async def extract_paper_record(
 
     if tasks:
         await run_pdf_workers(enumerate(tasks, 1), extract_observation_group, concurrency)
+    table_mappings = []
     for index in range(1, group_count + 1):
         result, group_notices = observation_results[index]
         record["observations"].extend(result["observations"])
+        table_mappings.extend(result["table_mappings"])
         notices.extend(group_notices)
     filter_record_references(record, notices)
     measurement_values = filter_observation_values(record, sources, notices)
     filter_record_references(record, notices)
+    observation_count = len(record["observations"])
+    table_issues = project_table_observations(record, sources, table_mappings, measurement_values)
+    logger.info(
+        "[knowledge_structure] task_id={} table_mappings={} table_observations={} table_review_issues={}",
+        control.task_id, len(table_mappings), len(record["observations"]) - observation_count, len(table_issues),
+    )
     conditions_by_run = {run["run_id"]: run["conditions"] for run in record["experiment_runs"]}
     for observation in record["observations"]:
         common = conditions_by_run[observation["run_id"]]
@@ -261,6 +300,7 @@ async def extract_paper_record(
         elif {"this_work", "cited_work"} <= scopes or "mixed" in scopes:
             evidence["provenance_scope"] = "mixed"
     record.update(quality)
+    record["validation_issues"].extend(table_issues)
     notices.extend(quality_notices)
     filter_record_references(record, notices)
     numeric_issue_candidates = {
@@ -295,7 +335,7 @@ async def extract_paper_record(
         })
         if len(notice) == 3:
             rejected.append({**notice[2], "issue_id": issue_id, "issue_type": kind, "message": message})
-    partial_result = partial_source or bool(notices) or any(
+    partial_result = partial_source or bool(notices or table_issues) or any(
         item["issue_type"] in {"missed_experiment", "missing_numeric_observation"}
         for item in record["validation_issues"]
     )
@@ -495,6 +535,10 @@ async def _request_stage(executor, control, stage, schema, instruction, payload)
                             {"collection": "observations", "record": observation},
                         ))
                 result[0]["observations"] = kept
+                mappings = result[0]["table_mappings"]
+                result[0]["table_mappings"] = [mapping for mapping in mappings if mapping["run_id"] in targets]
+                if len(mappings) != len(result[0]["table_mappings"]):
+                    result[1].append(("invalid_table_scope", f"{stage} 的数表映射引用了本组以外的实验。"))
             if stage == "registry" and attempt == 1:
                 # 样品身份在供后续阶段引用前重试一次，第二次仍保留既有逐条过滤。
                 validate_references({

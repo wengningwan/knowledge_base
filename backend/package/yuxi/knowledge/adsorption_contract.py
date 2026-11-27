@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 
 STRUCTURE_VERSION = 3
 READABLE_STRUCTURE_VERSIONS = (2, STRUCTURE_VERSION)
-STRUCTURE_PROMPT_VERSION = "paper-general-v12"
+STRUCTURE_PROMPT_VERSION = "paper-general-v13"
 REGISTRIES = {
     "evidence": "evidence_id",
     "chemical_entities": "entity_id",
@@ -57,7 +57,23 @@ def output_schema() -> dict:
 def stage_schema(fields: tuple[str, ...]) -> dict:
     """从导出契约派生阶段输出，程序负责生成派生字段。"""
     schema = output_schema()
-    properties = {name: schema["properties"][name] for name in fields if name != "evidence_attributions"}
+    properties = {
+        name: schema["properties"][name] for name in fields if name not in {"evidence_attributions", "table_mappings"}
+    }
+    if "table_mappings" in fields:
+        heading = {"type": "string", "minLength": 1}
+        columns = {"type": "array", "items": heading, "uniqueItems": True}
+        properties["table_mappings"] = {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["run_id", "evidence_ids", "condition_columns", "result_columns"],
+            "properties": {
+                "run_id": {"$ref": "#/$defs/record_identifier"},
+                "evidence_ids": {"$ref": "#/$defs/evidence_identifiers", "maxItems": 1},
+                "entity_id": {"$ref": "#/$defs/record_identifier"},
+                "metric_column": heading, "sample_column": heading,
+                "condition_columns": columns, "result_columns": {**columns, "minItems": 1}, "ignored_columns": columns,
+            },
+        }}
     if "evidence_attributions" in fields:
         evidence_name = schema["properties"]["evidence"]["items"]["$ref"].rsplit("/", 1)[-1]
         evidence_fields = schema["$defs"][evidence_name]["properties"]
