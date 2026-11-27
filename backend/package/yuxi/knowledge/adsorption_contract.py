@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 
 STRUCTURE_VERSION = 3
 READABLE_STRUCTURE_VERSIONS = (2, STRUCTURE_VERSION)
-STRUCTURE_PROMPT_VERSION = "paper-two-rounds-v1"
+STRUCTURE_PROMPT_VERSION = "paper-two-rounds-v2"
 REGISTRIES = {
     "evidence": "evidence_id",
     "chemical_entities": "entity_id",
@@ -62,6 +62,18 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
     record_id_ref = {"$ref": "#/$defs/record_identifier"}
     evidence_ids_ref = {"$ref": "#/$defs/evidence_identifiers"}
     evidence_fields = schema["$defs"]["evidence"]["properties"]
+    table_index = {"type": "integer", "minimum": 0}
+    fit_target = {"enum": ["model_parameters", "fit_quality_summary"]}
+    planned_field = {
+        "type": "object", "required": ["target", "name"], "additionalProperties": False,
+        "properties": {
+            "target": {"enum": [
+                "conditions", "parameter_definitions", "model_parameters", "fit_quality_summary",
+                "observations", "series_sets", "mechanism_claims",
+            ]},
+            "name": nonempty_text, "subject": nonempty_text, "raw_text": nonempty_text,
+        },
+    }
     internal_items = {
         "evidence_attributions": {
             "type": "object", "required": ["evidence_id", "provenance_scope"], "additionalProperties": False,
@@ -78,14 +90,19 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
                     "type": "object", "required": ["evidence_ids", "fields"], "additionalProperties": False,
                     "properties": {
                         "evidence_ids": {**evidence_ids_ref, "maxItems": 1},
-                        "fields": {**field_names, "minItems": 1},
+                        "fields": {"type": "array", "minItems": 1, "uniqueItems": True, "items": planned_field},
                     },
                 }},
             },
         },
         "review_targets": {
-            "type": "object", "required": ["message", "evidence_ids"], "additionalProperties": False,
-            "properties": {"message": nonempty_text, "evidence_ids": evidence_ids_ref},
+            "type": "object", "required": ["message", "evidence_ids", "kind"], "additionalProperties": False,
+            "properties": {
+                "message": nonempty_text, "evidence_ids": evidence_ids_ref, "kind": {"enum": ["gap", "conflict"]},
+                "run_id": record_id_ref, "field": planned_field,
+            },
+            "if": {"properties": {"kind": {"const": "gap"}}},
+            "then": {"required": ["run_id", "field"]},
         },
         "table_mappings": {
             "type": "object", "required": ["run_id", "evidence_ids", "condition_columns", "result_columns"],
@@ -96,6 +113,23 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
                 "sample_scope": {"enum": ["experiment", "state"]},
                 "condition_columns": field_names, "result_columns": {**field_names, "minItems": 1},
                 "ignored_columns": field_names, "metric_column": nonempty_text, "sample_column": nonempty_text,
+                "curve_bindings": {"type": "array", "items": {
+                    "type": "object", "required": ["series_set_id", "x_column", "y_column"],
+                    "additionalProperties": False,
+                    "properties": {"series_set_id": record_id_ref, "x_column": table_index, "y_column": table_index,
+                                   "evidence_ids": evidence_ids_ref},
+                }},
+                "row_states": {"type": "array", "items": {
+                    "type": "object", "required": ["row", "sample_state_id", "label"], "additionalProperties": False,
+                    "properties": {
+                        "row": table_index, "sample_state_id": record_id_ref, "label": nonempty_text,
+                        "baseline_row": table_index,
+                    },
+                }},
+                "column_states": {"type": "array", "items": {
+                    "type": "object", "required": ["column", "sample_state_id"], "additionalProperties": False,
+                    "properties": {"column": table_index, "sample_state_id": {"anyOf": [record_id_ref, {"type": "null"}]}},
+                }},
             },
         },
     }
@@ -108,7 +142,7 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
     }
     definitions = {}
     derived_fields = {
-        "paper_run": {"series_set_ids"},
+        "paper_run": {"series_set_ids", "model_parameters", "fit_quality_summary"},
         "paper_series": {"observation_ids"},
         "paper_series_source": {"data_availability"},
         "paper_operation_conditions": {"temperature_by_sample"},
@@ -124,12 +158,22 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
             "column": {"type": "integer", "minimum": 0},
         },
     }
+    source_text = {
+        "type": "object", "required": ["evidence_id", "metric", "quote"], "additionalProperties": False,
+        "properties": {"evidence_id": record_id_ref, "metric": nonempty_text, "quote": nonempty_text,
+                       "subject": nonempty_text},
+    }
+    fit_result = {
+        "type": "object", "required": ["target", "name"], "additionalProperties": False,
+        "properties": {"target": fit_target, "name": nonempty_text},
+    }
+    result_fields = {"source_cell": source_cell, "source_text": source_text, "fit_result": fit_result}
     stage_fields = {
         "paper_state": {"state_factors": {"$ref": "#/$defs/reported_parameters"}},
         "paper_operation_conditions": {"temperature_factor": nonempty_text},
         "paper_reagent_ratio": {"sample_factor": nonempty_text},
-        "observations_quantitative_measurement": {"source_cell": source_cell},
-        "paper_observation_member": {"source_cell": source_cell},
+        "observations_quantitative_measurement": result_fields,
+        "paper_observation_member": result_fields,
     }
 
     def include(value):
@@ -151,6 +195,14 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
                             },
                             "required": [key for key in shape.get("required", []) if key not in optional],
                         }
+                        if name in {"observations_quantitative_measurement", "paper_observation_member"}:
+                            shape = {
+                                **shape,
+                                "dependentRequired": {"source_text": ["value"], "fit_result": ["value"]},
+                                "not": {"required": ["source_cell", "source_text"]},
+                                "if": {"required": ["fit_result"]},
+                                "then": {"anyOf": [{"required": ["source_cell"]}, {"required": ["source_text"]}]},
+                            }
                     definitions[name] = shape
                     include(shape)
             for child in value.values():
@@ -247,8 +299,9 @@ def filter_stage_records(value: dict, schema: dict, stage: str, source_ids: set[
                 notices.append(("invalid_evidence_attribution", f"{location}不能定位到本次原文。"))
             elif (
                 name == "observations"
-                and not stage.startswith("fill-")
-                and not item["observation_id"].startswith(f"obs:{stage}:")
+                and (item["observation_id"].startswith("obs:table:") or (
+                    not stage.startswith("fill-") and not item["observation_id"].startswith(f"obs:{stage}:")
+                ))
             ):
                 notices.append(("invalid_observation_id", f"{location}的编号不属于当前观测阶段。",
                                 {"collection": name, "record": item}))
@@ -298,7 +351,7 @@ def evidence_references(value: object) -> set[str]:
     for key, child in _fields(value):
         if key == "evidence_ids":
             refs.update(child)
-        elif key == "source_cell":
+        elif key in {"source_cell", "source_text"}:
             refs.add(child["evidence_id"])
     return refs
 

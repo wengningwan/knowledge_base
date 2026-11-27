@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 
 from yuxi.knowledge.adsorption_contract import Notice
 from yuxi.knowledge.adsorption_review import Measurement
-from yuxi.knowledge.structure_tables import CellPosition, table_cells
+from yuxi.knowledge.structure_tables import CellPosition, table_cells, table_grid
 
 _NUMBER = re.compile(
     r"(?<![A-Za-z0-9_.])[+-]?(?:(?:\d{1,3}(?: \d{3})+|\d+)(?:\.\d+(?: \d{1,3})*)?|\.\d+)"
@@ -25,29 +25,50 @@ _DIRECT_MEASUREMENT = re.compile(r"实测|测得|实地测量|\bmeasured\b", re.
 _TABLE_CAPTION = re.compile(r"^(?:表\s*|Table\s+)\d+", re.I)
 _CALLOUT = re.compile(r"[=:：]|为|达到|\b(?:is|was|reached)\b", re.I)
 _RESPECTIVE = re.compile(r"分别|\brespectively\b", re.I)
+_PROSE_QUANTITY_LINK = re.compile(
+    r"\s*(?:(?:高达|达到|约为|为|降至|增至|升至|达|等于|=|:|(?:is|was|were|reached|of)\b)\s*)?"
+    r"(?P<operator><=|>=|[<>≤≥≈~≃]|约|approximately\b)?\s*",
+    re.I,
+)
 
 type TableMeasurement = tuple[dict, dict, str, CellPosition]
 
 
 def paper_table_rows(quote: str) -> list[list[str]] | None:
-    """按原文保留单元格顺序，首行为表头，复杂表格返回空列表。"""
+    """按原文保留逻辑表格的行列，待核表格返回空列表。"""
     spans = table_cells(quote, 0, len(quote))
     if spans is None:
         return None
     return [[_visible(quote[start:end]) for start, end in row] for row in spans]
 
 
-def ground_paper_results(record: dict, sources: dict) -> tuple[dict[str, list[Measurement]], list[Notice]]:
+def ground_paper_results(
+    record: dict, sources: dict, subjects_by_run: dict[str, set[str]] | None = None,
+) -> tuple[dict[str, list[Measurement]], list[Notice]]:
     """整理已验证的观测和曲线，并保留需重新核对的候选。"""
-    tables = {ref: rows for ref, source in sources.items() if (rows := paper_table_rows(source["quote"])) is not None}
+    tables = {}
+    for ref, source in sources.items():
+        quote = source["quote"]
+        grid = table_grid(quote, 0, len(quote))
+        if grid is None:
+            continue
+        # 多层表头和合并单元格由整表映射核对。
+        tables[ref] = []
+        if grid.header_rows == 1 and all(
+            origin == (row, column) for row, origins in enumerate(grid.origins) for column, origin in enumerate(origins)
+        ):
+            tables[ref] = [[_visible(quote[start:end]) for start, end in row] for row in grid.rows]
     runs = {item["run_id"]: item for item in record["experiment_runs"]}
+    series_by_id = {item["series_set_id"]: item for item in record["series_sets"]}
     states = {item["sample_state_id"]: item for item in record["sample_states"]}
     batches = {item["sample_batch_id"]: item for item in record["sample_batches"]}
     samples = {}
     for ref, item in states.items():
         batch = batches[item["sample_batch_id"]]
+        state_factors = item.get("state_factors", {})
         samples[ref] = (item["reported_name"], {
-            **batch, "factor_assignments": {**batch["factor_assignments"], **item.get("state_factors", {})},
+            **batch, "state_factors": state_factors,
+            "factor_assignments": {**batch["factor_assignments"], **state_factors},
         })
     notices: list[Notice] = []
     measurements: dict[str, list[Measurement]] = {}
@@ -55,24 +76,28 @@ def ground_paper_results(record: dict, sources: dict) -> tuple[dict[str, list[Me
     kept = []
     for observation in record["observations"]:
         run = runs[observation["run_id"]]
+        subjects = (subjects_by_run or {}).get(run["run_id"], set())
         grouped = "results" in observation
         results = observation["results"] if grouped else [observation]
         member_refs = {ref for result in results for ref in result["evidence_ids"]}
         accepted, proved = [], []
         for result in results:
             try:
-                checked, reason = _ground_result(result, observation, run, samples, sources, tables)
+                checked, reason = _ground_result(result, observation, run, samples, sources, tables, subjects)
             except InvalidOperation:
                 checked, reason = [], "所引数值格式超出可核对范围。"
+            if checked and "fit_result" in result and _fit_series_conflicts(result, observation, run, series_by_id, subjects):
+                checked, reason = [], "正文拟合主体与所关联曲线的目标不一致。"
             if not checked:
-                candidate = {**observation, "results": [result]} if grouped else observation
+                rejected = {key: value for key, value in result.items() if key not in {"source_text", "fit_result"}}
+                candidate = {**observation, "results": [rejected]} if grouped else rejected
                 notices.append((
                     "unverified_observation",
                     f'{observation["observation_id"]} 的 {result["metric_id"]} 无法核对。{reason}',
                     {"collection": "observations", "record": candidate},
                 ))
                 continue
-            member = {key: value for key, value in result.items() if key != "source_cell"}
+            member = {key: value for key, value in result.items() if key != "source_cell" or "fit_result" in result}
             member["evidence_ids"] = list(dict.fromkeys(ref for _, _, _, refs in checked for ref in refs))
             _, raw, cells, _ = checked[0]
             if cells and "value" in member:
@@ -97,7 +122,6 @@ def ground_paper_results(record: dict, sources: dict) -> tuple[dict[str, list[Me
         measurements[observation["observation_id"]] = proved
 
     record["observations"] = kept
-    series_by_id = {series["series_set_id"]: series for series in record["series_sets"]}
     for observation in kept:
         if series := series_by_id.get(observation.get("series_set_id")):
             refs = series["observation_ids"]
@@ -107,11 +131,16 @@ def ground_paper_results(record: dict, sources: dict) -> tuple[dict[str, list[Me
     return measurements, notices
 
 
-def _ground_result(result, observation, run, samples, sources, tables) -> tuple[list[Measurement], str]:
+def _ground_result(result, observation, run, samples, sources, tables, subjects) -> tuple[list[Measurement], str]:
     """按坐标核对数表结果，或在所引原文中定位报告原值。"""
     refs = result["evidence_ids"]
     metric = result["metric_id"]
     value = result.get("value")
+    anchor = result.get("source_text")
+    if (anchor and (not value or "source_cell" in result)) or (
+        "fit_result" in result and (not value or not (anchor or "source_cell" in result))
+    ):
+        return [], "正文核对需要一个独立的数值陈述出处。"
     basis = value.get("basis") if value else None
     display_metric = f"{metric} ({basis})" if basis else metric
     if value:
@@ -137,9 +166,18 @@ def _ground_result(result, observation, run, samples, sources, tables) -> tuple[
         )
         checked.append((label, raw, {ref: (row, column)}, [ref]))
     elif value:
-        proved = _prose_references(raw_text, metric, expected, unit, observation, run, samples, refs, sources, tables)
+        if anchor:
+            ref = anchor["evidence_id"]
+            if ref not in refs or ref in tables or ref not in sources or not _anchored_prose_matches(
+                anchor, result, observation, run, samples, sources[ref], expected, subjects,
+            ):
+                return [], "所引分句未直接支持指标、主体、原值或单位。"
+            proved = [ref]
+        else:
+            visual_refs = [ref for ref in refs if sources[ref]["origin"] in {"figure", "formula"}]
+            proved = _prose_references(raw_text, metric, expected, unit, observation, run, samples, visual_refs, sources, tables)
         if not proved:
-            return [], "所引原文未直接支持报告原值与单位，数表结果需要单元格坐标。"
+            return [], "正文需要原文分句定位，数表需要单元格位置，图和公式需要直接标注报告值。"
         label = (f"{display_metric} ({unit})"
                  if _unit_key(unit) and not _number_unit_present(expected, unit, raw_text) else display_metric)
         checked.append((label, raw_text, {}, proved))
@@ -150,6 +188,172 @@ def _ground_result(result, observation, run, samples, sources, tables) -> tuple[
             return [], "所引原文未直接包含报告结果。"
         checked.append((metric, phrase, {}, proved))
     return checked, ""
+
+
+def _anchored_prose_matches(anchor, result, observation, run, samples, source, expected, subjects) -> bool:
+    """核对同一原文分句中的指标、直接报告值和上下文主体。"""
+    if source["origin"] != "text":
+        return False
+    metric, subject = anchor["metric"], anchor.get("subject")
+    literal_metric = _name(metric, case_sensitive=True).replace("的", "")
+    literal_subject = _name(subject, case_sensitive=True) if subject is not None else None
+    display = _name(result["metric_id"], case_sensitive=True).replace("的", "")
+    if not literal_metric or literal_metric not in display or (
+        literal_subject is not None and (not literal_subject or literal_subject not in display)
+    ):
+        return False
+    if "fit_result" in result and subjects and not subject:
+        return False
+    value = result["value"]
+    phrase = _number_text(anchor["quote"])
+    raw = _literal_pattern(value["raw_text"])
+    if not raw or not raw.search(_compact(phrase)):
+        return False
+    metric_pattern = _prose_label(metric)
+    metric_match = metric_pattern.search(phrase)
+    if not metric_match:
+        return False
+    tail = phrase[metric_match.end():]
+    # 报告量必须紧跟指标和连接词，不能取分句中另一个指标或条件的数值。
+    link = _PROSE_QUANTITY_LINK.match(tail)
+    parsed, unit = _numeric_cell(tail[link.end():])
+    if parsed != expected or _unit_key(unit) != _unit_key(value["unit_raw"]):
+        return False
+    operator = link["operator"] or ("约" if "约为" in link[0] else "")
+    if _operator_key(operator) != _operator_key(value.get("operator", "")):
+        return False
+
+    data_origin = observation.get("data_origin", "")
+    measured = (_DIRECT_MEASUREMENT.search(data_origin) or "测量" in data_origin) and not _ESTIMATE.search(data_origin)
+    if measured and "fit_result" in result:
+        return False
+    own_names, other_names = _prose_sample_names(observation, run, samples)
+    state_scope = _distinct_prose_state(observation.get("sample_state_id"), run, samples)
+    quote = re.compile(r"\s*".join(re.escape(part) for part in phrase.split()))
+    subject_pattern = _prose_label(subject) if subject else None
+    competitor_patterns = [
+        _prose_label(candidate) for candidate in subjects if _name(candidate) and _name(candidate) != _name(subject or "")
+    ]
+    sentence = ""
+    for source_sentence, _ in _literal_sources(source):
+        preceding, sentence = sentence, _number_text(source_sentence)
+        competing = own_names and any(_mentions_sample(sentence, name) for name in other_names)
+        for clause in re.finditer(r"[^,;]+", sentence):
+            statement = clause[0]
+            found = quote.search(statement)
+            if not found or _RESPECTIVE.search(statement) or (
+                measured and (_ESTIMATE.search(statement) or re.search(r"拟合|计算|可求出|\b(?:fit|calculated)\b", statement, re.I))
+            ):
+                continue
+            if competing and (
+                _RESPECTIVE.search(sentence) or not any(_mentions_sample(statement, name) for name in own_names)
+                or any(_mentions_sample(statement, name) for name in other_names)
+            ):
+                continue
+            actual_metric = metric_pattern.search(found[0])
+            if not actual_metric:
+                continue
+            metric_start = found.start() + actual_metric.start()
+            if state_scope:
+                name, factors = state_scope
+                context = _compact(statement[:metric_start])
+                if not _mentions_sample(statement, name) and not any(factor.search(context) for factor in factors):
+                    continue
+            actual_metric_end = found.start() + actual_metric.end()
+            source_tail = statement[actual_metric_end:]
+            source_amount = source_tail[_PROSE_QUANTITY_LINK.match(source_tail).end():]
+            observed, _ = _numeric_cell(source_amount)
+            following = statement[found.end():]
+            if observed != expected or re.match(r"[A-Za-z0-9_]|\s*[%‰°℃℉/·⋅^×]|\.\d", following):
+                continue
+            if re.match(r"\s+(?:[A-Za-zµμÅ]+\s+)*[A-Za-zµμÅ]+\s*\^?[+-]\d", following):
+                continue
+            if not unit and re.match(r"\s+[A-Za-zµμÅ][A-Za-z0-9µμÅ]*\s*(?:[/^·]|[.)\s]*$)", following):
+                continue
+            if subject_pattern is None or _prose_subject_matches(
+                sentence, preceding, subject_pattern, competitor_patterns,
+                clause.start() + metric_start, clause.start() + actual_metric_end,
+            ):
+                return True
+    return False
+
+
+def _prose_subject_matches(sentence, preceding, subject, competitors, metric_start, metric_end) -> bool:
+    """核对最近的明确主体，无新主体时允许紧邻前句延续。"""
+    matches = list(subject.finditer(sentence, 0, metric_end))
+    if not matches and preceding and not subject.search(sentence) and not any(
+        pattern.search(sentence) for pattern in competitors
+    ):
+        sentence, metric_start = preceding, len(preceding)
+        matches = list(subject.finditer(sentence))
+    if not matches:
+        return False
+    subject_end = matches[-1].end()
+    if subject_end >= metric_start:
+        return True
+    return not any(pattern.search(sentence, subject_end, metric_start) for pattern in competitors)
+
+
+def _distinct_prose_state(sample_id, run, samples) -> tuple[str, list[re.Pattern]] | None:
+    """提取同批次状态需要在数值分句直接出现的区别信息。"""
+    if not sample_id:
+        return None
+    name, sample = samples[sample_id]
+    competitors = [samples[ref] for ref in run["sample_state_ids"]
+                   if ref != sample_id and samples[ref][1]["sample_batch_id"] == sample["sample_batch_id"]]
+    if not competitors:
+        return None
+    if _name(name) in {_name(sample["reported_name"]), *(_name(label) for label, _ in competitors)}:
+        name = ""
+    factors = []
+    for key, factor in sample.get("state_factors", {}).items():
+        raw = _compact(factor["raw_text"])
+        pattern = _literal_pattern(factor["raw_text"])
+        if pattern and all(
+            raw != _compact(other.get("factor_assignments", {}).get(key, {}).get("raw_text", ""))
+            for _, other in competitors
+        ):
+            factors.append(pattern)
+    return name, factors
+
+
+def _fit_series_conflicts(result, observation, run, series_by_id, subjects) -> bool:
+    """对比同一实验同类曲线的明确目标，避免拟合结果挂到另一目标。"""
+    subject = result.get("source_text", {}).get("subject")
+    series = series_by_id.get(observation.get("series_set_id"))
+    if not subject or not series:
+        return False
+    label = _prose_label(subject)
+    selected = _fit_series_labels(series, observation)
+    if any(label.search(text) for text in selected):
+        return False
+    for candidate in subjects:
+        if _name(candidate) != _name(subject) and any(_prose_label(candidate).search(text) for text in selected):
+            return True
+    for series_id in run["series_set_ids"]:
+        if series_id not in series_by_id or series_id == series["series_set_id"]:
+            continue
+        alternatives = _fit_series_labels(series_by_id[series_id], observation)
+        if selected[2] and label.fullmatch(alternatives[2]):
+            return True
+        for actual, alternate in zip(selected[:2], alternatives[:2], strict=True):
+            if match := label.search(alternate):
+                prefix, suffix = alternate[:match.start()], alternate[match.end():]
+                if prefix and suffix and actual.startswith(prefix) and actual.endswith(suffix):
+                    return True
+    return False
+
+
+def _fit_series_labels(series: dict, observation: dict) -> tuple[str, str, str]:
+    """读取同时描述拟合曲线及拟合目标的标签。"""
+    members = [
+        member["label"] for member in series["series_members"] if member.get("label") and all(
+            observation.get(field) is None or member[field] == observation[field]
+            for field in ("sample_state_id", "entity_id")
+        )
+    ]
+    member = members[0] if len(members) == 1 else ""
+    return _number_text(series["series_kind"]), _number_text(series["y"]["quantity"] or ""), _number_text(member)
 
 
 def _table_result_matches(result, observation, run, samples, rows, row_index, column) -> bool:
@@ -226,12 +430,7 @@ def _table_result_matches(result, observation, run, samples, rows, row_index, co
 
 def _prose_references(raw, metric, expected, unit, observation, run, samples, refs, sources, tables) -> list[str]:
     """定位正文、图表标题或公式中的字面报告。"""
-    sample_ids = observation.get("sample_state_ids", [])
-    if sample_id := observation.get("sample_state_id"):
-        sample_ids = [sample_id]
-    own_names = {name for ref in sample_ids for name in (samples[ref][0], samples[ref][1]["reported_name"])}
-    other_names = {name for ref in run["sample_state_ids"] if ref not in sample_ids
-                   for name in (samples[ref][0], samples[ref][1]["reported_name"])} - own_names
+    own_names, other_names = _prose_sample_names(observation, run, samples)
     literal = _literal_pattern(raw)
     if literal is None:
         return []
@@ -255,7 +454,7 @@ def _prose_references(raw, metric, expected, unit, observation, run, samples, re
                 parsed, suffix = _numeric_cell(right.strip("$ "))
                 if not equals or _name(name) != _name(metric) or parsed != expected or _unit_key(suffix) != _unit_key(unit):
                     continue
-            competing_samples = sample_ids and any(_mentions_sample(sentence, name) for name in other_names)
+            competing_samples = own_names and any(_mentions_sample(sentence, name) for name in other_names)
             if competing_samples and _RESPECTIVE.search(sentence):
                 continue
             sentence = _number_text(sentence)
@@ -285,6 +484,17 @@ def _prose_references(raw, metric, expected, unit, observation, run, samples, re
             if proved and proved[-1] == ref:
                 break
     return proved
+
+
+def _prose_sample_names(observation, run, samples) -> tuple[set[str], set[str]]:
+    """按当前观测归属列出同一实验的样品名及可能混淆的样品名。"""
+    sample_ids = observation.get("sample_state_ids", [])
+    if sample_id := observation.get("sample_state_id"):
+        sample_ids = [sample_id]
+    own_names = {name for ref in sample_ids for name in (samples[ref][0], samples[ref][1]["reported_name"])}
+    other_names = {name for ref in run["sample_state_ids"] if ref not in sample_ids
+                   for name in (samples[ref][0], samples[ref][1]["reported_name"])} - own_names
+    return own_names, other_names
 
 
 def _literal_sources(source: dict):
@@ -546,9 +756,10 @@ def _visible(text: str) -> str:
     return html.unescape(re.sub(r"</?[A-Za-z][^>]*>", "", text)).strip()
 
 
-def _name(text: str) -> str:
+def _name(text: str, *, case_sensitive: bool = False) -> str:
     """忽略标签排版空白、数学下标与括号样式。"""
-    return re.sub(r"[\s_$(){}]", "", _number_text(text).casefold())
+    normal = _number_text(text)
+    return re.sub(r"[\s_$(){}]", "", normal if case_sensitive else normal.casefold())
 
 
 def _compact(text: str) -> str:
@@ -570,3 +781,12 @@ def _mentions_sample(text: str, name: str) -> bool:
     """按样品名边界匹配，避免编号前缀混淆。"""
     name = r"\s*".join(re.escape(part) for part in _number_text(name).casefold().split())
     return bool(name and re.search(rf"(?<![a-z0-9_-]){name}(?![a-z0-9_-])", _number_text(text).casefold()))
+
+
+def _prose_label(text: str) -> re.Pattern:
+    """定位保持大小写的原文标签，避免匹配到另一符号内部。"""
+    normal = _number_text(text)
+    literal = r"\s*".join(re.escape(char) for char in normal if not char.isspace())
+    left = r"(?<![A-Za-z0-9_])" if re.match(r"[A-Za-z0-9_]", normal) else ""
+    right = r"(?![A-Za-z0-9_])" if re.search(r"[A-Za-z0-9_]$", normal) else ""
+    return re.compile(left + literal + right)

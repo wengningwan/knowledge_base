@@ -27,9 +27,10 @@ from yuxi.knowledge.adsorption_contract import (
 )
 from yuxi.knowledge.adsorption_review import project_experiment_cards
 from yuxi.knowledge.paper_grounding import ground_paper_results, paper_table_rows
-from yuxi.knowledge.paper_sources import compact_source, printed_page_map, read_paper_sources, render_paper_evidence
 from yuxi.knowledge.paper_observation_merge import deduplicate_paper_observations
+from yuxi.knowledge.paper_sources import compact_source, printed_page_map, read_paper_sources, render_paper_evidence
 from yuxi.knowledge.paper_structure_review import paper_validation_issues
+from yuxi.knowledge.structure_tables import table_grid
 from yuxi.knowledge.table_observations import project_table_observations, table_columns
 from yuxi.models.chat import ModelRequestError, select_model
 from yuxi.services.pdf_model_execution import InvalidPdfModelResponse, PdfModelExecutor, run_pdf_workers
@@ -37,26 +38,39 @@ from yuxi.utils.datetime_utils import utc_now
 from yuxi.utils.logging_config import logger
 
 _MATERIAL_FIELDS = ("chemical_entities", "material_identities", "sample_batches", "sample_states", "synthesis_routes")
-_RESULTS_FIELDS = ("experiment_runs", "series_sets", "observations", "mechanism_claims", "evidence_attributions")
+_RESULTS_FIELDS = (
+    "experiment_runs", "series_sets", "observations", "mechanism_claims", "missing_information", "evidence_attributions",
+)
 
 _OBSERVATION_INSTRUCTIONS = (
     "同一任务填写实验、结果、曲线和相关解释。保留正文、表、图注和公式中的独立信息。"
     "没有表格的实验、条件、样品和结果，也要按正文记录。模型实际使用的参数以原文符号为键。"
     "公共条件放在实验，逐行条件放在观测，检测均值和范围属于结果。区分测量、拟合、推算、引用和定性结果。"
-    "物质和样品使用目录编号，实验明确列出实际使用的编号。每个已发布结果引用同一实验内对应的样品与物种。"
-    "规则数表带 table_columns 时，用 table_mappings 登记整表列用途，程序负责逐行取数。"
+    "物质和样品使用目录编号，实验明确列出实际使用的编号。实验级的出水、全程结果或推算，样品状态填 null；"
+    "检测对象没有单独的物质编号时 entity_id 填 null，段落中的对象仍照录进说明。"
+    "有 table_columns 的数表用 table_mappings 登记整表列用途，程序负责逐行取数。"
     "复制原表表头原名，condition_columns 只列同行实验变量或横轴，result_columns 列所有测得值。"
     "如果每行是指标写 metric_column；如果有单独的样品列写 sample_column；行序号和说明列写 ignored_columns。"
     "动态过程全表记录同一实验时 sample_scope 填 experiment，曲线成员 sample_state_id 填 null，"
     "实验登记可以保留前后状态。各行确实对应不同状态时 sample_scope 填 state，并把区分状态的列列入条件。"
-    "映射已覆盖的数值不要在 observations 中重复填写。无法整表映射而原表坐标可定位时，"
-    "单项数值用 source_cell 指向数据格。row 和 column 从零计，row=0 是首行表头。"
+    "样品状态写在指标行名前缀时，用 row_states 登记行号、状态编号和原前缀 label；变化率行有明确基准时"
+    "用 baseline_row 指向测量基准行。样品由结果列标题区分时，对每个结果列登记 column_states，比较列的状态填 null。"
+    "使用 row_states 或 column_states 时 sample_scope 填 state。"
+    "映射已覆盖的数值不要在 observations 中重复填写。没有合并格的单层表头可用 source_cell 核对独立数值。"
+    "所有坐标从零计，table_rows 保留多层表头，table_header_rows 是首个数据行的行号。"
     "指标与条件名称使用原表头或行名除去单位后的文字，单位保留原文。不同统计口径写在 value.basis。"
-    "正文结果以可定位的短语作 raw_text 或 result，并引用该段。保留正负号、范围、约数、不确定度、原单位和计量口径。"
-    "为相关曲线登记图名、原表两个轴的量名、各自单位、图例和样品。轴与正文冲突时保留两处说明及证据。"
+    "正文数值提交 source_text。metric 写所在句里直接指向该值的原词或原符号，quote 原样复制包含 metric 和数值的"
+    "最短连续短语。subject 照录同句里或紧接数值前一句明确的指标对象，原文无对象时省略。value.raw_text 照录"
+    "quote 中的原值和单位，保留正负号、范围、约数、不确定度和计量口径。metric_id 可含语境，须包含该量名和所填对象。"
+    "实际报告的模型拟合值和拟合质量分别在带正文或单元格定位的数值观测中，fit_result.target 填 model_parameters 或 fit_quality_summary，"
+    "fit_result.name 使用原文印出的符号或量名，程序从已核实观测生成相应栏目。"
+    "为曲线保留原图两轴的量名、单位、图例和样品。同源数表在 curve_bindings 填曲线编号及对应横纵列的零起始编号。"
+    "图轴与表头用词不同时，在绑定的 evidence_ids 引用同时提到该图与该表的原文。无单位的轴保留 null。"
+    "轴与正文确实冲突时保留两处说明及证据。"
     "同一数表的曲线成员与相应观测使用相同样品和物质编号。原表横轴为行条件时逐行照录。"
     "曲线坐标由程序用观测及同行条件生成，data_points 填 null。只有图片时保留曲线和轴，不估读坐标。"
     "机理解释用作者主张及适用的限定语，保留原文引用的背景值。填写用到证据的归属，区分本文、引用、混合、未知。"
+    "只有原文明示未报告或相关资料不可用时登记 missing_information，填写受影响记录、字段、原因和出处。"
 )
 
 
@@ -167,12 +181,13 @@ async def extract_paper_record(
          "路线保留已找到的步骤、同时操作、投料和条件。适用的证据覆盖不同章节，引用材料与样品的原文并判断归属。",
          {}, all_refs, []),
         ("第一轮栏目梳理", "plan-experiments", ("run_plans",),
-         "为论文实际研究中的每个实验、模型拟合、推算或独立结果列出填写清单。"
+         "为论文实际研究中的每个实验、模型拟合、推算或独立结果，按适用栏目列出填写清单。"
          "检查正文的方法、制备、结果、讨论和结论，也检查数表、图注与公式。"
          "一个实验的 evidence_ids 要覆盖共同方法及相关的结果段、数表和图注，可来自多个章节。"
-         "每份带结果证据的 results 项填写一个出处和实测、计算或明确报告的结果指标名。"
-         "日期、样品号、运行天数、通水倍数等条件和横轴值不算结果。只给图像的曲线只登记图与轴。"
-         "公式定义可登记为方法，拟合结果和作者推算按实际报告列出；仅在正文出现的实验也必须安排。",
+         "results 分出处填写。fields 中 target 是目的栏目，name 是原文量名、参数符号、图号或短主张；"
+         "subject 填原文报告的指标对象，原文数值已知时 raw_text 只写对应的原文数值和单位。"
+         "日数、通水倍数等变量归 conditions，实测、拟合和推算值按各自栏目列出，不能在 name 拼接数值和句子。"
+         "同一方法分别拟合多个对象时注明对象及各组出处；共享方法引用可相同。仅在正文出现的实验也登记。",
          {}, all_refs, []),
     ]
     ((document, doc_notices), (materials, material_notices), (inventory, plan_notices)) = await parallel(
@@ -212,17 +227,22 @@ async def extract_paper_record(
         visual = [ref for ref in refs if sources[ref]["origin"] == "table"
                   and paper_table_rows(sources[ref]["quote"]) == []]
         context = {"experiment_plans": group, "materials": materials_catalog}
+        assignment = "按目录中的 run_id 填写本组实验。"
         if not group:
             context["existing_experiments"] = [
                 {key: plan[key] for key in ("run_id", "run_type", "method")} for plan in plans
             ]
+            assignment = (
+                "本组补读未分配的原文。找到已有实验中的明确结果时，在 observations 引用该实验的 run_id 并按本组原文定位，"
+                "已有实验的定义由它的主组登记。只处理本次实际收到的原文。"
+            )
         fill_jobs.append((
             "第二轮并发填写", batch, (*_RESULTS_FIELDS, "table_mappings", "review_targets"),
-            _OBSERVATION_INSTRUCTIONS
-            + "目录中有计划实验时使用其 run_id。原文另有未安排的独立实验时可新增，"
+            _OBSERVATION_INSTRUCTIONS + assignment
+            + "原文另有未安排的独立实验时可新增，"
               "同组新增记录编号以本组批次号加冒号作为前缀，且不可重用其他组的编号。"
-              "表格映射及实验均引用原表。发现有出处但尚不能确认的问题，在 review_targets 写简短原因和原文编号。"
-              "本组只有对另一组实验的概述时，只在 review_targets 保留有用线索，避免重复同一结果。",
+              "表格映射及实验均引用原表。review_targets 仅登记本组的具体缺项 gap 或原文冲突 conflict。"
+              "缺项同时给出 run_id 和 field，field 与第一轮的栏目清单用同样格式。",
             {**context, "batch_id": batch}, refs, visual,
         ))
     if record["synthesis_routes"]:
@@ -250,8 +270,13 @@ async def extract_paper_record(
     )
     table_notes = [{**issue, "issue_id": f'issue:filtered:{issue["issue_id"]}'} for issue in table_issues]
     final["validation_issues"] = [*table_notes, *paper_validation_issues(
-        plans, final, [*notices, *final_notices], sources, covered_tables, fill_targets,
+        plans, final, [*notices, *final_notices], sources, fill_targets,
     )]
+    for observation in final["observations"]:
+        for result in observation.get("results", [observation]):
+            result.pop("source_text", None)
+            result.pop("source_cell", None)
+            result.pop("fit_result", None)
     logger.info(
         "[knowledge_structure] task_id={} table_mappings={} covered_tables={} table_issues={} numeric_results={}",
         control.task_id, len(mappings), len(covered_tables), len(table_issues),
@@ -264,11 +289,11 @@ async def extract_paper_record(
                 "message": message, "record_ids": [file_id],
             })
     for item in final["evidence"]:
-        values = scopes[item["evidence_id"]]
-        if len(values) == 1:
-            item["provenance_scope"] = next(iter(values))
-        elif "mixed" in values:
+        values = scopes[item["evidence_id"]] - {"unknown"}
+        if "mixed" in values or len(values) > 1:
             item["provenance_scope"] = "mixed"
+        elif values:
+            item["provenance_scope"] = next(iter(values))
     keep = evidence_references(final)
     keep.update(ref for item in final["validation_issues"] for ref in item["record_ids"] if ref in sources)
     final["evidence"] = [item for item in final["evidence"] if item["evidence_id"] in keep]
@@ -309,10 +334,12 @@ def source_input(ref, source, *, rows):
     if "figure_text" in source:
         result["figure_text"] = source["figure_text"]
     if rows and source["origin"] == "table":
-        if columns := table_columns(source["quote"]):
-            result["table_columns"] = columns
-        if grid := paper_table_rows(source["quote"]):
-            result["table_rows"] = grid
+        quote = source["quote"]
+        if grid := table_grid(quote, 0, len(quote)):
+            if grid.rows:
+                result["table_columns"] = table_columns(quote)
+                result["table_rows"] = paper_table_rows(quote)
+                result["table_header_rows"] = grid.header_rows
     return result
 
 
@@ -405,6 +432,13 @@ def materialize_paper(raw, sources, mappings, plans):
     """在副本上核对关系与原文，生成最终曲线和回查数据。"""
     record, notices = deepcopy(raw), []
     result_refs = {plan["run_id"]: {ref for item in plan["results"] for ref in item["evidence_ids"]} for plan in plans}
+    subjects_by_run = {
+        plan["run_id"]: {
+            field["subject"] for item in plan["results"] for field in item["fields"]
+            if field["target"] in {"observations", "model_parameters", "fit_quality_summary"} and "subject" in field
+        }
+        for plan in plans
+    }
     mapped_refs = defaultdict(set)
     for mapping in mappings:
         run_id = mapping["run_id"]
@@ -425,7 +459,7 @@ def materialize_paper(raw, sources, mappings, plans):
             run["evidence_ids"].append(ref)
     filter_record_references(record, notices)
     apply_preparation_factors(record, notices)
-    measurements, value_notices = ground_paper_results(record, sources)
+    measurements, value_notices = ground_paper_results(record, sources, subjects_by_run)
     notices.extend(value_notices)
     table_issues, covered_tables = project_table_observations(record, sources, mappings, measurements)
     remove_misplaced_sample_results(record, covered_tables)
@@ -433,6 +467,7 @@ def materialize_paper(raw, sources, mappings, plans):
     for sample in record["sample_states"]:
         sample.pop("state_factors", None)
     filter_record_references(record, notices)
+    publish_run_results(record, notices)
     by_series = defaultdict(list)
     surviving = {item["observation_id"] for item in record["observations"]}
     for item in record["observations"]:
@@ -444,6 +479,61 @@ def materialize_paper(raw, sources, mappings, plans):
             *by_series[series["series_set_id"]],
         ]))
     return record, measurements, notices, table_issues, covered_tables
+
+
+def publish_run_results(record, notices):
+    """将已经核实的观测归入实验，并按拟合对象登记模型结果。"""
+    runs = {run["run_id"]: run for run in record["experiment_runs"]}
+    states = {item["sample_state_id"]: item["reported_name"] for item in record["sample_states"]}
+    entities = {item["entity_id"]: item["reported_name"] for item in record["chemical_entities"]}
+    fitted = defaultdict(dict)
+    for observation in record["observations"]:
+        run = runs[observation["run_id"]]
+        for member in observation.get("results", [observation]):
+            for ref in member["evidence_ids"]:
+                if ref not in run["evidence_ids"]:
+                    run["evidence_ids"].append(ref)
+            if not (fit := member.get("fit_result")):
+                continue
+            proof = member.get("source_text", {})
+            name = unicodedata.normalize("NFKC", fit["name"])
+            metric = unicodedata.normalize("NFKC", proof.get("metric", member["metric_id"]))
+            if not re.search(rf"(?<![a-zA-Z0-9_]){re.escape(name)}(?![a-zA-Z0-9_])", metric):
+                notices.append(("unverified_fit_parameter", "拟合参数名无法与已核对的原文量名对应。",
+                                {"collection": "observations", "record": observation}))
+                continue
+            subject = proof.get("subject")
+            if "source_cell" in member:
+                subject = states.get(observation.get("sample_state_id")) or entities.get(
+                    member.get("entity_id") or observation.get("entity_id")
+                )
+            key = compact_source(subject) if subject else None
+            _, members = fitted[(run["run_id"], fit["target"], name)].setdefault(key, (subject, []))
+            members.append(member)
+
+    for (run_id, target, name), subjects in fitted.items():
+        run = runs[run_id]
+        for subject, members in subjects.values():
+            value = members[0]["value"]
+            if (len(subjects) > 1 and subject is None) or any(
+                {key: val for key, val in member["value"].items() if key != "raw_text"}
+                != {key: val for key, val in value.items() if key != "raw_text"} for member in members[1:]
+            ):
+                notices.append((
+                    "ambiguous_fit_parameter", f"拟合参数 {name} 的结果或适用对象不唯一。",
+                    {"collection": "experiment_runs", "record": {"run_id": run_id, "evidence_ids": [
+                        ref for member in members for ref in member["evidence_ids"]
+                    ]}},
+                ))
+                continue
+            reported_name = members[0]["fit_result"]["name"]
+            key = f"{subject} · {reported_name}" if len(subjects) > 1 else reported_name
+            run.setdefault(target, {})[key] = value
+    for run in runs.values():
+        if run.get("model_parameters"):
+            run.pop("model_parameters_missing_reason", None)
+        elif run.get("model_parameters_missing_reason"):
+            run["model_parameters"] = None
 
 
 def remove_misplaced_sample_results(record, covered_tables):
@@ -532,10 +622,12 @@ async def _request_stage(executor, control, stage, schema, instruction, payload,
                 selected = {item["run_id"] for item in payload["catalog"]["experiment_plans"]}
                 selected.update(item["run_id"] for item in result["experiment_runs"]
                                 if item["run_id"].startswith(f"{stage}:"))
+                supplements = {item["run_id"] for item in payload["catalog"].get("existing_experiments", [])}
                 for name in ("experiment_runs", "series_sets", "observations", "table_mappings"):
                     kept = []
+                    allowed = selected | supplements if name == "observations" else selected
                     for item in result[name]:
-                        if item["run_id"] in selected:
+                        if item["run_id"] in allowed:
                             kept.append(item)
                         else:
                             notices.append(("invalid_fill_scope", "填写结果引用了本组以外的实验。",
