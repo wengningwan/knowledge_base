@@ -43,9 +43,12 @@ def ground_paper_results(record: dict, sources: dict) -> tuple[dict[str, list[Me
     runs = {item["run_id"]: item for item in record["experiment_runs"]}
     states = {item["sample_state_id"]: item for item in record["sample_states"]}
     batches = {item["sample_batch_id"]: item for item in record["sample_batches"]}
-    samples = {
-        ref: (item["reported_name"], batches[item["sample_batch_id"]]) for ref, item in states.items()
-    }
+    samples = {}
+    for ref, item in states.items():
+        batch = batches[item["sample_batch_id"]]
+        samples[ref] = (item["reported_name"], {
+            **batch, "factor_assignments": {**batch["factor_assignments"], **item.get("state_factors", {})},
+        })
     notices: list[Notice] = []
     measurements: dict[str, list[Measurement]] = {}
     rows_by_run: dict[str, list[TableMeasurement]] = defaultdict(list)

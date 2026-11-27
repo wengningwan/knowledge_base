@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 
 STRUCTURE_VERSION = 3
 READABLE_STRUCTURE_VERSIONS = (2, STRUCTURE_VERSION)
-STRUCTURE_PROMPT_VERSION = "paper-three-rounds-v1"
+STRUCTURE_PROMPT_VERSION = "paper-two-rounds-v1"
 REGISTRIES = {
     "evidence": "evidence_id",
     "chemical_entities": "entity_id",
@@ -58,7 +58,7 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
     """从导出契约派生阶段输出，程序负责生成派生字段。"""
     schema = output_schema()
     nonempty_text = {"type": "string", "minLength": 1}
-    field_names = {"type": "array", "items": nonempty_text}
+    field_names = {"type": "array", "items": nonempty_text, "uniqueItems": True}
     record_id_ref = {"$ref": "#/$defs/record_identifier"}
     evidence_ids_ref = {"$ref": "#/$defs/evidence_identifiers"}
     evidence_fields = schema["$defs"]["evidence"]["properties"]
@@ -79,7 +79,6 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
                     "properties": {
                         "evidence_ids": {**evidence_ids_ref, "maxItems": 1},
                         "fields": {**field_names, "minItems": 1},
-                        "expected_count": {"type": "integer", "minimum": 1},
                     },
                 }},
             },
@@ -88,16 +87,15 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
             "type": "object", "required": ["message", "evidence_ids"], "additionalProperties": False,
             "properties": {"message": nonempty_text, "evidence_ids": evidence_ids_ref},
         },
-        "review_decisions": {
-            "type": "object", "required": ["check_id", "status", "message", "evidence_ids"],
+        "table_mappings": {
+            "type": "object", "required": ["run_id", "evidence_ids", "condition_columns", "result_columns"],
             "additionalProperties": False,
             "properties": {
-                "check_id": record_id_ref,
-                "status": {"enum": ["confirmed", "corrected", "not_reported", "unavailable", "uncertain"]},
-                "message": nonempty_text,
-                "evidence_ids": evidence_ids_ref,
-                "record_ids": {"$ref": "#/$defs/record_identifiers"},
-                "fields": field_names,
+                "run_id": record_id_ref, "entity_id": record_id_ref,
+                "evidence_ids": {**evidence_ids_ref, "maxItems": 1},
+                "sample_scope": {"enum": ["experiment", "state"]},
+                "condition_columns": field_names, "result_columns": {**field_names, "minItems": 1},
+                "ignored_columns": field_names, "metric_column": nonempty_text, "sample_column": nonempty_text,
             },
         },
     }
@@ -127,6 +125,7 @@ def stage_schema(fields: tuple[str, ...]) -> dict:
         },
     }
     stage_fields = {
+        "paper_state": {"state_factors": {"$ref": "#/$defs/reported_parameters"}},
         "paper_operation_conditions": {"temperature_factor": nonempty_text},
         "paper_reagent_ratio": {"sample_factor": nonempty_text},
         "observations_quantitative_measurement": {"source_cell": source_cell},
@@ -248,7 +247,7 @@ def filter_stage_records(value: dict, schema: dict, stage: str, source_ids: set[
                 notices.append(("invalid_evidence_attribution", f"{location}不能定位到本次原文。"))
             elif (
                 name == "observations"
-                and not stage.startswith(("fill-", "review-"))
+                and not stage.startswith("fill-")
                 and not item["observation_id"].startswith(f"obs:{stage}:")
             ):
                 notices.append(("invalid_observation_id", f"{location}的编号不属于当前观测阶段。",

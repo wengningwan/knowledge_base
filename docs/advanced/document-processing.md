@@ -224,29 +224,39 @@ OCR 正文校对使用 `[pdf_review]` 日志，模型识别及其复核使用 `[
 
 ### 临时采集某个文件的模型交互
 
-部署操作员可以对一个文件开启采集，读取实际发送给模型的系统提示词、请求文字、有序图片和程序在校验前收到的回复。以下以 `file_c896d3` 为例。使用启动服务时的 Compose 文件和项目参数。
+部署操作员可以临时开启单文件采集，查看 PDF 解析和实验 JSON 结构化实际发送的系统提示词、请求文字、有序图片，以及程序在校验前收到的回复。采集默认关闭。以下以 `file_c896d3` 为例，使用启动服务时的 Compose 文件和项目参数。
 
-1. 重新解析前在 worker 建立该文件的启用标记。
+1. 发起任务前在 worker 建立该文件的启用标记。多 worker 部署在可能领取任务的各容器中操作。标记仅对随后启动的模型请求生效。
 
    ```sh
    docker compose exec -T worker sh -c 'umask 077; mkdir -p "$YUXI_RUNTIME_DIR/pdf-model-traces/enabled" && touch "$YUXI_RUNTIME_DIR/pdf-model-traces/enabled/file_c896d3"'
    ```
 
-2. 在知识库中重新解析目标 PDF。若启用了独立插图分析，等插图任务结束后再复制。真实请求按解析尝试和 `request_id` 保存，命中缓存的项目没有新的请求记录。
+2. 在知识库中发起要诊断的任务。排查解析时重新解析目标 PDF，启用了独立插图分析时等插图任务也结束。排查结构化时，在实验卡片中重试失败或取消的任务，或在重新解析后按 Paper 策略入库以生成实验卡片。等待相关任务结束后复制。命中缓存的项目没有新的请求记录。
 
-3. 解析成功后，从文件详情 `parse-assets` 响应的 `attempt_id` 取得本次解析标识。若解析失败，文件详情可能还显示旧产物。此时从本次 worker 日志取一个 `request_id`，在目标文件的采集目录中查找同名子目录，其父目录就是本次解析标识。
+3. 取得本次任务的采集目录编号。PDF 解析成功后使用文件详情 `parse-assets` 响应的 `attempt_id`。实验 JSON 结构化使用本次 `task_id`，可从实验卡片的接口响应或 worker 的 `stage=paper_structure` 日志取得。
+
+   ```sh
+   docker compose logs --since=30m worker | grep -F 'file_id=file_c896d3 stage=paper_structure'
+   ```
+
+   解析失败时，文件详情可能还显示旧产物。此时用本次 worker 日志中的 `request_id` 查找请求目录，其父目录名就是本次采集目录编号。
 
    ```sh
    docker compose exec -T worker sh -c 'find "$YUXI_RUNTIME_DIR/pdf-model-traces/requests/file_c896d3" -name REQUEST_ID -type d'
    ```
 
-4. 把 `PARSE_ATTEMPT_ID` 替换为该标识，复制到仓库外的私有目录，再移除启用标记。多 worker 部署可用 `docker compose ps -q worker` 获取各容器 ID，通过 `docker exec` 和 `docker cp` 在参与本次任务的容器分别操作。下例使用 Compose 的默认 worker 运行目录和 Bash。
+4. 把 `TRACE_ATTEMPT_ID` 替换为该编号，复制到仓库外的私有目录，再移除启用标记。多 worker 部署可用 `docker compose ps -q worker` 获取各容器 ID，通过 `docker exec` 和 `docker cp` 在参与本次任务的容器分别操作。下例使用 Compose 的默认 worker 运行目录和 Bash。
 
    ```sh
    trace_dir="$(mktemp -d)"
-   docker compose cp worker:/app/runtime/worker/pdf-model-traces/requests/file_c896d3/PARSE_ATTEMPT_ID "$trace_dir/pdf-model-trace"
+   docker compose cp worker:/app/runtime/worker/pdf-model-traces/requests/file_c896d3/TRACE_ATTEMPT_ID "$trace_dir/pdf-model-trace"
    printf '%s\n' "$trace_dir/pdf-model-trace"
    docker compose exec -T worker sh -c 'rm -f "$YUXI_RUNTIME_DIR/pdf-model-traces/enabled/file_c896d3"'
    ```
 
-每次请求的 `request.json` 记录实际提示及图片文件名，`response.json` 记录回复或安全失败类别。按 `batch_id` 区分初次识别、整页复核、跨页复核、成稿终审和插图，按 `request_id` 与普通 worker 日志对照。整页复核 `review-page-N` 的 `targets` 是这页随请求发给模型的原文疑点。成稿终审 `review-final-N` 的 `draft` 是这次使用的成稿上下文，`targets` 列出剩余文字候选。采集在模型调用结束后落盘。等待写入超时后文件仍可能稍后出现，强制结束容器也可能没有采集文件。复制前核对 `request.json`、`response.json` 和清单中的图片是否齐全。模型格式校验和正文最终结果仍可通过日志和解析产物查看。采集包含文档文字与原图，放在 worker 的私有运行目录中，容器替换前先复制。[采集决定](../develop-guides/decisions/implemented/2026-11-19-pdf-model-exchange-capture.md)
+每次请求的 `request.json` 记录实际提示及图片文件名，`response.json` 记录回复或安全失败类别。用 `request_id` 与 worker 日志对照，用 `batch_id` 找到对应阶段的请求及回复。
+
+PDF 解析批次包括初次识别、整页复核、跨页复核、成稿终审和插图。整页复核 `review-page-N` 的 `targets` 是这页随请求发给模型的原文疑点。成稿终审 `review-final-N` 的 `draft` 是这次使用的成稿上下文，`targets` 列出剩余文字候选。排查结构化时，在 `stage=paper_structure` 的批次中对照规划或填写结果、原文证据及同一任务的最终 JSON。
+
+采集在模型调用结束后落盘。等待写入超时后文件仍可能稍后出现，强制结束容器也可能没有采集文件。复制前核对 `request.json`、`response.json` 和清单中的图片是否齐全。采集包含文档原文及随请求发送的图片，放在 worker 的私有运行目录中，容器替换前先复制。[采集决定](../develop-guides/decisions/implemented/2026-11-19-pdf-model-exchange-capture.md)

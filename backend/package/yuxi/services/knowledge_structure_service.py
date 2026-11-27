@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 
 from yuxi.knowledge.adsorption_contract import READABLE_STRUCTURE_VERSIONS, STRUCTURE_PROMPT_VERSION, STRUCTURE_VERSION
@@ -117,10 +118,12 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 )
                 if coverage.get("partial_result"):
                     count = sum(not item["resolution"] for item in result["review"]["tasks"])
-                    result["message"] = (
-                        f"已保留可用数据，还有 {count} 项待人工校对。"
-                        if count else "已保留可用数据。提取异常可在人工校对页的技术说明中查看。"
-                    )
+                    if count:
+                        result["message"] = f"已保留可用数据，还有 {count} 项待人工校对。"
+                    elif coverage.get("review_source") == "two_rounds":
+                        result["message"] = "已保留可用数据。未核实项可在下载 JSON 的校验说明中查看。"
+                    else:
+                        result["message"] = "已保留可用数据。提取异常可在人工校对页的技术说明中查看。"
                 elif not result["cards"]:
                     result["message"] = (
                         "已生成可下载的结构化 JSON，当前结果未归入样品卡。"
@@ -361,10 +364,12 @@ async def fail_knowledge_structure(session, task, error):
 class StructureTaskControl:
     """让领域抽取在模型调用之间核对取消、权限和正文版本。"""
 
-    def __init__(self, context):
+    def __init__(self, context: TaskContext):
         """保留 durable Task 的唯一执行上下文。"""
         self.context = context
         self.task_id = context.task_id
+        self.attempt_id = context.task_id
+        self.kb_id = context.payload["kb_id"]
         self.file_id = context.payload["file_id"]
 
     async def check_cancelled(self):
@@ -379,6 +384,11 @@ class StructureTaskControl:
         """同步 Task 和 Worker 日志中的真实阶段进度。"""
         await self.context.set_progress(progress, message)
         logger.info("[knowledge_structure] task_id={} progress={}% {}", self.task_id, progress, message)
+
+    def remaining_seconds(self) -> float:
+        """用当前任务的单调时钟截止时间限制诊断写入等待。"""
+        deadline = self.context.deadline
+        return max(0.0, deadline - time.monotonic()) if deadline is not None else 0.0
 
 
 async def _create_structure_intent(session, *, file, model_spec, source_hash, operator_id, force=False):
