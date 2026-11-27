@@ -8,6 +8,7 @@ import math
 import re
 import unicodedata
 from collections import defaultdict
+from decimal import Decimal
 from io import BytesIO
 from time import monotonic
 from uuid import uuid4
@@ -16,7 +17,6 @@ from pypdf import PdfReader
 
 from yuxi.config.options import document_model_concurrency_policy
 from yuxi.knowledge.adsorption_contract import (
-    PAPER_SCHEMA_ID,
     REGISTRIES,
     STRUCTURE_PROMPT_VERSION,
     STRUCTURE_VERSION,
@@ -29,9 +29,9 @@ from yuxi.knowledge.adsorption_contract import (
     validate_references,
     validate_shape,
 )
-from yuxi.knowledge.adsorption_review import filter_observation_values, project_experiment_cards
-from yuxi.knowledge.experiment_corrections import project_rejected_corrections
+from yuxi.knowledge.adsorption_review import filter_curve_points, filter_observation_values, project_experiment_cards
 from yuxi.knowledge.chunking.source import SourceDocument
+from yuxi.knowledge.experiment_corrections import project_rejected_corrections
 from yuxi.knowledge.structure_tables import Span
 from yuxi.models.chat import select_model
 from yuxi.services.pdf_model_execution import InvalidPdfModelResponse, PdfModelExecutor, run_pdf_workers
@@ -64,14 +64,13 @@ async def extract_paper_record(
         model_spec, control=control, stage="paper_structure", model=model,
     ).initialize()
     document_id = f"doc:{file_id}"
-    record_id = f"paper:{file_id}"
-    record = {
-        "schema_id": PAPER_SCHEMA_ID, "schema_version": "1.0.0-draft", "record_id": record_id,
-        **{collection: [] for collection in REGISTRIES},
-    }
+    record_id = file_id
+    record = {"record_id": record_id, **{collection: [] for collection in REGISTRIES}}
     notices: list[Notice] = []
     source_input = {
-        ref: {"evidence_id": ref, "pdf_page": item["page"], "section": item["section"], "text": item["quote"]}
+        ref: {"evidence_id": ref, "pdf_page": item["page"], "section": item["section"],
+              "location": item["location"], "origin": item["origin"], "text": item["quote"],
+              **({"figure_text": item["figure_text"]} if "figure_text" in item else {})}
         for ref, item in sources.items()
     }
 
@@ -96,6 +95,8 @@ async def extract_paper_record(
         "登记原文实际报告的实体、材料和样品，后续记录只引用这些编号。"
         "factor_assignments 仅登记原文报告的样品变量，以表头或原文变量名为键，使用 raw_text、value、unit 保存原文参数；"
         "未报告或不适用的因素省略，不填零。操作条件也仅填写原文参数，保留电压、流量、距离等实际条件。"
+        "制备步骤保留同时发生的操作、设备、气氛、原料用途、用量、浓度和配比。材料碳源和活化信息记在实际步骤。"
+        "当步骤温度或配比随该路线的样品变化时，conditions.temperature_factor 或 ratio.sample_factor 填对应的 factor_assignments 键，由程序取值。"
         "制备最终产物用 output_sample_state_ids 引用已登记样品，不添加原文未报告的操作。"
         "表格中的每个已命名样品独立登记，制备路线按步骤和顺序拆分。"
         "没有报告实体、材料、样品或制备的论文，对应集合为空，不创建占位样品。"
@@ -117,7 +118,7 @@ async def extract_paper_record(
     document["pdf_page_to_printed_page"] = printed_pages
     record["evidence"] = [
         {
-            "evidence_id": ref, "document_id": document_id, "provenance_scope": "this_work",
+            "evidence_id": ref, "document_id": document_id, "provenance_scope": "unknown",
             "pdf_page": item["page"], "printed_page": printed_pages.get(str(item["page"])),
             "section": item["section"], "location": item["location"],
             "quote_raw": item["quote"], "extraction_origin": item["origin"],
@@ -125,6 +126,7 @@ async def extract_paper_record(
         for ref, item in sources.items()
     ]
     filter_record_references(record, notices)
+    _apply_preparation_factors(record, notices)
 
     await control.set_progress(30, "抽取实验、条件和曲线登记")
     runs, run_notices = await extract(
@@ -138,8 +140,12 @@ async def extract_paper_record(
         "每项实验的 evidence_ids 必须覆盖方法及该实验全部结果段、数表、表头和图注，不只引用方法。"
         "input_run_ids关联实际使用的前置实验，同时显式登记本实验的样品和物种。"
         "没有物理样品或物种时对应编号列表为空，不补造关联。"
-        "曲线登记所属实验、轴、取值基准及证据。series_members 只保留图例用来区分线条的样品、物种和分组条件，"
-        "如同图多条温度曲线各自的温度。数表的逐点条件和数值、拟合结果及其他测量留给观测，不扫描或转录图中数据点。",
+        "拟合记录保留模型名、原文公式、实际符号的定义、参数值、质量和缺失原因。只在论文使用该模型时填写。"
+        "保留实际使用的仪器、测前处理、分析方法和计算设置。"
+        "曲线登记所属实验、图号、轴、各线的条件和证据。图轴与正文不一致时分别保留轴定义和原文编号，标记 needs_review。"
+        "figure_text 是同次解析的图内识别文字，只用明确标注。无法确认的轴数量和单位填 null，标记 unknown 并保留图号。"
+        "有不同支路且存在原文数表时，各支路独立登记成员。"
+        "仅在原文表格给出明确配对的坐标值时填写 data_points，点的出处需包含横列、纵列和同一行。只有图片时填 null。",
         catalog={name: record[name] for name in (
             "chemical_entities", "material_identities", "sample_batches", "sample_states",
         )},
@@ -148,12 +154,11 @@ async def extract_paper_record(
     notices.extend(run_notices)
     series_by_run = defaultdict(list)
     for series in record["series_sets"]:
-        for member in series["series_members"]:
-            member["data_points"] = None
         series_by_run[series["run_id"]].append(series["series_set_id"])
     for run in record["experiment_runs"]:
         run["series_set_ids"] = series_by_run[run["run_id"]]
     filter_record_references(record, notices)
+    filter_curve_points(record, sources, markdown, notices)
 
     tasks = _observation_tasks(record, source_input)
     group_count = len(tasks)
@@ -176,12 +181,15 @@ async def extract_paper_record(
             "表头用实验变量区分数据时，以原文表头名称为条件键，保留单元格的值，数值单位按表头登记。"
             "所有指标都使用原文指标名作为metric_id。表格结果使用对应表头的指标名，单位单独填写。"
             "数值结果使用quantitative_measurement的标量或范围，定性结果使用reported_result并保留连续原文。"
+            "同一实验、样品和条件的多个指标可用result_group，每个成员有自己的指标、值或描述和出处。"
+            "同条件的元素组成、谱峰和附加数值分别用 results 成员保留，按原文指标命名。成员可关联自己的物质编号及作者给出的谱峰归属。"
+            "组成百分比的质量或原子计量口径写 composition_basis，原文不明时明确写未报告。"
             "不同对象、物种、条件和数值独立一条。共享条件从该实验继承，conditions 只填本条新增或有差异的条件。"
             "保留原文的取值基准，不把总结果拆成未测的贡献。数值确属已登记曲线时填写其 series_set_id。"
             "没有样品或物种关联时使用null或空列表，不创建占位样品。"
             "raw_text保留原文数字及小数分组，value/范围端点使用可计算的数字；未写单位使用null，"
             "不能把未知单位当无量纲，也不改变原数值后只替换单位。"
-            "数值的raw_text只摘录包含数字、比较符号及单位的原文短语。"
+            "数值的raw_text只摘录包含数字、比较符号及单位的原文短语。程序根据可信的单位换算另存统一值。"
             "保留原文数字、单位、范围、约数及符号；对照原文区分实测、预测和定性描述。"
             "定性结果和排序使用可从所引证据中定位的连续原文短语。"
             "不同实验、样品、气体和条件的结果分开。",
@@ -203,7 +211,7 @@ async def extract_paper_record(
         record["observations"].extend(result["observations"])
         notices.extend(group_notices)
     filter_record_references(record, notices)
-    measurement_values = filter_observation_values(record, sources, markdown, notices)
+    measurement_values = filter_observation_values(record, sources, notices)
     filter_record_references(record, notices)
     conditions_by_run = {run["run_id"]: run["conditions"] for run in record["experiment_runs"]}
     for observation in record["observations"]:
@@ -218,7 +226,7 @@ async def extract_paper_record(
     ]
     await control.set_progress(80, "核对机制、未报告信息和冲突")
     quality, quality_notices = await extract(
-        "quality", ("mechanism_claims", "missing_information", "validation_issues"),
+        "quality", ("mechanism_claims", "missing_information", "validation_issues", "evidence_attributions"),
         "机制结论区分作者解释、背景资料与直接观测。指出缺失和冲突，引用已登记的编号。"
         "只登记有独立内容的作者机理解释，用观测编号引用结果，附作者解释的证据。"
         "目录中的观测条件继承该实验的公共条件。"
@@ -230,15 +238,28 @@ async def extract_paper_record(
         "已作为制备操作条件登记的参数无需再生成观测。"
         "validation_issues 的 message 使用简短中文，指出具体要核对的数值、单位或条件，并关联 record_ids 和原文出处。"
         "missing_information 关联具体实验或曲线。有关原文可核对但没有提供所需数值的字段，标记 not_reported，"
-        "引用讨论该字段的正文或图表。是否报告无法确认时标记 needs_review。"
+        "引用讨论该字段的正文或图表。资料指向本次未获得的附件时标记 unavailable，是否报告无法确认时标记 needs_review。"
+        "为目录及本阶段使用的 evidence_id 逐段登记 provenance_scope。原文明确为本文研究填 this_work，"
+        "明确引自其他研究填 cited_work，同一片段兼有两类填 mixed，归属不明确填 unknown。不要仅按章节位置推定。"
+        "机理解释保留作者的限定语和证据。用于解释的引文数据放在 reported_background_values，键按原文项目填写。"
         "模板仅展示允许的字段；没有相关内容时返回空列表。",
         catalog=_quality_catalog({
             **{name: record[name] for name in (
                 "chemical_entities", "sample_states", "synthesis_routes", "experiment_runs", "series_sets", "observations",
             )},
+            "retained_evidence_ids": sorted(evidence_references(record)),
             "rejected_numeric_candidates": rejected_numeric,
         }),
     )
+    attributions = defaultdict(set)
+    for item in quality.pop("evidence_attributions"):
+        attributions[item["evidence_id"]].add(item["provenance_scope"])
+    for evidence in record["evidence"]:
+        scopes = attributions[evidence["evidence_id"]]
+        if len(scopes) == 1:
+            evidence["provenance_scope"] = scopes.pop()
+        elif {"this_work", "cited_work"} <= scopes or "mixed" in scopes:
+            evidence["provenance_scope"] = "mixed"
     record.update(quality)
     notices.extend(quality_notices)
     filter_record_references(record, notices)
@@ -256,23 +277,7 @@ async def extract_paper_record(
     for run in record["experiment_runs"]:
         if run["run_id"] not in observed:
             notices.append(("missing_run_observations", f'实验 {run["run_id"]} 没有保留观测，需人工核对。'))
-    record["extraction_metadata"] = {
-        "created_on": utc_now().date().isoformat(),
-        "extraction_scope": "main_article_pdf",
-        "supplementary_information_available": False,
-        "figure_curves_digitized": False,
-        "normalization_policy": (
-            "Preserve reported values and units; store normalized values separately; "
-            "never infer an unreported method, unit, sample assignment, or experimental condition."
-        ),
-        "source_priority": [
-            "main_text_table", "main_text_explicit_value", "figure_label",
-            "figure_or_caption_qualitative", "author_interpretation",
-        ],
-        "controlled_vocabulary": {
-            "quantity_model": "scalar_or_range_with_operator_and_semantics",
-        },
-    }
+    record["extraction_metadata"] = {"created_on": utc_now().date().isoformat()}
     used = evidence_references(record)
     for item in [*record["missing_information"], *record["validation_issues"]]:
         used.update(item.get("record_ids", []))
@@ -286,6 +291,7 @@ async def extract_paper_record(
         issue_id = f"issue:{scope}:{uuid4().hex}"
         record["validation_issues"].append({
             "issue_id": issue_id, "severity": "warning", "issue_type": kind, "message": message,
+            "record_ids": [record_id],
         })
         if len(notice) == 3:
             rejected.append({**notice[2], "issue_id": issue_id, "issue_type": kind, "message": message})
@@ -294,6 +300,7 @@ async def extract_paper_record(
         for item in record["validation_issues"]
     )
     record["quality_summary"] = _quality_summary(record, partial_result=partial_result)
+    _normalize_quantities(record)
     validate_shape(record, output_schema())
     validate_references(record)
     correction_tasks = project_rejected_corrections(record, sources, rejected)
@@ -354,8 +361,7 @@ def _observation_tasks(record: dict, sources: dict) -> list[dict]:
                 continue
             parent = runs[run_id]
             related[run_id] = parent
-            pending.extend(ref for field in ("input_run_ids", "source_run_ids", "source_model_run_ids")
-                           for ref in parent.get(field, []))
+            pending.extend(parent.get("input_run_ids", []))
         refs = evidence_references(list(related.values()))
         refs.update(ref for series in record["series_sets"] if series["run_id"] in related
                     for ref in series["evidence_ids"])
@@ -382,6 +388,27 @@ def _observation_tasks(record: dict, sources: dict) -> list[dict]:
     return tasks
 
 
+def _apply_preparation_factors(record: dict, notices: list[Notice]) -> None:
+    """用样品配方中的原值组装制备步骤和投料的按样品字段。"""
+    factors = {batch["sample_batch_id"]: batch["factor_assignments"] for batch in record["sample_batches"]}
+    batches = {state["sample_state_id"]: state["sample_batch_id"] for state in record["sample_states"]}
+    for route in record["synthesis_routes"]:
+        for operation in route["operations"]:
+            sample_ids = operation.get("output_sample_state_ids") or route["target_sample_state_ids"]
+            batch_ids = list(dict.fromkeys(batches[state_id] for state_id in sample_ids))
+            fields = [(operation["conditions"], "temperature_factor", "temperature_by_sample")]
+            fields.extend((use["ratio"], "sample_factor", "per_sample_values")
+                          for use in operation.get("reagent_uses", []) if "ratio" in use)
+            for target, binding, field in fields:
+                if not (key := target.pop(binding, None)):
+                    continue
+                values = {batch_id: factors[batch_id][key] for batch_id in batch_ids if key in factors[batch_id]}
+                if values:
+                    target[field] = values
+                if not values or len(values) != len(batch_ids):
+                    notices.append(("missing_preparation_factor", f'{operation["operation_id"]} 的样品变量 {key} 不完整。'))
+
+
 def _quality_catalog(value):
     """精简全文核对目录，保留编号、取值基准、共享条件、差异和出处。"""
     if isinstance(value, list):
@@ -397,6 +424,30 @@ def _quality_catalog(value):
                 del compact["raw_text"]
         return compact
     return value
+
+
+def _normalize_quantities(value) -> None:
+    """为明确的原单位另存可复算的统一值，原值保持原样。"""
+    if isinstance(value, list):
+        for item in value:
+            _normalize_quantities(item)
+    elif isinstance(value, dict):
+        if value.get("kind") in ("scalar", "range") and value.get("unit_raw"):
+            conversions = {
+                "°C": ("K", 1, Decimal("273.15")), "degC": ("K", 1, Decimal("273.15")),
+                "bar": ("kPa", 100, 0), "mmol/g": ("mol/kg", 1, 0),
+            }
+            original_unit = unicodedata.normalize("NFKC", value["unit_raw"]).strip()
+            if conversion := conversions.get(original_unit):
+                unit, scale, offset = conversion
+                keys = ("value",) if value["kind"] == "scalar" else ("minimum", "maximum")
+                numbers = {key: float(Decimal(str(value[key])) * scale + offset) for key in keys}
+                if all(math.isfinite(number) for number in numbers.values()):
+                    value["normalized_value"] = numbers["value"] if "value" in numbers else numbers
+                    value["unit_canonical"] = unit
+            return
+        for item in value.values():
+            _normalize_quantities(item)
 
 
 async def _request_stage(executor, control, stage, schema, instruction, payload):
@@ -551,6 +602,10 @@ def _source_index(markdown: str, sections, assets: dict | None, pages: list[str]
     page_texts = [_compact(page) for page in pages]
     spans = [(start, end, section) for section, blocks in sections for start, end in blocks]
     asset_matches = defaultdict(set)
+    figure_texts = defaultdict(list)
+    for figure in (assets or {}).get("figures", []):
+        if figure.get("caption") and figure.get("image_ocr"):
+            figure_texts[(figure["page"], figure["caption"].strip())].append("\n".join(figure["image_ocr"]))
     for block in (assets or {}).get("blocks", []):
         text, page = block.get("content"), block.get("page")
         if (
@@ -573,16 +628,36 @@ def _source_index(markdown: str, sections, assets: dict | None, pages: list[str]
         if section is not None:
             page, kind = next(iter(matches))
             positions[(start, end)] = (page, kind, section)
+    for (start, end), position in list(positions.items()):
+        quote = markdown[start:end]
+        if position[1] != "text" or not re.search(
+            r"\[\s*\d+(?:[\d, −–-]*\d)?\s*\]|\bet al\.", unicodedata.normalize("NFKC", quote),
+        ):
+            continue
+        # 保留整个可回查段落，同时允许抽取只引用有独立归属的句子。
+        if quote.lstrip().startswith(("|", "<", "#")):
+            continue
+        edges = [0, *(match.end() for match in re.finditer(r"[。！？]|[.!?](?=\s+[A-Z])", quote)), len(quote)]
+        for left, right in zip(edges, edges[1:]):
+            fragment = quote[left:right]
+            first = left + len(fragment) - len(fragment.lstrip())
+            last = right - (len(fragment) - len(fragment.rstrip()))
+            if first < last:
+                positions[(start + first, start + last)] = position
     result = {}
     for index, ((start, end), (page, kind, section)) in enumerate(sorted(positions.items()), 1):
         quote = markdown[start:end]
         span = source_document.span(start, end)
-        caption = re.search(r"\b(?:Table|Fig(?:ure)?\.?)\s+[A-Z]?\d+[a-z]?", quote, re.IGNORECASE)
-        result[f"ev:source-{index}"] = {
+        caption = re.search(r"(?:\b(?:Table|Fig(?:ure)?\.?)|[图表])\s*[A-Z]?\d+[a-z]?(?:\s*\([a-z]\))?", quote, re.I)
+        entry = {
             **span, "page": page, "quote": quote, "section": section or "article",
             "location": caption.group() if caption else f"Markdown lines {span['line_start']}-{span['line_end']}",
-            "origin": "table" if kind == "table" else "figure" if kind == "caption" else "text",
+            "origin": "table" if kind == "table" else "figure" if kind in {"caption", "picture"} else "text",
         }
+        labels = figure_texts.get((page, quote.strip()), [])
+        if len(labels) == 1:
+            entry.update(figure_text=labels[0], origin="figure")
+        result[f"ev:source-{index}"] = entry
     return result
 
 
@@ -607,7 +682,9 @@ def _quality_summary(record: dict, *, partial_result: bool) -> dict:
         "synthesis_route": "extracted_pending_review" if record["synthesis_routes"] else "not_extracted",
         "experiment_count": len(record["experiment_runs"]),
         "quantitative_observation_count": sum(
-            item["observation_type"] == "quantitative_measurement"
+            item["observation_type"] == "quantitative_measurement" or any(
+                "value" in result for result in item.get("results", [])
+            )
             for item in record["observations"]
         ),
         "experiments": [
@@ -617,8 +694,6 @@ def _quality_summary(record: dict, *, partial_result: bool) -> dict:
             }
             for run in record["experiment_runs"]
         ],
-        "raw_curve_points": "not_extracted",
-        "supplementary_information": "not_available",
         "overall_status": (
             "canonical_partial_record_pending_review" if partial_result
             else "canonical_main_article_record_pending_review"

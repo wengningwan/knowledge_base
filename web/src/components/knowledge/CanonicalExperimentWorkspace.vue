@@ -116,7 +116,7 @@
           </header>
           <h3 class="section-heading">关联曲线</h3>
           <button v-for="curve in runCurves(activeRun)" :key="curve.series_set_id" type="button" class="record-button" @click="chooseCanonical(curve, experimentLabel(curve.series_kind))">
-            <strong>{{ curveTitle(curve) }}</strong><small>{{ curvePointCount(curve) ? '已提取 ' + curvePointCount(curve) + ' 个数值点' : '已记录曲线信息，尚无数字化点' }}</small>
+            <strong>{{ curveTitle(curve) }}</strong><small>{{ curvePointCount(curve) ? '已提取 ' + curvePointCount(curve) + ' 个数值点' : '已记录曲线信息，暂无逐点数据' }}</small>
           </button>
           <p v-if="!runCurves(activeRun).length" class="empty">这个实验没有关联曲线。</p>
           <h3 class="section-heading">关联观测</h3>
@@ -139,7 +139,19 @@
 
       <aside ref="detailPane" class="paper-pane inspector" aria-label="记录详情">
         <template v-if="view === 'json'">
-          <h3>格式版本</h3><dl class="facts"><dt>格式标识</dt><dd>{{ paper.schema_id }}</dd><dt>版本</dt><dd>{{ paper.schema_version }}</dd><dt>记录编号</dt><dd>{{ paper.record_id }}</dd></dl>
+          <h3>记录信息</h3>
+          <dl class="facts">
+            <dt>记录编号</dt><dd>{{ paper.record_id }}</dd>
+            <template v-if="paper.extraction_metadata?.created_on">
+              <dt>生成日期（UTC）</dt><dd>{{ paper.extraction_metadata.created_on }}</dd>
+            </template>
+            <template v-if="paper.schema_id != null">
+              <dt>格式标识</dt><dd>{{ paper.schema_id }}</dd>
+            </template>
+            <template v-if="paper.schema_version != null">
+              <dt>格式版本</dt><dd>{{ paper.schema_version }}</dd>
+            </template>
+          </dl>
         </template>
         <template v-else>
           <div class="inspector-heading"><h3>记录详情</h3><div class="button-group"><button type="button" class="small-button" :aria-pressed="detailMode === 'source'" @click="detailMode = 'source'">原文出处</button><button type="button" class="small-button" :aria-pressed="detailMode === 'fields'" @click="detailMode = 'fields'">结构字段</button></div></div>
@@ -574,7 +586,7 @@ function curveTitle(curve) {
   return [experimentLabel(curve.series_kind), curve.source?.figure].filter(Boolean).join(' · ')
 }
 
-/** 数字化点计数只统计实际存在的数据点。 */
+/** 统计曲线成员实际记录的逐点坐标。 */
 function curvePointCount(curve) {
   return (curve.series_members || []).reduce((sum, member) => sum + (Array.isArray(member.data_points) ? member.data_points.length : 0), 0)
 }
@@ -601,9 +613,13 @@ function chemicalName(id) {
 /** 用料比例读取当前样品批次，避免套用其他样品。 */
 function reagentText(operation) {
   return (operation.reagent_uses || []).map(usage => {
-    const amount = usage.amount || usage.concentration
-    const ratio = usage.ratio?.per_sample_values?.[activeSample.value?.sample_batch_id]
-    return [chemicalName(usage.entity_id), amount && experimentValue(amount), ratio != null && '用量比 ' + ratio].filter(Boolean).join(' ')
+    const ratio = usage.ratio?.per_sample_values?.[activeSample.value?.sample_batch_id] ?? usage.ratio?.value
+    return [
+      chemicalName(usage.entity_id),
+      usage.amount != null && experimentValue(usage.amount),
+      usage.concentration != null && experimentValue(usage.concentration),
+      ratio != null && '用量比 ' + experimentValue(ratio)
+    ].filter(Boolean).join(' ')
   }).join(' · ')
 }
 

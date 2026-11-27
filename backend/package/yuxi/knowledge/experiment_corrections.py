@@ -47,10 +47,15 @@ def experiment_correction_tasks(coverage: dict, evidence: list[dict], records: d
     resolutions = coverage.get("manual_review", {}).get("resolutions", {})
     canonical = coverage.get("canonical") or {}
     refs = {
-        item["evidence_id"]: source["evidence_id"]
-        for item in canonical.get("evidence", []) for source in evidence
-        if item["quote_raw"] == source["quote"] and item["pdf_page"] == source.get("page")
+        source["canonical_evidence_id"]: source["evidence_id"]
+        for source in evidence if "canonical_evidence_id" in source
     }
+    if not refs:
+        refs = {
+            item["evidence_id"]: source["evidence_id"]
+            for item in canonical.get("evidence", []) for source in evidence
+            if item["quote_raw"] == source["quote"] and item["pdf_page"] == source.get("page")
+        }
     linked_records = {
         item[key]: item
         for collection, key in (
@@ -205,7 +210,7 @@ def _candidate_values(candidate: dict):
                     yield value.get("assignment") or kind, {"value": value["binding_energy_eV"], "unit": "eV"}
                 else:
                     metric = value.get("metric_id") or value.get("entity_id") or value.get("peak_name") or kind
-                    yield metric, value.get("value", value.get("position", value))
+                    yield metric, value.get("value", value.get("position", value.get("result", value)))
     found = False
     for key in (
         "value", "loading", "selectivity", "result", "reported_observation", "reported_order", "qualitative_result",

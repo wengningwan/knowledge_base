@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from yuxi.knowledge.adsorption_contract import STRUCTURE_PROMPT_VERSION, STRUCTURE_VERSION, output_schema
+from yuxi.knowledge.adsorption_contract import READABLE_STRUCTURE_VERSIONS, STRUCTURE_PROMPT_VERSION, STRUCTURE_VERSION
 from yuxi.knowledge.chunking.source import source_sha256
 from yuxi.knowledge.experiment_corrections import experiment_correction_tasks
 from yuxi.knowledge.experiment_review import (
@@ -105,7 +105,9 @@ async def read_experiment_cards(kb_id, file_id, *, uid):
                 return result
             if revision.status == "draft":
                 result["cards"], result["evidence"] = await repo.read_result(session, revision)
-                result["canonical_available"] = revision.schema_version == STRUCTURE_VERSION and "canonical" in coverage
+                result["canonical_available"] = (
+                    revision.schema_version in READABLE_STRUCTURE_VERSIONS and "canonical" in coverage
+                )
                 result["review"] = {
                     "version": coverage.get("manual_review", {}).get("version", 0),
                     "records": list(experiment_review_records(result["cards"], coverage).values()),
@@ -146,7 +148,10 @@ async def read_experiment_json(kb_id, file_id, *, uid, revision_id):
                 session, kb_id=kb_id, file_id=file_id, uid=uid, permission=ResourcePermission.READ,
             )
             revision = await repo.latest(session, kb_id=kb_id, file_id=file_id)
-            if revision is None or revision.status != "draft" or revision.schema_version != STRUCTURE_VERSION:
+            if (
+                revision is None or revision.status != "draft"
+                or revision.schema_version not in READABLE_STRUCTURE_VERSIONS
+            ):
                 raise StructureNotFoundError("当前文档还没有可下载的规范 JSON")
             if revision.revision_id != revision_id or file.markdown_file != revision.markdown_file:
                 raise StructureConflictError("实验草稿或正文已更新，请刷新后下载")
@@ -156,7 +161,7 @@ async def read_experiment_json(kb_id, file_id, *, uid, revision_id):
             canonical = (revision.coverage or {}).get("canonical")
             if not isinstance(canonical, dict):
                 raise StructureNotFoundError("当前文档还没有可下载的规范 JSON")
-            return {field: canonical[field] for field in output_schema()["required"]}
+            return canonical
 
 
 async def save_experiment_review(kb_id, file_id, *, uid, change: ExperimentReviewRequest):
